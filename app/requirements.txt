@@ -1,0 +1,6 @@
+fastapi==0.124.4
+uvicorn==0.33.0
+pymysql==1.1.0
+pymongo==4.6.1
+mysql-replication
+pydantic==2.9.2
