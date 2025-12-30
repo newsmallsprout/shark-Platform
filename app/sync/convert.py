@@ -3,6 +3,7 @@ from datetime import date, datetime as dt
 from typing import Any, Dict
 
 from decimal import Decimal, ROUND_DOWN
+from decimal import InvalidOperation, getcontext
 from bson.decimal128 import Decimal128
 from bson import ObjectId
 
@@ -12,13 +13,36 @@ class Converter:
         self.pk_field = pk_field
         self.use_pk_as_mongo_id = use_pk_as_mongo_id
         self._pk_lower = pk_field.lower()
+
         self.DEC_SCALE = dec_scale
         self.DEC_Q = Decimal("1").scaleb(-self.DEC_SCALE)
 
+        # ✅ 关键：限制 decimal 上下文，防止 InvalidOperation
+        ctx = getcontext()
+        ctx.prec = 38          # MySQL DECIMAL 最大 65，这里够用
+        ctx.traps[InvalidOperation] = False
+        self.pk_field = pk_field
+        self.use_pk_as_mongo_id = use_pk_as_mongo_id
+        self._pk_lower = pk_field.lower()
+        self.DEC_SCALE = dec_scale
+        self.DEC_Q = Decimal("1").scaleb(-self.DEC_SCALE)
+    def _safe_decimal(self, v: Decimal):
+        try:
+            if v.is_nan() or v.is_infinite():
+                return None
+            dq = v.quantize(self.DEC_Q, rounding=ROUND_DOWN)
+            return dq
+        except Exception:
+            try:
+                return Decimal(str(v))
+            except Exception:
+                return None
+
+
     def convert_value(self, obj: Any):
         if isinstance(obj, Decimal):
-            dq = obj.quantize(self.DEC_Q, rounding=ROUND_DOWN)
-            return Decimal128(dq)
+            dq = self._safe_decimal(obj)
+            return Decimal128(dq) if dq is not None else None
         if isinstance(obj, dt):
             return obj
         if isinstance(obj, date):
@@ -33,11 +57,12 @@ class Converter:
         doc: Dict[str, Any] = {}
         for k, v in row.items():
             if isinstance(v, Decimal):
-                dq = v.quantize(self.DEC_Q, rounding=ROUND_DOWN)
-                doc[k] = Decimal128(dq)
-                doc[f"{k}_str"] = format(dq, "f")
-            else:
-                doc[k] = self.convert_value(v)
+                dq = self._safe_decimal(v)
+                if dq is not None:
+                    doc[k] = Decimal128(dq)
+                    doc[f"{k}_str"] = format(dq, "f")
+                else:
+                    doc[k] = None
 
         if self.use_pk_as_mongo_id:
             for kk, vv in row.items():
