@@ -1,15 +1,12 @@
 # MySQL → MongoDB 数据同步服务  
 **(Full Sync + Binlog CDC + 数据版本化)**
 
-面向生产环境的 **MySQL → MongoDB** 数据同步服务，支持：
+**MySQL → MongoDB** 数据同步服务，支持：
 
 - **全量同步（Full Sync）**
 - **Binlog 增量同步（ROW 模式 CDC）**
 - **UPDATE 版本化（历史数据可追溯）**
 - **DELETE 软删除（可恢复、可审计）**
-
-重点解决 **DECIMAL 精度**、**安全性**、**可审计性** 三大生产级难题。
-
 ---
 
 ## 核心特性
@@ -17,11 +14,10 @@
 - ✅ MySQL 全量数据同步  
 - ✅ MySQL Binlog（ROW）增量同步（CDC）  
 - ✅ UPDATE 数据版本化（历史保留）  
-- ✅ DELETE 软删除（审计 / 回滚友好）  
-- ✅ Decimal 防崩溃 & 防精度丢失（Decimal128 + 对账字段）  
+- ✅ DELETE 软删除  
+- ✅ Decimal 防崩溃 & 防精度丢失  
 - ✅ 同步任务配置 & Binlog 位点持久化（可恢复）  
-- ✅ FastAPI 管理接口（Swagger）  
-- ✅ Docker 部署友好（生产可用）
+- ✅ FastAPI 管理接口（Swagger）
 
 ---
 
@@ -149,60 +145,11 @@ mysql_to_mongo/
 
 ---
 
-## Decimal 设计说明（架构级）
-
-### 背景问题
-
-同步链路：
-
-```text
-MySQL DECIMAL
-   ↓
-Python Decimal
-   ↓
-MongoDB Decimal128
-```
-
-### 风险点
-
-- Python `Decimal` 在以下场景容易抛异常导致同步任务崩溃：
-  - 精度不一致（scale 不固定）
-  - `quantize` 失败（`decimal.InvalidOperation`）
-  - 科学计数法 / 异常输入参与运算
-- MongoDB 若不使用 `Decimal128`，会出现 **精度丢失**
-
----
-
-### 统一处理策略（核心）
-
-所有 DECIMAL 统一规则：
-
-1. MySQL DECIMAL → Python Decimal  
-2. 强制 `quantize` 到统一 scale  
-3. 使用 `ROUND_DOWN` 做截断（可审计、可预测）  
-4. 转为 MongoDB `Decimal128`  
-5. 同时保留字符串字段 `xxx_str` 用于对账  
-
----
-
-### 关键实现逻辑（convert.py）
-
-```python
-dq = obj.quantize(self.DEC_Q, rounding=ROUND_DOWN)
-return Decimal128(dq)
-```
-- `DEC_Q`：统一精度模板  
-- 规则：所有 Decimal **先规整、再入库**，从根源避免 `decimal.InvalidOperation`  
-
----
 
 ### 设计收益
 
 - ✅ 同步任务不会因 Decimal 异常 CRASH  
-- ✅ MongoDB 精度稳定（Decimal128）  
-- ✅ 可人工 / 程序化对账（`xxx_str`）  
-- ✅ 金融 / 账务 / 审计级安全  
-
+- ✅ MongoDB 精度稳定（Decimal128）
 ---
 
 ## 任务持久化与恢复
