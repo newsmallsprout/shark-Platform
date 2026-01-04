@@ -141,7 +141,7 @@ class SyncWorker:
         interval = max(1, int(self.cfg.state_save_interval_sec or 2))
         if now - self._last_state_save_ts >= interval:
             if log_file and log_pos:
-                save_state(self.cfg.task_id, log_file, log_pos)
+                save_state(self.cfg.task_id, log_file, log_pos, self._metrics)
             self._last_state_save_ts = now
 
     def _maybe_progress_log(self, msg: str):
@@ -185,6 +185,13 @@ class SyncWorker:
                 self._metrics["phase"] = "inc_sync"
                 self.do_inc_sync_with_reconnect(None, None)
             else:
+                # Restore metrics if available
+                if "metrics" in state and isinstance(state["metrics"], dict):
+                    saved_metrics = state["metrics"]
+                    for k in ["processed_count", "full_insert_count", "inc_insert_count", "update_count", "delete_count"]:
+                        if k in saved_metrics:
+                            self._metrics[k] = saved_metrics[k]
+
                 self._metrics["phase"] = "inc_sync"
                 self.do_inc_sync_with_reconnect(state.get("log_file"), state.get("log_pos"))
         except Exception as e:

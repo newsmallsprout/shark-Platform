@@ -15,7 +15,10 @@ def load_state(task_id: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def save_state(task_id: str, log_file: str, log_pos: int):
+def save_state(task_id: str, log_file: str, log_pos: int, metrics: Optional[Dict[str, Any]] = None):
     p = os.path.join(STATE_DIR, f"{task_id}.json")
+    data = {"log_file": log_file, "log_pos": log_pos}
+    if metrics:
+        data["metrics"] = metrics
     with open(p, "w", encoding="utf-8") as f:
-        json.dump({"log_file": log_file, "log_pos": log_pos}, f)
+        json.dump(data, f)
