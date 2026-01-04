@@ -20,28 +20,28 @@
 
 ```mermaid
 graph TB
-    subgraph Source [数据源]
-        MySQL[(MySQL Database)]
-        Binlog[Binlog Stream]
+    subgraph Source ["数据源"]
+        MySQL[("MySQL Database")]
+        Binlog["Binlog Stream"]
     end
 
-    subgraph SyncService [同步服务核心]
-        TM[Task Manager 任务调度]
-        FullSync[Full Sync Engine 全量引擎]
-        IncSync[CDC Sync Engine 增量引擎]
-        StateStore[State Store 状态存储]
+    subgraph SyncService ["同步服务核心"]
+        TM["Task Manager 任务调度"]
+        FullSync["Full Sync Engine 全量引擎"]
+        IncSync["CDC Sync Engine 增量引擎"]
+        StateStore["State Store 状态存储"]
     end
 
-    subgraph WebUI [Web 管理界面]
-        Dashboard[仪表盘 Dashboard]
-        TaskMgr[任务管理]
-        Visual[可视化图表]
+    subgraph WebUI ["Web 管理界面"]
+        Dashboard["仪表盘 Dashboard"]
+        TaskMgr["任务管理"]
+        Visual["可视化图表"]
     end
 
-    subgraph Destination [目标存储]
-        Mongo[(MongoDB Cluster)]
-        BaseColl[Base Collection (最新态)]
-        HistColl[Version Collection (历史态)]
+    subgraph Destination ["目标存储"]
+        Mongo[("MongoDB Cluster")]
+        BaseColl["Base Collection (最新态)"]
+        HistColl["Version Collection (历史态)"]
     end
 
     MySQL --> FullSync
