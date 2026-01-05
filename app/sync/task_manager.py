@@ -56,7 +56,7 @@ class TaskManager:
 
     def delete(self, task_id: str):
         # stop if running
-        self.stop_soft(task_id)
+        self.stop(task_id)
         # delete config
         delete_task_config(task_id)
         # delete state

@@ -25,6 +25,8 @@ from app.sync.convert import Converter
 from app.sync.mongo_writer import MongoWriter
 from app.sync.mysql_introspector import MySQLIntrospector
 from app.sync.flush_buffer import FlushBuffer
+from queue import Queue
+from app.sync.rate_limiter import RateLimiter
 
 
 class SyncWorker:
@@ -74,6 +76,7 @@ class SyncWorker:
             retryWrites=True,
             socketTimeoutMS=int(cfg.mongo_socket_timeout_ms or 20000),
             connectTimeoutMS=int(cfg.mongo_connect_timeout_ms or 10000),
+            compressors=cfg.mongo_compressors or None,
         )
         self.mongo_db = self.mongo[cfg.mongo_conf.database or "sync_db"]
 
@@ -89,6 +92,7 @@ class SyncWorker:
             converter=self.converter,
         )
         self.mongo_writer = MongoWriter(cfg.task_id, self.stop_event)
+        self.rate = RateLimiter(cfg)
 
         self._last_state_save_ts = 0.0
         self._last_progress_ts = 0.0
@@ -224,40 +228,83 @@ class SyncWorker:
                     log(self.cfg.task_id, f"FullSync table={table} -> collection={coll_name}")
                     
                     self._metrics["current_table"] = table
-
-                    while not self.stop_event.is_set():
-                        if last_id is None:
-                            c.execute(f"SELECT * FROM `{table}` ORDER BY `{pk}` LIMIT %s", (mysql_batch,))
-                        else:
-                            c.execute(
-                                f"SELECT * FROM `{table}` WHERE `{pk}` > %s ORDER BY `{pk}` LIMIT %s",
-                                (last_id, mysql_batch),
-                            )
-                        rows = c.fetchall()
-                        if not rows:
-                            break
-
-                        for r in rows:
-                            if pk in r:
-                                last_id = r[pk]
-
-                            doc = self.converter.row_to_base_doc(r)
-                            if self.cfg.use_pk_as_mongo_id and "_id" in doc:
-                                ops.append(ReplaceOne({"_id": doc["_id"]}, doc, upsert=True))
+                    q = Queue(maxsize=max(1, int(self.cfg.prefetch_queue_size or 2)))
+                    def _producer():
+                        nonlocal last_id
+                        while not self.stop_event.is_set():
+                            if last_id is None:
+                                c.execute(f"SELECT * FROM `{table}` ORDER BY `{pk}` LIMIT %s", (mysql_batch,))
                             else:
-                                ops.append(InsertOne(doc))
+                                c.execute(
+                                    f"SELECT * FROM `{table}` WHERE `{pk}` > %s ORDER BY `{pk}` LIMIT %s",
+                                    (last_id, mysql_batch),
+                                )
+                            rs = c.fetchall()
+                            if not rs:
+                                break
+                            q.put(rs)
+                            last_id_local = last_id
+                            for r in rs:
+                                if pk in r:
+                                    last_id_local = r[pk]
+                            last_id = last_id_local
+                        q.put(None)
+                    t = threading.Thread(target=_producer, daemon=True)
+                    t.start()
+                    fast_insert = False
+                    if bool(self.cfg.full_sync_fast_insert_if_empty):
+                        try:
+                            fast_insert = coll.estimated_document_count() == 0
+                        except Exception:
+                            fast_insert = False
+                    while not self.stop_event.is_set():
+                        rows = q.get()
+                        if rows is None:
+                            break
+                        if fast_insert and not self.cfg.use_pk_as_mongo_id:
+                            docs = []
+                            for r in rows:
+                                d = self.converter.row_to_base_doc(r)
+                                docs.append(d)
+                                processed += 1
+                                self._metrics["full_insert_count"] += 1
+                            if docs:
+                                try:
+                                    _s = time.time()
+                                    coll.insert_many(docs, ordered=False, bypass_document_validation=True)
+                                    self.rate.update_write_stats(time.time() - _s, len(docs))
+                                    self.rate.sleep_if_needed()
+                                except Exception:
+                                    for d in docs:
+                                        ops.append(InsertOne(d))
+                        else:
+                            for r in rows:
+                                if pk in r:
+                                    last_id = r[pk]
 
-                            processed += 1
-                            self._metrics["full_insert_count"] += 1
-                            if len(ops) >= mongo_batch:
-                                self.mongo_writer.safe_bulk_write(coll, ops, table, coll_name)
-                                ops.clear()
+                                doc = self.converter.row_to_base_doc(r)
+                                if self.cfg.use_pk_as_mongo_id and "_id" in doc:
+                                    ops.append(ReplaceOne({"_id": doc["_id"]}, doc, upsert=True))
+                                else:
+                                    ops.append(InsertOne(doc))
+
+                                processed += 1
+                                self._metrics["full_insert_count"] += 1
+                                if len(ops) >= mongo_batch:
+                                    _s = time.time()
+                                    self.mongo_writer.safe_bulk_write(coll, ops, table, coll_name)
+                                    self.rate.update_write_stats(time.time() - _s, len(ops))
+                                    self.rate.sleep_if_needed()
+                                    ops.clear()
 
                         self._metrics["processed_count"] = processed
                         self._maybe_progress_log(f"FullSync prog table={table} done={processed}")
 
                     if ops:
+                        _s = time.time()
                         self.mongo_writer.safe_bulk_write(coll, ops, table, coll_name)
+                        self.rate.update_write_stats(time.time() - _s, len(ops))
+                        self.rate.sleep_if_needed()
                         ops.clear()
 
                     elapsed = max(1e-6, time.time() - start)
@@ -343,7 +390,10 @@ class SyncWorker:
 
         def writer_func(coll_name: str, ops: List):
             coll = self.mongo_db.get_collection(coll_name, write_concern=write_concern)
+            _s = time.time()
             self.mongo_writer.safe_bulk_write(coll, ops, table="*", coll_name=coll_name)
+            self.rate.update_write_stats(time.time() - _s, len(ops))
+            self.rate.sleep_if_needed()
 
         def on_flush_done():
             try:

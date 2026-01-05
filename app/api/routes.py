@@ -2,6 +2,7 @@
 from fastapi import APIRouter, HTTPException, Response, Request
 import hashlib
 import json
+import time
 from time import perf_counter
 import pymysql
 from pymongo import MongoClient
@@ -9,11 +10,38 @@ from app.api.models import SyncTaskRequest, ConnectionConfig, DBConfig
 from app.sync.task_manager import task_manager
 from app.core.connection_store import connection_store
 from app.core.uri import build_mongo_uri
+from app.monitor.engine import monitor_engine
+from app.monitor.store import save_monitor_config
 import os
 import pymysql
 
 router = APIRouter()
 
+def _get_monitor_task_status():
+    ms = monitor_engine.get_status()
+    # Format as task
+    return {
+        "task_id": "monitor",
+        "status": ms["status"],
+        "config": {
+            "mysql": "Elasticsearch", # Source
+            "mongo": "Slack",         # Target
+            "tables": [ms["config"].get("index_pattern", "-")]
+        },
+        "metrics": {
+            "phase": "Monitoring",
+            "processed_count": ms["alerts_sent"],
+            "error_count": ms.get("levels", {}).get("error", 0),
+            "warn_count": ms.get("levels", {}).get("warn", 0),
+            "info_count": ms.get("levels", {}).get("info", 0),
+            "other_count": ms.get("levels", {}).get("other", 0),
+            "binlog_file": "Last Run",
+            "binlog_pos": ms["last_run"] or "-",
+            "last_update": time.time(), # Approximate
+            "error": ms["last_error"]
+        },
+        "type": "monitor" # Marker for frontend
+    }
 
 @router.get("/connections")
 def list_connections():
@@ -163,14 +191,17 @@ def list_mysql_tables(conn: ConnectionConfig):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"List tables failed: {str(e)[:200]}")
 
-@router.get("/")
-def root():
+@router.get("/tasks/list")
+def list_tasks_route():
     return {"tasks": task_manager.list_tasks()}
 
 
 @router.get("/tasks/status")
 def get_tasks_status():
-    return {"tasks": task_manager.get_all_tasks_status()}
+    tasks = task_manager.get_all_tasks_status()
+    # Append Monitor Task
+    tasks.append(_get_monitor_task_status())
+    return {"tasks": tasks}
 
 
 @router.post("/tasks/start")
@@ -180,6 +211,10 @@ def start_task(cfg: SyncTaskRequest):
 
 @router.post("/tasks/start_existing/{task_id}")
 def start_existing(task_id: str):
+    if task_id == "monitor":
+        monitor_engine.start()
+        return {"msg": "started_existing", "task_id": task_id}
+        
     # 已存在的任务配置，从记录点位继续启动
     if task_manager.is_running(task_id):
         raise HTTPException(status_code=400, detail="Task already running")
@@ -194,29 +229,53 @@ def start_existing(task_id: str):
 
 @router.post("/tasks/stop/{task_id}")
 def stop_task(task_id: str):
+    if task_id == "monitor":
+        monitor_engine.stop()
+        return {"msg": "stopped", "task_id": task_id}
+
     task_manager.stop(task_id)
     return {"msg": "stopped", "task_id": task_id}
 
 
 @router.post("/tasks/stop_soft/{task_id}")
 def stop_task_soft(task_id: str):
+    if task_id == "monitor":
+        monitor_engine.stop()
+        return {"msg": "stopped_soft", "task_id": task_id}
+        
     task_manager.stop_soft(task_id)
     return {"msg": "stopped_soft", "task_id": task_id}
 
 
 @router.post("/tasks/delete/{task_id}")
 def delete_task(task_id: str):
+    if task_id == "monitor":
+        monitor_engine.stop()
+        # Disable in config
+        cfg = monitor_engine.cfg
+        cfg.enabled = False
+        save_monitor_config(cfg)
+        return {"msg": "deleted", "task_id": task_id}
+
     task_manager.delete(task_id)
     return {"msg": "deleted", "task_id": task_id}
 
 
 @router.post("/tasks/reset/{task_id}")
 def reset_task(task_id: str):
+    if task_id == "monitor":
+        # Monitor doesn't support reset (maybe clear state?)
+        return {"msg": "reset", "task_id": task_id}
+
     task_manager.reset(task_id)
     return {"msg": "reset", "task_id": task_id}
 
 @router.post("/tasks/reset_and_start/{task_id}")
 def reset_and_start(task_id: str):
+    if task_id == "monitor":
+        monitor_engine.restart()
+        return {"msg": "reset_and_started", "task_id": task_id}
+
     # 仅在 stopped 状态允许
     for item in task_manager.get_all_tasks_status():
         if item.get("task_id") == task_id:
@@ -235,6 +294,15 @@ def reset_and_start(task_id: str):
 
 @router.get("/tasks/status/{task_id}")
 def get_task_status(task_id: str, request: Request, response: Response):
+    if task_id == "monitor":
+        item = _get_monitor_task_status()
+        metrics_str = json.dumps(item.get("metrics"), sort_keys=True, ensure_ascii=False)
+        etag = f'W/"{hashlib.md5(metrics_str.encode()).hexdigest()}"'
+        if request.headers.get("if-none-match") == etag:
+            return Response(status_code=304)
+        response.headers["ETag"] = etag
+        return item
+
     for item in task_manager.get_all_tasks_status():
         if item.get("task_id") == task_id:
             metrics_str = json.dumps(item.get("metrics"), sort_keys=True, ensure_ascii=False)

@@ -4,35 +4,82 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MySQL to Mongo Sync</title>
-    <!-- 预连接加速 CDN -->
-    <link rel="preconnect" href="https://unpkg.com" crossorigin>
-    <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
-    <!-- Vue 3（生产版） -->
-    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
-    <!-- Element Plus -->
+    <script src="/ui/vendor/vue.global.prod.js"></script>
+    <link rel="stylesheet" href="/ui/vendor/element-plus/index.css" />
     <link rel="stylesheet" href="https://unpkg.com/element-plus/dist/index.css" />
-    <script src="https://unpkg.com/element-plus"></script>
-    <!-- Icons -->
-    <script src="https://unpkg.com/@element-plus/icons-vue"></script>
-    <!-- ECharts -->
-    <script src="https://unpkg.com/echarts/dist/echarts.min.js"></script>
+    <script src="/ui/vendor/element-plus/index.full.min.js"></script>
+    <script src="/ui/vendor/icons/index.iife.min.js"></script>
+    <script>
+        (function(){
+            function ensure(checkFn, src){
+                try { if (checkFn()) return; } catch(e) {}
+                var s = document.createElement('script'); s.src = src; s.defer = true; document.head.appendChild(s);
+            }
+            ensure(function(){ return window.Vue; }, 'https://unpkg.com/vue@3/dist/vue.global.prod.js');
+            ensure(function(){ return window.ElementPlus; }, 'https://unpkg.com/element-plus');
+            ensure(function(){ return window.ElementPlusIconsVue; }, 'https://unpkg.com/@element-plus/icons-vue');
+        })();
+    </script>
     <style>
-        body { margin: 0; padding: 0; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; height: 100vh; overflow: hidden; }
-        #app { height: 100%; display: flex; }
-        .el-aside { background-color: #304156; color: #fff; transition: width 0.3s; width: 220px; display: flex; flex-direction: column; }
-        .logo { height: 60px; line-height: 60px; text-align: center; font-size: 18px; font-weight: bold; background-color: #2b3649; color: #fff; border-bottom: 1px solid #1f2d3d; }
+        :root { --bg:#f5f7fa; --card:#ffffff; --shadow:0 8px 24px rgba(0,0,0,.08); --text:#303133; --muted:#909399; --primary:#409EFF; }
+        body { margin: 0; padding: 0; font-family: Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif; height: 100vh; overflow: hidden; background-color: var(--bg); }
+        #app { height: 100%; display: flex; width: 100%; }
+        .el-aside { background-color: #304156; color: #fff; transition: width 0.3s; width: 220px; display: flex; flex-direction: column; flex-shrink: 0; }
+        .logo { height: 60px; line-height: 60px; text-align: center; font-size: 18px; font-weight: 600; background-color: #2b3649; color: #fff; border-bottom: 1px solid #1f2d3d; letter-spacing: .2px; }
         .el-menu { border-right: none; background-color: transparent; }
         .el-menu-item { color: #bfcbd9; }
         .el-menu-item:hover, .el-menu-item.is-active { background-color: #263445; color: #409EFF; }
-        .el-main { background-color: #f0f2f5; padding: 20px; overflow-y: auto; height: 100vh; box-sizing: border-box; }
-        .page-header { background: #fff; padding: 15px 20px; margin: -20px -20px 20px -20px; box-shadow: 0 1px 4px rgba(0,21,41,.08); display: flex; justify-content: space-between; align-items: center; }
+        .el-main { background-color: var(--bg); padding: 24px; overflow-y: auto; flex: 1; height: 100%; box-sizing: border-box; }
+        .page-header { background: var(--card); padding: 18px 22px; margin: -24px -24px 20px -24px; box-shadow: var(--shadow); display: flex; justify-content: space-between; align-items: center; border-radius: 12px; }
+        .page-header h2 { margin: 0; font-weight: 600; letter-spacing: .2px; }
+        .el-card { border-radius: 12px; box-shadow: var(--shadow); border: none; }
         .card-header { display: flex; justify-content: space-between; align-items: center; }
         .metric-item { margin-bottom: 8px; font-size: 14px; color: #606266; display: flex; justify-content: space-between; }
-        .metric-label { font-weight: 500; color: #303133; }
-        .section-title { font-size: 16px; font-weight: bold; margin: 20px 0 10px; padding-left: 10px; border-left: 4px solid #409EFF; }
+        .metric-label { font-weight: 500; color: var(--text); }
+        .section-title { font-size: 16px; font-weight: 600; margin: 20px 0 10px; padding-left: 10px; border-left: 4px solid var(--primary); letter-spacing: .2px; }
         .mapping-row { display: flex; gap: 10px; margin-bottom: 10px; align-items: center; }
         .mode-group .el-radio { display: block; margin-bottom: 6px; }
-        .mode-desc { margin: 4px 0 12px 26px; color: #909399; font-size: 12px; }
+        .mode-desc { margin: 4px 0 12px 26px; color: var(--muted); font-size: 12px; }
+        .el-tag { border-radius: 12px; font-weight: 600; padding: 0 8px; }
+        .el-button.is-plain { background-color: #fff; }
+
+        /* Monitor Styles */
+        .stat-card-compact { display: flex; align-items: center; padding: 20px; background: #fff; border-radius: 4px; box-shadow: 0 2px 12px 0 rgba(0,0,0,0.1); height: 100px; box-sizing: border-box; }
+        .stat-icon { width: 48px; height: 48px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 24px; color: #fff; margin-right: 16px; }
+        .stat-content { flex: 1; overflow: hidden; }
+        .stat-label { color: #909399; font-size: 14px; margin-bottom: 5px; }
+        .stat-number { font-size: 20px; font-weight: bold; color: #303133; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        
+        .icon-blue { background-color: #409EFF; }
+        .icon-green { background-color: #67C23A; }
+        .icon-red { background-color: #F56C6C; }
+        .icon-orange { background-color: #E6A23C; }
+
+        /* Monitor Layout */
+        .monitor-container { max-width: 100%; }
+        .monitor-actions .el-button { border-radius: 20px; padding: 6px 14px; font-weight: 500; }
+        .monitor-actions .el-button.is-plain { background-color: #fff; }
+        .monitor-actions .el-button + .el-button { margin-left: 2px; }
+        .monitor-actions .el-button .el-icon { transform: translateY(1px); }
+        .config-section-title { font-size: 15px; font-weight: bold; color: #303133; margin-bottom: 15px; display: flex; align-items: center; }
+        .config-section-title:before { content: ""; display: inline-block; width: 3px; height: 14px; background: #409EFF; margin-right: 8px; border-radius: 2px; }
+
+        /* Tiles */
+        .tile { display:flex; align-items:center; justify-content:space-between; background:#fff; border-radius:12px; box-shadow: var(--shadow); padding:16px 18px; }
+        .tile-left { display:flex; align-items:center; gap:12px; }
+        .tile-icon { width:36px; height:36px; border-radius:50%; display:flex; align-items:center; justify-content:center; color:#fff; }
+        .tile-icon.primary { background:#409EFF; }
+        .tile-icon.success { background:#67C23A; }
+        .tile-icon.warning { background:#E6A23C; }
+        .tile-value { font-size:26px; font-weight:700; color:#303133; }
+        .tile-label { font-size:13px; color:#909399; }
+        .dashboard-layout { display:flex; flex-direction:column; gap:0; }
+        .dashboard-overview { order:1; }
+        .dashboard-ring { order:2; }
+        @media (max-width: 768px) {
+            .dashboard-overview { order:2; }
+            .dashboard-ring { order:1; }
+        }
     </style>
 </head>
 <body>
@@ -53,6 +100,10 @@
                     <el-icon><Connection /></el-icon>
                     <span>Data Sources</span>
                 </el-menu-item>
+                <el-menu-item index="monitor">
+                    <el-icon><Bell /></el-icon>
+                    <span>Log Monitoring</span>
+                </el-menu-item>
             </el-menu>
         </el-aside>
 
@@ -66,48 +117,168 @@
                         <el-icon style="margin-right: 5px"><Plus /></el-icon> New Task
                     </el-button>
                 </div>
+                
+                <div class="dashboard-layout">
+                <el-row class="dashboard-overview" :gutter="20" style="margin-bottom:20px;">
+                    <el-col :xs="24" :sm="12" :md="8">
+                        <div class="tile">
+                            <div class="tile-left">
+                                <div class="tile-icon primary"><el-icon><Odometer /></el-icon></div>
+                                <div>
+                                    <div class="tile-label">All Items</div>
+                                    <div class="tile-value">{{ overview.all }}</div>
+                                </div>
+                            </div>
+                        </div>
+                    </el-col>
+                    <el-col :xs="24" :sm="12" :md="8">
+                        <div class="tile">
+                            <div class="tile-left">
+                                <div class="tile-icon success"><el-icon><Connection /></el-icon></div>
+                                <div>
+                                    <div class="tile-label">Sync Tasks</div>
+                                    <div class="tile-value" style="color:#67C23A">{{ overview.sync }}</div>
+                                </div>
+                            </div>
+                        </div>
+                    </el-col>
+                    <el-col :xs="24" :sm="12" :md="8">
+                        <div class="tile">
+                            <div class="tile-left">
+                                <div class="tile-icon warning"><el-icon><Bell /></el-icon></div>
+                                <div>
+                                    <div class="tile-label">Log Monitors</div>
+                                    <div class="tile-value" style="color:#E6A23C">{{ overview.monitor }}</div>
+                                </div>
+                            </div>
+                        </div>
+                    </el-col>
+                </el-row>
+                <el-row class="dashboard-ring" :gutter="20" style="margin-bottom:20px;">
+                    <el-col :span="24">
+                        <div class="tile" style="padding:8px 10px;">
+                            <canvas id="syncStatusRingCanvas" height="140"></canvas>
+                        </div>
+                    </el-col>
+                </el-row>
+                </div>
 
                 <el-row :gutter="20">
                     <el-col :span="24" v-if="tasks.length === 0">
                         <el-empty description="No active tasks. Go to Task Management to create one."></el-empty>
                     </el-col>
-                    <el-col :span="8" v-for="task in tasks" :key="task.task_id" style="margin-bottom: 20px;">
-                        <el-card shadow="hover">
-                            <template #header>
-                                <div class="card-header">
-                                    <span style="font-weight: bold;">{{ task.task_id }}</span>
-                                    <el-tag :type="getStatusType(task.status)">{{ task.status.toUpperCase() }}</el-tag>
-                                </div>
-                            </template>
-                            <div class="metric-item">
-                                <span class="metric-label">Phase</span>
-                                <span>{{ task.metrics.phase }}</span>
-                            </div>
-                            <div class="metric-item">
-                                <span class="metric-label">Processed</span>
-                                <span>{{ task.metrics.processed_count }}</span>
-                            </div>
-                            <div class="metric-item">
-                                <span class="metric-label">Binlog</span>
-                                <el-tooltip :content="task.metrics.binlog_file + ':' + task.metrics.binlog_pos" placement="top">
-                                    <span style="cursor: pointer; border-bottom: 1px dashed #999;">{{ task.metrics.binlog_pos }}</span>
-                                </el-tooltip>
-                            </div>
-                            <div class="metric-item">
-                                <span class="metric-label">Last Update</span>
-                                <span>{{ formatTime(task.metrics.last_update) }}</span>
-                            </div>
-                            <div v-if="task.metrics.error" style="margin-top: 10px; padding: 8px; background-color: #fef0f0; border-radius: 4px; font-size: 12px; color: #f56c6c;">
-                                {{ task.metrics.error }}
-                            </div>
-                            <div style="margin-top: 12px; border-top: 1px solid #eee; padding-top: 10px; display: flex; gap: 8px; flex-wrap: wrap;">
-                                <el-button type="primary" size="small" @click="viewLogs(task.task_id)">Logs</el-button>
-                                <el-button type="success" size="small" @click="openStats(task.task_id)">Stats</el-button>
-                                <el-button v-if="task.status === 'running'" type="warning" size="small" @click="confirmStop(task.task_id)">Stop</el-button>
-                                <el-button v-else type="success" size="small" @click="confirmStart(task.task_id)">Start</el-button>
-                                <el-button type="info" size="small" :disabled="task.status !== 'stopped'" @click="confirmResetAndStart(task.task_id)">Reset</el-button>
-                                <el-button type="danger" size="small" @click="confirmDelete(task.task_id)">Delete</el-button>
-                            </div>
+                </el-row>
+
+                <!-- Bottom Panels: Sync + Monitor -->
+                <el-row :gutter="20" style="margin-top:10px;">
+                    <el-col :span="12">
+                        <el-card>
+                            <el-collapse v-model="collapseSync">
+                                <el-collapse-item name="sync">
+                                    <template #title>
+                                        <span style="font-weight:600; color:#303133;">Sync Tasks</span>
+                                        <el-tag size="small" type="success" style="margin-left:8px;">{{ overview.sync }}</el-tag>
+                                    </template>
+                                    <div v-if="syncTasks.length > 0">
+                                        <el-row :gutter="20">
+                                            <el-col :span="24" v-for="task in syncTasks" :key="task.task_id" style="margin-bottom: 14px;">
+                                                <el-card shadow="hover">
+                                                    <template #header>
+                                                        <div class="card-header">
+                                                            <span style="font-weight: bold;">{{ task.task_id }}</span>
+                                                            <el-tag :type="getStatusType(task.status)">{{ task.status.toUpperCase() }}</el-tag>
+                                                        </div>
+                                                    </template>
+                                                    <div class="metric-item">
+                                                        <span class="metric-label">Phase</span>
+                                                        <span>{{ task.metrics.phase }}</span>
+                                                    </div>
+                                                    <div class="metric-item">
+                                                        <span class="metric-label">Processed</span>
+                                                        <span>{{ task.metrics.processed_count }}</span>
+                                                    </div>
+                                                    <div class="metric-item">
+                                                        <span class="metric-label">Binlog</span>
+                                                        <el-tooltip :content="task.metrics.binlog_file + ':' + task.metrics.binlog_pos" placement="top">
+                                                            <span style="cursor: pointer; border-bottom: 1px dashed #999;">{{ task.metrics.binlog_pos }}</span>
+                                                        </el-tooltip>
+                                                    </div>
+                                                    <div class="metric-item">
+                                                        <span class="metric-label">Last Update</span>
+                                                        <span>{{ formatTime(task.metrics.last_update) }}</span>
+                                                    </div>
+                                                    <div v-if="task.metrics.error" style="margin-top: 10px; padding: 8px; background-color: #fef0f0; border-radius: 4px; font-size: 12px; color: #f56c6c;">
+                                                        {{ task.metrics.error }}
+                                                    </div>
+                                                    <div class="monitor-actions" style="margin-top: 12px; border-top: 1px solid #eee; padding-top: 10px; display: flex; gap: 10px; flex-wrap: wrap;">
+                                                        <el-button type="primary" plain size="small" @click="viewLogs(task.task_id)"><el-icon style="margin-right:4px"><List /></el-icon> Logs</el-button>
+                                                        <el-button type="success" plain size="small" @click="openStats(task.task_id)"><el-icon style="margin-right:4px"><Histogram /></el-icon> Stats</el-button>
+                                                        <el-button v-if="task.status === 'running'" type="warning" plain size="small" @click="confirmStop(task.task_id)"><el-icon style="margin-right:4px"><SwitchButton /></el-icon> Stop</el-button>
+                                                        <el-button v-else type="success" plain size="small" @click="confirmStart(task.task_id)"><el-icon style="margin-right:4px"><VideoPlay /></el-icon> Start</el-button>
+                                                        <el-button type="info" plain size="small" :disabled="task.status !== 'stopped'" @click="confirmResetAndStart(task.task_id)"><el-icon style="margin-right:4px"><Refresh /></el-icon> Reset</el-button>
+                                                        <el-button type="danger" plain size="small" @click="confirmDelete(task.task_id)"><el-icon style="margin-right:4px"><Delete /></el-icon> Delete</el-button>
+                                                    </div>
+                                                </el-card>
+                                            </el-col>
+                                        </el-row>
+                                    </div>
+                                    <div v-else style="color:#909399;">No sync tasks</div>
+                                </el-collapse-item>
+                            </el-collapse>
+                        </el-card>
+                    </el-col>
+                    <el-col :span="12">
+                        <el-card>
+                            <el-collapse v-model="collapseMonitor">
+                                <el-collapse-item name="monitor">
+                                    <template #title>
+                                        <span style="font-weight:600; color:#303133;">Log Monitors</span>
+                                        <el-tag size="small" type="warning" style="margin-left:8px;">{{ overview.monitor }}</el-tag>
+                                    </template>
+                                    <div v-if="monitorTasks.length > 0">
+                                        <el-row :gutter="20">
+                                            <el-col :span="24" v-for="task in monitorTasks" :key="task.task_id" style="margin-bottom: 14px;">
+                                                <el-card shadow="hover">
+                                                    <template #header>
+                                                        <div class="card-header">
+                                                            <span style="font-weight: bold;">{{ task.task_id }}</span>
+                                                            <el-tag :type="getStatusType(task.status)">{{ task.status.toUpperCase() }}</el-tag>
+                                                        </div>
+                                                    </template>
+                                                    <div class="metric-item">
+                                                        <span class="metric-label">Monitor</span>
+                                                        <span>{{ task.metrics.phase }}</span>
+                                                    </div>
+                                                    <div class="metric-item">
+                                                        <span class="metric-label">Alerts</span>
+                                                        <span>{{ task.metrics.processed_count }}</span>
+                                                    </div>
+                                                    <div class="metric-item">
+                                                        <span class="metric-label">Last Run</span>
+                                                        <span>{{ task.metrics.binlog_pos }}</span>
+                                                    </div>
+                                                    <div class="metric-item">
+                                                        <span class="metric-label">Last Update</span>
+                                                        <span>{{ formatTime(task.metrics.last_update) }}</span>
+                                                    </div>
+                                                    <div v-if="task.metrics.error" style="margin-top: 10px; padding: 8px; background-color: #fef0f0; border-radius: 4px; font-size: 12px; color: #f56c6c;">
+                                                        {{ task.metrics.error }}
+                                                    </div>
+                                                    <div class="monitor-actions" style="margin-top: 12px; border-top: 1px solid #eee; padding-top: 10px; display: flex; gap: 10px; flex-wrap: wrap;">
+                                                        <el-button type="primary" plain size="small" @click="viewLogs(task.task_id)"><el-icon style="margin-right:4px"><List /></el-icon> Events</el-button>
+                                                        <el-button type="success" plain size="small" @click="openStats(task.task_id)"><el-icon style="margin-right:4px"><Histogram /></el-icon> Metrics</el-button>
+                                                        <el-button v-if="task.status === 'running'" type="warning" plain size="small" @click="confirmStop(task.task_id)"><el-icon style="margin-right:4px"><SwitchButton /></el-icon> Stop Monitor</el-button>
+                                                        <el-button v-else type="success" plain size="small" @click="confirmStart(task.task_id)"><el-icon style="margin-right:4px"><VideoPlay /></el-icon> Start Monitor</el-button>
+                                                        <el-button type="info" plain size="small" :disabled="task.status !== 'stopped'" @click="confirmResetAndStart(task.task_id)"><el-icon style="margin-right:4px"><Refresh /></el-icon> Restart</el-button>
+                                                        <el-button type="danger" plain size="small" @click="confirmDelete(task.task_id)"><el-icon style="margin-right:4px"><Delete /></el-icon> Delete Monitor</el-button>
+                                                    </div>
+                                                </el-card>
+                                            </el-col>
+                                        </el-row>
+                                    </div>
+                                    <div v-else style="color:#909399;">No monitors</div>
+                                </el-collapse-item>
+                            </el-collapse>
                         </el-card>
                     </el-col>
                 </el-row>
@@ -137,7 +308,7 @@
                     <el-table-column label="Tables">
                          <template #default="scope">
                             <span>{{ truncateTables(scope.row.config.tables) }}</span>
-                            <el-button type="primary" link size="small" style="margin-left:6px" @click="openTables(scope.row.task_id)">查看全表</el-button>
+                            <el-button type="primary" link size="small" style="margin-left:6px" @click="openTables(scope.row.task_id)">View All Tables</el-button>
                          </template>
                     </el-table-column>
                 </el-table>
@@ -180,7 +351,164 @@
 
         </el-main>
 
-        <!-- CREATE TASK DIALOG -->
+        <!-- MONITOR VIEW -->
+            <div v-if="currentView === 'monitor'" class="monitor-container">
+                <div class="page-header">
+                    <h2>Log Monitoring</h2>
+                    <div>
+                        <el-tag :type="monitorStatus.status === 'running' ? 'success' : 'info'" effect="dark" style="margin-right: 12px; font-weight: bold;">
+                            {{ monitorStatus.status ? monitorStatus.status.toUpperCase() : 'UNKNOWN' }}
+                        </el-tag>
+                        <el-button v-if="monitorStatus.status === 'running'" type="danger" plain @click="stopMonitor" :loading="monitorActionLoading" icon="SwitchButton">Stop Monitor</el-button>
+                        <el-button v-else type="primary" @click="startMonitor" :loading="monitorActionLoading" icon="VideoPlay">Start Monitor</el-button>
+                    </div>
+                </div>
+
+                <!-- Status Cards (Compact Row) -->
+                <el-row :gutter="20" style="margin-bottom: 20px;">
+                    <el-col :xs="24" :sm="12" :md="6">
+                        <div class="stat-card-compact">
+                            <div class="stat-icon icon-blue"><el-icon><Monitor /></el-icon></div>
+                            <div class="stat-content">
+                                <div class="stat-label">Current Status</div>
+                                <div class="stat-number" :style="{color: monitorStatus.status === 'running' ? '#67C23A' : '#909399'}">
+                                    {{ monitorStatus.status }}
+                                </div>
+                            </div>
+                        </div>
+                    </el-col>
+                    <el-col :xs="24" :sm="12" :md="6">
+                        <div class="stat-card-compact">
+                            <div class="stat-icon icon-green"><el-icon><Clock /></el-icon></div>
+                            <div class="stat-content">
+                                <div class="stat-label">Last Run</div>
+                                <div class="stat-number" style="font-size: 16px;">{{ monitorStatus.last_run || '-' }}</div>
+                            </div>
+                        </div>
+                    </el-col>
+                    <el-col :xs="24" :sm="12" :md="6">
+                        <div class="stat-card-compact">
+                            <div class="stat-icon icon-orange"><el-icon><Bell /></el-icon></div>
+                            <div class="stat-content">
+                                <div class="stat-label">Alerts Sent</div>
+                                <div class="stat-number">{{ monitorStatus.alerts_sent }}</div>
+                            </div>
+                        </div>
+                    </el-col>
+                    <el-col :xs="24" :sm="12" :md="6">
+                        <div class="stat-card-compact">
+                            <div class="stat-icon icon-red"><el-icon><Warning /></el-icon></div>
+                            <div class="stat-content">
+                                <div class="stat-label">Last Error</div>
+                                <el-tooltip v-if="monitorStatus.last_error" :content="monitorStatus.last_error" placement="top">
+                                    <div class="stat-number" style="font-size: 14px; color: #F56C6C; cursor: pointer;">{{ monitorStatus.last_error }}</div>
+                                </el-tooltip>
+                                <div class="stat-number" v-else>-</div>
+                            </div>
+                        </div>
+                    </el-col>
+                </el-row>
+
+                <!-- Configuration Panel -->
+                <el-card shadow="never" class="config-card">
+                    <template #header>
+                        <div class="card-header">
+                            <span style="font-weight: bold;">Configuration</span>
+                            <el-button type="primary" link @click="saveMonitorConfig" :loading="monitorSaving">
+                                <el-icon><Check /></el-icon> Save
+                            </el-button>
+                        </div>
+                    </template>
+
+                    <el-form :model="monitorConfig" label-width="140px" label-position="left">
+                        <el-row :gutter="40">
+                            <!-- Left Column -->
+                            <el-col :xs="24" :lg="12">
+                                <div class="config-section-title">General Settings</div>
+                                <el-form-item label="Enable Monitor">
+                                    <el-switch v-model="monitorConfig.enabled" active-text="Enabled" inactive-text="Disabled"></el-switch>
+                                </el-form-item>
+                                <el-form-item label="Poll Interval (s)">
+                                    <el-input-number v-model="monitorConfig.poll_interval_seconds" :min="10" controls-position="right" style="width: 100%;"></el-input-number>
+                                </el-form-item>
+
+                                <div class="config-section-title" style="margin-top: 30px;">Elasticsearch Connection</div>
+                                <el-form-item label="ES Hosts">
+                                    <el-input v-model="monitorConfig.es_hosts" placeholder="https://localhost:9200"></el-input>
+                                </el-form-item>
+                                <el-form-item label="Index Pattern">
+                                    <el-input v-model="monitorConfig.index_pattern" placeholder="trace_log-*"></el-input>
+                                </el-form-item>
+                                <el-row :gutter="10">
+                                    <el-col :span="12">
+                                        <el-form-item label="Username" label-width="80px">
+                                            <el-input v-model="monitorConfig.es_username"></el-input>
+                                        </el-form-item>
+                                    </el-col>
+                                    <el-col :span="12">
+                                        <el-form-item label="Password" label-width="80px">
+                                            <el-input v-model="monitorConfig.es_password" type="password" show-password></el-input>
+                                        </el-form-item>
+                                    </el-col>
+                                </el-row>
+                            </el-col>
+
+                            <!-- Right Column -->
+                            <el-col :xs="24" :lg="12">
+                                <div class="config-section-title">Alerting Rules</div>
+                                <el-form-item label="Slack Webhook">
+                                    <el-input v-model="monitorConfig.slack_webhook_url" placeholder="https://hooks.slack.com/services/..."></el-input>
+                                </el-form-item>
+                                
+                                <el-form-item label="Alert Keywords">
+                                    <el-select 
+                                        v-model="monitorConfig.alert_keywords" 
+                                        multiple 
+                                        filterable 
+                                        allow-create 
+                                        default-first-option 
+                                        placeholder="Type and hit enter" 
+                                        style="width: 100%">
+                                    </el-select>
+                                    <div style="font-size: 12px; color: #909399; line-height: 1.2; margin-top: 4px;">Log messages matching these phrases will trigger alerts (OR logic).</div>
+                                </el-form-item>
+                                
+                                <el-form-item label="Ignore Keywords">
+                                    <el-select 
+                                        v-model="monitorConfig.ignore_keywords" 
+                                        multiple 
+                                        filterable 
+                                        allow-create 
+                                        default-first-option 
+                                        placeholder="Type and hit enter" 
+                                        style="width: 100%">
+                                    </el-select>
+                                    <div style="font-size: 12px; color: #909399; line-height: 1.2; margin-top: 4px;">Logs matching these phrases will be ignored.</div>
+                                </el-form-item>
+                                
+                                <el-alert
+                                    title="Monitor Info"
+                                    type="info"
+                                    description="The monitor runs in the background and checks Elasticsearch for errors periodically."
+                                    show-icon
+                                    :closable="false"
+                                    style="margin-top: 20px"
+                                />
+                            </el-col>
+                        </el-row>
+
+                        <!-- Bottom Save Action -->
+                        <el-divider></el-divider>
+                        <div style="text-align: right;">
+                             <el-button @click="fetchMonitorStatus">Refresh Status</el-button>
+                             <el-button type="primary" size="large" @click="saveMonitorConfig" :loading="monitorSaving" icon="Check" style="width: 180px;">Save & Restart</el-button>
+                        </div>
+
+                    </el-form>
+                </el-card>
+            </div>
+
+            <!-- CREATE TASK DIALOG -->
         <el-dialog v-model="createVisible" title="Create Sync Task" width="900px" destroy-on-close>
             <el-steps :active="activeStep" finish-status="success" simple style="margin-bottom: 20px;">
                 <el-step title="Info"></el-step>
@@ -365,7 +693,7 @@
             </template>
         </el-dialog>
         
-        <el-dialog v-model="logsVisible" title="Task Logs" width="800px" destroy-on-close append-to-body center>
+                <el-dialog v-model="logsVisible" title="Task Logs" width="800px" destroy-on-close append-to-body center>
             <div style="background-color: #1e1e1e; color: #d4d4d4; padding: 15px; border-radius: 4px; height: 500px; overflow-y: auto; font-family: 'Consolas', 'Monaco', monospace; font-size: 13px; line-height: 1.5;">
                 <div v-if="logsLines.length === 0" style="color: #666; text-align: center; margin-top: 200px;">No logs available</div>
                 <div v-for="(line, idx) in logsLines" :key="idx">{{ line.trim() }}</div>
@@ -375,17 +703,25 @@
             </template>
         </el-dialog>
 
-        <el-dialog v-model="metricsVisible" title="Task Metrics" width="800px" destroy-on-close append-to-body center>
+        <el-dialog v-model="metricsVisible" title="Metrics" width="800px" destroy-on-close append-to-body center>
             <div style="display:flex; gap:12px; margin-bottom:12px;">
-                <el-tag type="primary">Full Insert: {{ displayCounts.full }}</el-tag>
-                <el-tag type="success">Inc Insert: {{ displayCounts.inc }}</el-tag>
-                <el-tag type="warning">Update: {{ displayCounts.update }}</el-tag>
-                <el-tag type="danger">Delete: {{ displayCounts.delete }}</el-tag>
+                <template v-if="metricsTaskId !== 'monitor'">
+                    <el-tag type="primary">Full Insert: {{ displayCounts.full }}</el-tag>
+                    <el-tag type="success">Inc Insert: {{ displayCounts.inc }}</el-tag>
+                    <el-tag type="warning">Update: {{ displayCounts.update }}</el-tag>
+                    <el-tag type="danger">Delete: {{ displayCounts.delete }}</el-tag>
+                </template>
+                <template v-else>
+                    <el-tag type="danger">Error: {{ displayCounts.full }}</el-tag>
+                    <el-tag type="warning">Warn: {{ displayCounts.inc }}</el-tag>
+                    <el-tag type="primary">Info: {{ displayCounts.update }}</el-tag>
+                    <el-tag>Other: {{ displayCounts.delete }}</el-tag>
+                </template>
             </div>
             <div style="display:flex; justify-content:flex-end; margin-bottom:8px;">
                 <el-radio-group v-model="metricsChartType" size="small">
-                    <el-radio-button label="bar">柱状图</el-radio-button>
-                    <el-radio-button label="donut">环形图</el-radio-button>
+                    <el-radio-button label="bar">Bar</el-radio-button>
+                    <el-radio-button label="donut">Donut</el-radio-button>
                 </el-radio-group>
             </div>
             <div style="background:#fff; padding:10px; border-radius:6px;">
@@ -424,12 +760,13 @@
         const { ElMessage, ElMessageBox } = ElementPlus;
         const { Odometer, List, Connection, Plus, Delete, Right, Edit } = ElementPlusIconsVue;
 
-        const app = createApp({
-            components: { Odometer, List, Connection, Plus, Delete, Right, Edit },
-            setup() {
-                const currentView = ref('dashboard');
-                const tasks = ref([]);
-                const connections = ref([]);
+                const app = createApp({
+                    components: { Odometer, List, Connection, Plus, Delete, Right, Edit },
+                    setup() {
+                        const currentView = ref('dashboard');
+                        const tasks = ref([]);
+                        const connections = ref([]);
+                        const overview = reactive({ all: 0, sync: 0, monitor: 0 });
                 
                 // --- Task Creation State ---
                 const createVisible = ref(false);
@@ -445,10 +782,29 @@
                 const logsTaskId = ref('');
                 const logsLines = ref([]);
                 let logsTimer = null;
+
+                // Monitor
+                const monitorStatus = ref({ status: 'unknown', last_run: '', alerts_sent: 0, last_error: '' });
+                const monitorConfig = ref({ 
+                    enabled: false, 
+                    es_hosts: '', 
+                    es_username: '', 
+                    es_password: '', 
+                    index_pattern: '', 
+                    slack_webhook_url: '', 
+                    poll_interval_seconds: 60,
+                    alert_keywords: [],
+                    ignore_keywords: []
+                });
+                const monitorActionLoading = ref(false);
+                const monitorSaving = ref(false);
+
                 const metricsVisible = ref(false);
                 const metricsTaskId = ref('');
                 const metricsCounts = reactive({ full: 0, inc: 0, update: 0, delete: 0 });
                 const displayCounts = reactive({ full: 0, inc: 0, update: 0, delete: 0 });
+                const collapseSync = ref([]);
+                const collapseMonitor = ref([]);
                 let metricsTimer = null;
                 let metricsCanvas = null;
                 let metricsCtx = null;
@@ -497,6 +853,79 @@
                 const editingConnId = ref('');
 
                 // --- Computed ---
+                const syncTasks = computed(() => tasks.value.filter(t => t.type !== 'monitor'));
+                        const monitorTasks = computed(() => tasks.value.filter(t => t.type === 'monitor'));
+                        let overviewCanvas = null, overviewCtx = null;
+                        const _drawOverviewRing = (running, stopped, error) => {
+                            const el = document.getElementById('syncStatusRingCanvas');
+                            if (!el) return;
+                            const dpr = window.devicePixelRatio || 1;
+                            const cssW = el.parentElement ? el.parentElement.clientWidth - 12 : 360;
+                            const cssH = 140;
+                            el.width = Math.max(240, cssW) * dpr;
+                            el.height = cssH * dpr;
+                            el.style.width = Math.max(240, cssW) + 'px';
+                            el.style.height = cssH + 'px';
+                            const ctx = el.getContext('2d');
+                            ctx.setTransform(dpr,0,0,dpr,0,0);
+                            ctx.clearRect(0,0,cssW,cssH);
+                            const values = [running, stopped, error];
+                            const colors = ['#67C23A', '#909399', '#F56C6C'];
+                            const labels = ['运行中', '已停止', '错误'];
+                            const total = Math.max(1, running + stopped + error);
+                            const cx = cssW/2, cy = cssH/2 + 4;
+                            const R = Math.min(cssW, cssH) * 0.38;
+                            const thickness = Math.max(10, R * 0.28);
+                            // track background
+                            ctx.beginPath();
+                            ctx.arc(cx, cy, R, 0, Math.PI*2);
+                            ctx.strokeStyle = '#ebeef5';
+                            ctx.lineWidth = thickness;
+                            ctx.stroke();
+                            let start = -Math.PI/2;
+                            for (let i=0;i<values.length;i++){
+                                const frac = values[i] / total;
+                                const end = start + frac * Math.PI*2;
+                                ctx.beginPath();
+                                ctx.arc(cx, cy, R, start, end);
+                                const grad = ctx.createLinearGradient(cx - R, cy - R, cx + R, cy + R);
+                                grad.addColorStop(0, colors[i]);
+                                grad.addColorStop(1, '#ffffff');
+                                ctx.strokeStyle = grad;
+                                ctx.lineCap = 'round';
+                                ctx.lineWidth = thickness;
+                                ctx.stroke();
+                                start = end;
+                            }
+                            // center text
+                            ctx.fillStyle = '#303133';
+                            ctx.font = '600 18px system-ui';
+                            ctx.textAlign = 'center';
+                            ctx.fillText(total + ' 任务', cx, cy+6);
+                            const lx = 14, ly = 18;
+                            ctx.textBaseline = 'middle';
+                            const colW = cssW / 3;
+                            const legendX = Math.floor(colW * 0.7) + lx; // 更靠左的第二列位置
+                            for (let i=0;i<labels.length;i++){
+                                const y = ly + i*24;
+                                ctx.fillStyle = '#000';
+                                ctx.font = '500 12px system-ui';
+                                ctx.fillText(labels[i] + '：' + values[i], legendX, y);
+                            }
+                        };
+                        const _updateOverview = () => {
+                            overview.sync = syncTasks.value.length;
+                            overview.monitor = monitorTasks.value.length;
+                            overview.all = tasks.value.length;
+                            const running = syncTasks.value.filter(t => t.status === 'running').length;
+                            const stopped = syncTasks.value.filter(t => t.status === 'stopped').length;
+                            const error = syncTasks.value.filter(t => t.status === 'error').length;
+                            _drawOverviewRing(running, stopped, error);
+                        };
+                        onMounted(() => {
+                            _updateOverview();
+                        });
+                        watch(tasks, () => _updateOverview(), { deep: true });
                 const mysqlConnections = computed(() => connections.value.filter(c => c.type === 'mysql'));
                 const mongoConnections = computed(() => connections.value.filter(c => c.type === 'mongo'));
 
@@ -505,6 +934,10 @@
                     currentView.value = index;
                     if (index === 'connections') fetchConnections();
                     if (index === 'dashboard' || index === 'tasks') fetchTasks();
+                    if (index === 'monitor') {
+                        fetchMonitorStatus();
+                        fetchMonitorConfig();
+                    }
                 };
 
                 const fetchTasks = async () => {
@@ -523,6 +956,9 @@
                 setInterval(() => {
                     if (currentView.value === 'dashboard' || currentView.value === 'tasks') {
                         fetchTasks();
+                    }
+                    if (currentView.value === 'monitor') {
+                        fetchMonitorStatus();
                     }
                 }, 3000);
 
@@ -865,10 +1301,17 @@
                     const data = await res.json();
                     const m = (data.metrics || {});
                     const prev = [metricsCounts.full, metricsCounts.inc, metricsCounts.update, metricsCounts.delete];
-                    metricsCounts.full = m.full_insert_count || 0;
-                    metricsCounts.inc = m.inc_insert_count || 0;
-                    metricsCounts.update = m.update_count || 0;
-                    metricsCounts.delete = m.delete_count || 0;
+                    if (id === 'monitor') {
+                        metricsCounts.full = m.error_count || 0;
+                        metricsCounts.inc = m.warn_count || 0;
+                        metricsCounts.update = m.info_count || 0;
+                        metricsCounts.delete = m.other_count || 0;
+                    } else {
+                        metricsCounts.full = m.full_insert_count || 0;
+                        metricsCounts.inc = m.inc_insert_count || 0;
+                        metricsCounts.update = m.update_count || 0;
+                        metricsCounts.delete = m.delete_count || 0;
+                    }
                     _animateCounts(prev, [metricsCounts.full, metricsCounts.inc, metricsCounts.update, metricsCounts.delete]);
                     
                     const deltaFull = Math.max(0, metricsCounts.full - prev[0]);
@@ -914,8 +1357,8 @@
                     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
                     ctx.clearRect(0, 0, cssW, cssH);
                     const values = [metricsCounts.full, metricsCounts.inc, metricsCounts.update, metricsCounts.delete];
-                    const colors = ['#409EFF', '#67C23A', '#E6A23C', '#F56C6C'];
-                    const labels = ['Full', 'Inc', 'Update', 'Delete'];
+                    const labels = metricsTaskId.value === 'monitor' ? ['Error', 'Warn', 'Info', 'Other'] : ['Full', 'Inc', 'Update', 'Delete'];
+                    const colors = metricsTaskId.value === 'monitor' ? ['#F56C6C', '#E6A23C', '#409EFF', '#909399'] : ['#409EFF', '#67C23A', '#E6A23C', '#F56C6C'];
                     const duration = 400;
                     const start = performance.now();
                     const from = metricsLast.slice();
@@ -1066,6 +1509,20 @@
                         { data: trendData.update, color: '#E6A23C' },
                         { data: trendData.delete, color: '#F56C6C' },
                     ];
+                    const allZero = series.every(s => s.data.every(v => v === 0));
+                    if (allZero) {
+                        ctx.strokeStyle = '#e5e5e5';
+                        ctx.lineWidth = 1;
+                        ctx.beginPath();
+                        ctx.moveTo(padding, cssH - padding);
+                        ctx.lineTo(cssW - padding, cssH - padding);
+                        ctx.stroke();
+                        ctx.fillStyle = '#999';
+                        ctx.font = '12px system-ui';
+                        ctx.textAlign = 'center';
+                        ctx.fillText('No Data', cssW/2, cssH/2);
+                        return;
+                    }
                     const maxY = Math.max(1, ...series.map(s => Math.max(...s.data)));
                     series.forEach((s, idx) => {
                         const grad = ctx.createLinearGradient(padding, padding, padding, cssH-padding);
@@ -1131,13 +1588,86 @@
                     const t = tasks.value.find(x => x.task_id === id);
                     if (!t || !t.metrics) return;
                     const prev = [metricsCounts.full, metricsCounts.inc, metricsCounts.update, metricsCounts.delete];
-                    metricsCounts.full = t.metrics.full_insert_count || 0;
-                    metricsCounts.inc = t.metrics.inc_insert_count || 0;
-                    metricsCounts.update = t.metrics.update_count || 0;
-                    metricsCounts.delete = t.metrics.delete_count || 0;
+                    if (id === 'monitor') {
+                        metricsCounts.full = t.metrics.error_count || 0;
+                        metricsCounts.inc = t.metrics.warn_count || 0;
+                        metricsCounts.update = t.metrics.info_count || 0;
+                        metricsCounts.delete = t.metrics.other_count || 0;
+                    } else {
+                        metricsCounts.full = t.metrics.full_insert_count || 0;
+                        metricsCounts.inc = t.metrics.inc_insert_count || 0;
+                        metricsCounts.update = t.metrics.update_count || 0;
+                        metricsCounts.delete = t.metrics.delete_count || 0;
+                    }
                     _animateCounts(prev, [metricsCounts.full, metricsCounts.inc, metricsCounts.update, metricsCounts.delete]);
                     _drawTrend();
                     _drawMetricsChart();
+                };
+
+                const fetchMonitorStatus = async () => {
+                    try {
+                        const res = await fetch('/monitor/status');
+                        if (res.ok) {
+                            monitorStatus.value = await res.json();
+                        }
+                    } catch (e) { console.error(e); }
+                };
+
+                const fetchMonitorConfig = async () => {
+                    try {
+                        const res = await fetch('/monitor/config');
+                        if (res.ok) {
+                            monitorConfig.value = await res.json();
+                        }
+                    } catch (e) { console.error(e); }
+                };
+
+                const startMonitor = async () => {
+                    monitorActionLoading.value = true;
+                    try {
+                        const res = await fetch('/monitor/start', { method: 'POST' });
+                        if (res.ok) {
+                            ElMessage.success('Monitor started');
+                            fetchMonitorStatus();
+                        } else {
+                            let err = {};
+                            try { err = await res.json(); } catch(_) {}
+                            ElMessage.error('Failed to start monitor: ' + (err.detail || res.statusText));
+                        }
+                    } catch (e) { ElMessage.error(e.message); }
+                    finally { monitorActionLoading.value = false; }
+                };
+
+                const stopMonitor = async () => {
+                    monitorActionLoading.value = true;
+                    try {
+                        const res = await fetch('/monitor/stop', { method: 'POST' });
+                        if (res.ok) {
+                            ElMessage.success('Monitor stopped');
+                            fetchMonitorStatus();
+                        } else {
+                            ElMessage.error('Failed to stop monitor');
+                        }
+                    } catch (e) { ElMessage.error(e.message); }
+                    finally { monitorActionLoading.value = false; }
+                };
+
+                const saveMonitorConfig = async () => {
+                    monitorSaving.value = true;
+                    try {
+                        const res = await fetch('/monitor/config', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(monitorConfig.value)
+                        });
+                        if (res.ok) {
+                            ElMessage.success('Configuration saved & monitor restarted');
+                            fetchMonitorStatus();
+                        } else {
+                            ElMessage.error('Failed to save configuration');
+                        }
+                    } catch (e) { ElMessage.error(e.message); }
+                    finally { monitorSaving.value = false; }
                 };
 
                 const createTask = async () => {
@@ -1245,7 +1775,7 @@
                 });
 
                 return {
-                    currentView, tasks, connections,
+                    currentView, tasks, connections, syncTasks, monitorTasks, overview, collapseSync, collapseMonitor,
                     createVisible, activeStep, creating, form,
                     sourceSelectionMode, targetSelectionMode, selectedSourceId, selectedTargetId,
                     connVisible, connForm, editingConnId,
@@ -1262,7 +1792,10 @@
                     // mysql db/table selects
                     mysqlDbList, mysqlTableList, selectedDatabase, selectedTables,
                     loadMysqlDatabasesSaved, loadMysqlDatabasesManual, loadMysqlTables,
-                    createTask, getStatusType, formatTime
+                    createTask, getStatusType, formatTime,
+                    // monitor
+                    monitorStatus, monitorConfig, monitorActionLoading, monitorSaving,
+                    startMonitor, stopMonitor, saveMonitorConfig
                 };
             }
         });
