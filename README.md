@@ -83,7 +83,7 @@ graph TB
 *   **💾 断点续传**: 自动记录同步进度，服务崩溃或重启后自动恢复，保证数据不重不漏。
 *   **⚡ 高性能引擎**: 全量阶段采用**并行预取**与 `insert_many` 快速路径，增量阶段支持**批量聚合**写入。
 *   **🛡️ 自适应速率限制 (Adaptive Rate Limiter)**: 根据系统 LoadAvg 与 CPU 使用率自动调节同步速率，防止在业务高峰期占用过多资源。
-*   **🚨 智能监控与告警**: 集成日志关键词监控与 Slack 告警，自动发现并通知异常日志。
+*   **🚨 智能监控与告警**: 集成日志关键词监控与 Slack 告警，支持**仅记录不告警**模式，灵活控制通知噪声。
 
 ---
 
@@ -135,12 +135,20 @@ graph TB
 
 2.  **启动服务**
     ```bash
+    # 创建必要的挂载目录
+    mkdir -p configs state connections configs_keys logs
+
+    # 启动容器
     docker run -d \
       --name mysql-to-mongo \
       -p 8000:8000 \
       -e PYTHONUNBUFFERED=1 \
+      -e TZ=Asia/Shanghai \
       -v $(pwd)/configs:/app/configs \
       -v $(pwd)/state:/app/state \
+      -v $(pwd)/connections:/app/connections \
+      -v $(pwd)/configs_keys:/app/configs_keys \
+      -v $(pwd)/logs:/app/logs \
       --restart unless-stopped \
       mysql-to-mongo:v1.1.0
     ```
@@ -170,7 +178,7 @@ graph TB
 
 ## ⚙️ 性能调优 (Performance Tuning)
 
-针对亿级数据量的同步需求，系统提供了多项性能与资源控制参数：
+针对十亿级数据量的同步需求，系统提供了多项性能与资源控制参数，您可以在任务配置文件中进行调整：
 
 | 参数 | 默认值 | 说明 |
 | :--- | :--- | :--- |
@@ -178,7 +186,24 @@ graph TB
 | `prefetch_queue_size` | `2` | 全量同步的 MySQL 读取预取队列大小，实现读写并行。资源充足时可调大至 3-5。 |
 | `rate_limit_enabled` | `true` | 是否启用自适应速率限制器。 |
 | `max_load_avg_ratio` | `0.8` | 触发限速的系统负载阈值（LoadAvg / CPU核心数）。建议设置为 0.6-0.8。 |
+| `min_sleep_ms` | `5` | 触发限速时的最小休眠时间（毫秒）。 |
+| `max_sleep_ms` | `200` | 触发限速时的最大休眠时间（毫秒），系统会根据负载超出的程度在此范围内动态调整。 |
 | `mongo_compressors` | `["snappy", "zlib"]` | MongoDB 网络传输压缩算法，有效降低带宽占用。 |
+
+### 🛡️ 自适应速率限制器详解 (Adaptive Rate Limiter)
+
+为了防止同步任务在业务高峰期占用过多的 CPU 或 I/O 资源，系统内置了智能限速机制。
+
+**工作原理：**
+1.  **系统负载监控**: 实时采集操作系统的 Load Average (1分钟均值)。
+2.  **阈值判断**: 计算 `Current Load / CPU Cores`，若超过配置的 `max_load_avg_ratio` (默认 0.8)，则判定为系统过载。
+3.  **写入延迟反馈**: 监控 MongoDB 的写入延迟（Moving Average），若延迟显著升高，也会触发限速。
+4.  **动态休眠**: 一旦触发限速，同步线程会在每批次写入后自动休眠。休眠时间根据负载超出的程度在 `min_sleep_ms` 到 `max_sleep_ms` 之间线性增加。
+
+**优化建议：**
+*   **资源敏感型环境**: 将 `max_load_avg_ratio` 调低至 `0.5` - `0.6`。
+*   **追求极致速度**: 若运行在专用同步机器上，可将 `rate_limit_enabled` 设置为 `false` 关闭限速。
+
 
 ---
 
@@ -252,7 +277,7 @@ mysql_to_mongo/
 *   **Performance**: 全量同步引入 MySQL 预取队列与 `insert_many` 快速路径，大幅提升吞吐量。
 *   **Feature**: 新增自适应速率限制器 (Adaptive Rate Limiter)，根据系统负载动态调整同步速率。
 *   **Feature**: 启用 MongoDB 网络压缩 (Snappy/Zlib)，降低带宽占用。
-*   **Feature**: 增加 Monitor 任务类型，支持日志关键词监控与告警。
+*   **Feature**: 增加 Monitor 任务类型，支持日志关键词监控与告警，新增"仅记录(Record Only)"模式。
 *   **UI**: 仪表盘全新改版，支持响应式布局、环形图概览与可折叠面板。
 *   **Optimization**: 移除 ECharts 依赖，改用原生 Canvas 绘制图表，提升加载速度并解决 CSP 问题。
 
@@ -268,7 +293,7 @@ mysql_to_mongo/
 *   支持 MySQL 全量导出至 MongoDB
 *   支持 Binlog 增量实时同步
 
----
+---   
 
 ## 📄 许可证 (License)
 
