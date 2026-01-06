@@ -17,9 +17,8 @@ class Converter:
         self.DEC_SCALE = dec_scale
         self.DEC_Q = Decimal("1").scaleb(-self.DEC_SCALE)
 
-        # ✅ 关键：限制 decimal 上下文，防止 InvalidOperation
         ctx = getcontext()
-        ctx.prec = 38          # MySQL DECIMAL 最大 65，这里够用
+        ctx.prec = 38
         ctx.traps[InvalidOperation] = False
         self.pk_field = pk_field
         self.use_pk_as_mongo_id = use_pk_as_mongo_id
@@ -63,6 +62,8 @@ class Converter:
                     doc[f"{k}_str"] = format(dq, "f")
                 else:
                     doc[k] = None
+            else:
+                doc[k] = self.convert_value(v)
 
         if self.use_pk_as_mongo_id:
             for kk, vv in row.items():

@@ -1113,21 +1113,13 @@
                 };
 
                 const _buildMysqlConnForQuery = async (fromManual = false) => {
-                    if (sourceSelectionMode.value === 'saved' && !fromManual) {
-                        if (!selectedSourceId.value) throw new Error('请选择 MySQL 连接');
-                        const res = await fetch('/connections/' + selectedSourceId.value);
-                        if (!res.ok) throw new Error('加载连接失败');
-                        const cfg = await res.json();
-                        return { id: cfg.id || 'tmp', name: cfg.name || '', type: 'mysql', host: cfg.host, port: cfg.port, user: cfg.user, password: cfg.password, database: selectedDatabase.value || '' };
-                    } else {
-                        return { id: 'manual', name: 'manual', type: 'mysql', host: form.mysql.host, port: form.mysql.port, user: form.mysql.user, password: form.mysql.password, database: selectedDatabase.value || '' };
-                    }
+                    // Manual mode builds full payload with password from user input
+                    return { id: 'manual', name: 'manual', type: 'mysql', host: form.mysql.host, port: form.mysql.port, user: form.mysql.user, password: form.mysql.password, database: selectedDatabase.value || '' };
                 };
                 const loadMysqlDatabasesSaved = async () => {
                     try {
                         if (!selectedSourceId.value) return;
-                        const conn = await _buildMysqlConnForQuery(false);
-                        const res = await fetch('/mysql/databases', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(conn) });
+                        const res = await fetch('/mysql/databases_by_id/' + selectedSourceId.value, { method: 'POST' });
                         const data = await res.json();
                         mysqlDbList.value = data.databases || [];
                     } catch(e) { ElMessage.error(e.message); }
@@ -1143,9 +1135,14 @@
                 const loadMysqlTables = async (fromManual = false) => {
                     try {
                         if (!selectedDatabase.value) return;
-                        const conn = await _buildMysqlConnForQuery(!!fromManual);
-                        conn.database = selectedDatabase.value;
-                        const res = await fetch('/mysql/tables', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(conn) });
+                        let res;
+                        if (sourceSelectionMode.value === 'saved' && !fromManual) {
+                            res = await fetch('/mysql/tables_by_id/' + selectedSourceId.value, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ database: selectedDatabase.value }) });
+                        } else {
+                            const conn = await _buildMysqlConnForQuery(true);
+                            conn.database = selectedDatabase.value;
+                            res = await fetch('/mysql/tables', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(conn) });
+                        }
                         const data = await res.json();
                         mysqlTableList.value = data.tables || [];
                     } catch(e) { ElMessage.error(e.message); }
@@ -1846,39 +1843,55 @@
                     // If full, table_map stays empty to trigger auto-discovery logic in worker
 
                     // Fill MySQL Config
-                    if (sourceSelectionMode.value === 'saved' && selectedSourceId.value) {
-                        const res = await fetch('/connections/' + selectedSourceId.value);
-                        if (!res.ok) throw new Error('Failed to fetch source config');
-                        const cfg = await res.json();
-                        payload.mysql_conf = cfg;
-                    } else {
+                    const useSavedSource = (sourceSelectionMode.value === 'saved' && !!selectedSourceId.value);
+                    const useSavedTarget = (targetSelectionMode.value === 'saved' && !!selectedTargetId.value);
+                    if (!useSavedSource) {
                         payload.mysql_conf = {...form.mysql};
                     }
                     if (!selectedDatabase.value) {
                         ElMessage.error('请选择 MySQL 数据库');
                         return;
                     }
-                    payload.mysql_conf.database = selectedDatabase.value;
+                    if (payload.mysql_conf) {
+                        payload.mysql_conf.database = selectedDatabase.value;
+                    }
 
                     // Fill Mongo Config
-                    if (targetSelectionMode.value === 'saved' && selectedTargetId.value) {
-                        const res = await fetch('/connections/' + selectedTargetId.value);
-                        if (!res.ok) throw new Error('Failed to fetch target config');
-                        const cfg = await res.json();
-                        payload.mongo_conf = cfg;
-                        // Allow override DB
-                        if (form.mongo.database) payload.mongo_conf.database = form.mongo.database;
-                    } else {
+                    if (!useSavedTarget) {
                         payload.mongo_conf = {...form.mongo};
+                        if (!payload.mongo_conf.database) payload.mongo_conf.database = form.mongo.database || '';
                     }
 
                     creating.value = true;
                     try {
-                        const res = await fetch('/tasks/start', {
-                            method: 'POST',
-                            headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify(payload)
-                        });
+                        let res;
+                        if (useSavedSource || useSavedTarget) {
+                            const body = {
+                                task_id: payload.task_id,
+                                table_map: payload.table_map,
+                                pk_field: payload.pk_field,
+                                update_insert_new_doc: payload.update_insert_new_doc,
+                                delete_append_new_doc: payload.delete_append_new_doc,
+                                auto_discover_new_tables: payload.auto_discover_new_tables,
+                                source_conn_id: useSavedSource ? selectedSourceId.value : null,
+                                target_conn_id: useSavedTarget ? selectedTargetId.value : null,
+                                mysql_database: selectedDatabase.value,
+                                mongo_database: form.mongo.database || '',
+                                mysql_conf_override: useSavedSource ? undefined : payload.mysql_conf,
+                                mongo_conf_override: useSavedTarget ? undefined : payload.mongo_conf,
+                            };
+                            res = await fetch('/tasks/start_with_conn_ids', {
+                                method: 'POST',
+                                headers: {'Content-Type': 'application/json'},
+                                body: JSON.stringify(body)
+                            });
+                        } else {
+                            res = await fetch('/tasks/start', {
+                                method: 'POST',
+                                headers: {'Content-Type': 'application/json'},
+                                body: JSON.stringify(payload)
+                            });
+                        }
                         if (res.ok) {
                             ElMessage.success('Task Started');
                             createVisible.value = false;

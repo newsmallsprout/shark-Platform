@@ -1,5 +1,6 @@
 # app/api/routes.py
 from fastapi import APIRouter, HTTPException, Response, Request
+    from fastapi import Body
 import hashlib
 import json
 import time
@@ -15,6 +16,7 @@ from app.monitor.engine import monitor_engine
 from app.monitor.store import save_monitor_config
 import os
 import pymysql
+from typing import Optional, Dict, Any
 
 router = APIRouter()
 
@@ -194,6 +196,38 @@ def list_mysql_databases(conn: ConnectionConfig):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"List databases failed: {str(e)[:200]}")
 
+@router.post("/mysql/databases_by_id/{conn_id}")
+def list_mysql_databases_by_id(conn_id: str):
+    cfg = connection_store.load(conn_id)
+    if not cfg:
+        raise HTTPException(status_code=404, detail="Connection not found")
+    if isinstance(cfg, dict) and cfg.get("type") != "mysql":
+        raise HTTPException(status_code=400, detail="Expect mysql connection")
+    try:
+        kwargs = dict(
+            host=cfg.get("host"),
+            port=int(cfg.get("port")),
+            user=cfg.get("user"),
+            passwd=cfg.get("password"),
+            connect_timeout=5,
+            read_timeout=5,
+            write_timeout=5,
+        )
+        try:
+            c = _mysql_connect_with_fallback(kwargs)
+        except Exception:
+            raise
+        try:
+            with c.cursor() as cur:
+                cur.execute("SHOW DATABASES")
+                rows = [r[0] for r in cur.fetchall()]
+        finally:
+            c.close()
+        filtered = [d for d in rows if d not in ("information_schema", "performance_schema", "mysql", "sys")]
+        return {"databases": filtered}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"List databases failed: {str(e)[:200]}")
+
 @router.post("/mysql/tables")
 def list_mysql_tables(conn: ConnectionConfig):
     if conn.type != "mysql":
@@ -207,6 +241,41 @@ def list_mysql_tables(conn: ConnectionConfig):
             user=conn.user,
             passwd=conn.password,
             db=conn.database,
+            connect_timeout=5,
+            read_timeout=5,
+            write_timeout=5,
+        )
+        try:
+            c = _mysql_connect_with_fallback(kwargs)
+        except Exception:
+            raise
+        try:
+            with c.cursor() as cur:
+                cur.execute("SHOW TABLES")
+                rows = [r[0] for r in cur.fetchall()]
+        finally:
+            c.close()
+        return {"tables": rows}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"List tables failed: {str(e)[:200]}")
+
+@router.post("/mysql/tables_by_id/{conn_id}")
+def list_mysql_tables_by_id(conn_id: str, payload: dict = Body(...)):
+    cfg = connection_store.load(conn_id)
+    if not cfg:
+        raise HTTPException(status_code=404, detail="Connection not found")
+    if isinstance(cfg, dict) and cfg.get("type") != "mysql":
+        raise HTTPException(status_code=400, detail="Expect mysql connection")
+    database = (payload or {}).get("database")
+    if not database:
+        raise HTTPException(status_code=400, detail="Database is required")
+    try:
+        kwargs = dict(
+            host=cfg.get("host"),
+            port=int(cfg.get("port")),
+            user=cfg.get("user"),
+            passwd=cfg.get("password"),
+            db=database,
             connect_timeout=5,
             read_timeout=5,
             write_timeout=5,
@@ -242,6 +311,120 @@ def get_tasks_status():
 def start_task(cfg: SyncTaskRequest):
     task_manager.start(cfg)
     return {"msg": "started", "task_id": cfg.task_id}
+
+@router.post("/tasks/start_with_conn_ids")
+def start_task_with_conn_ids(payload: Dict[str, Any] = Body(...)):
+    try:
+        task_id = payload.get("task_id")
+        if not task_id:
+            raise HTTPException(status_code=400, detail="task_id is required")
+        source_conn_id: Optional[str] = payload.get("source_conn_id")
+        target_conn_id: Optional[str] = payload.get("target_conn_id")
+        mysql_db: Optional[str] = payload.get("mysql_database")
+        mongo_db_override: Optional[str] = payload.get("mongo_database")
+        table_map: Dict[str, str] = payload.get("table_map") or {}
+        pk_field: str = payload.get("pk_field") or "id"
+        update_insert_new_doc: bool = bool(payload.get("update_insert_new_doc"))
+        delete_append_new_doc: bool = bool(payload.get("delete_append_new_doc"))
+        auto_discover_new_tables: bool = bool(payload.get("auto_discover_new_tables"))
+
+        if not mysql_db:
+            raise HTTPException(status_code=400, detail="mysql_database is required")
+
+        # Build MySQL DBConfig (prefer saved connection if provided)
+        mysql_conf: Optional[DBConfig] = None
+        if source_conn_id:
+            src = connection_store.load(source_conn_id)
+            if not src:
+                raise HTTPException(status_code=404, detail="Source connection not found")
+            if src.get("type") != "mysql":
+                raise HTTPException(status_code=400, detail="Source connection must be mysql")
+            mysql_conf = DBConfig(
+                host=src.get("host"),
+                port=int(src.get("port")),
+                user=src.get("user"),
+                password=src.get("password"),
+                database=mysql_db,
+            )
+        else:
+            override = payload.get("mysql_conf_override") or {}
+            try:
+                mysql_conf = DBConfig(
+                    host=override.get("host"),
+                    port=int(override.get("port")),
+                    user=override.get("user"),
+                    password=override.get("password"),
+                    database=mysql_db,
+                )
+            except Exception:
+                raise HTTPException(status_code=400, detail="Invalid mysql_conf_override")
+
+        # Build Mongo DBConfig (prefer saved connection if provided)
+        mongo_conf: Optional[DBConfig] = None
+        if target_conn_id:
+            tgt = connection_store.load(target_conn_id)
+            if not tgt:
+                raise HTTPException(status_code=404, detail="Target connection not found")
+            if tgt.get("type") != "mongo":
+                raise HTTPException(status_code=400, detail="Target connection must be mongo")
+            base_db = mongo_db_override or tgt.get("database") or "sync_db"
+            if tgt.get("hosts"):
+                mongo_conf = DBConfig(
+                    hosts=tgt.get("hosts"),
+                    replica_set=tgt.get("replica_set"),
+                    user=tgt.get("user"),
+                    password=tgt.get("password"),
+                    database=base_db,
+                )
+            else:
+                mongo_conf = DBConfig(
+                    host=tgt.get("host"),
+                    port=int(tgt.get("port") or 27017),
+                    user=tgt.get("user"),
+                    password=tgt.get("password"),
+                    database=base_db,
+                )
+        else:
+            override = payload.get("mongo_conf_override") or {}
+            try:
+                base_db = mongo_db_override or override.get("database") or "sync_db"
+                if override.get("hosts"):
+                    mongo_conf = DBConfig(
+                        hosts=override.get("hosts"),
+                        replica_set=override.get("replica_set"),
+                        user=override.get("user"),
+                        password=override.get("password"),
+                        database=base_db,
+                    )
+                else:
+                    mongo_conf = DBConfig(
+                        host=override.get("host"),
+                        port=int(override.get("port") or 27017),
+                        user=override.get("user"),
+                        password=override.get("password"),
+                        database=base_db,
+                    )
+            except Exception:
+                raise HTTPException(status_code=400, detail="Invalid mongo_conf_override")
+
+        # Compose SyncTaskRequest
+        req = SyncTaskRequest(
+            task_id=task_id,
+            mysql_conf=mysql_conf,
+            mongo_conf=mongo_conf,
+            table_map=table_map,
+            pk_field=pk_field,
+            update_insert_new_doc=update_insert_new_doc,
+            insert_only=False,
+            handle_deletes=True,
+            auto_discover_new_tables=auto_discover_new_tables,
+        )
+        task_manager.start(req)
+        return {"msg": "started", "task_id": task_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Start with conn ids failed: {str(e)[:200]}")
 
 @router.post("/tasks/start_existing/{task_id}")
 def start_existing(task_id: str):
