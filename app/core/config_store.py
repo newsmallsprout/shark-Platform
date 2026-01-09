@@ -23,8 +23,11 @@ def delete_task_config(task_id: str):
 
 def iter_task_config_files():
     for name in os.listdir(TASK_CONFIG_DIR):
-        if name.endswith(".json"):
-            yield os.path.join(TASK_CONFIG_DIR, name)
+        if not name.endswith(".json"):
+            continue
+        if name == "monitor.json":
+            continue
+        yield os.path.join(TASK_CONFIG_DIR, name)
 
 
 def load_task_config_file(path: str) -> dict:

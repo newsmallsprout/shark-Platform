@@ -25,6 +25,8 @@ from app.sync.convert import Converter
 from app.sync.mongo_writer import MongoWriter
 from app.sync.mysql_introspector import MySQLIntrospector
 from app.sync.flush_buffer import FlushBuffer
+from queue import Queue
+from app.sync.rate_limiter import RateLimiter
 
 
 class SyncWorker:
@@ -49,20 +51,43 @@ class SyncWorker:
 
         if cfg.mysql_conf.use_ssl:
             ssl_args = {}
+            # If explicit certs provided, use them
             if cfg.mysql_conf.ssl_ca:
                 ssl_args["ca"] = cfg.mysql_conf.ssl_ca
             if cfg.mysql_conf.ssl_cert:
                 ssl_args["cert"] = cfg.mysql_conf.ssl_cert
             if cfg.mysql_conf.ssl_key:
                 ssl_args["key"] = cfg.mysql_conf.ssl_key
-
-            if not cfg.mysql_conf.ssl_verify_cert:
-                ssl_args["check_hostname"] = False
-                ssl_args["verify_mode"] = _ssl.CERT_NONE
-            else:
-                ssl_args["verify_mode"] = _ssl.CERT_REQUIRED
-
+            # If no certs provided, enable TLS without verification (server enforces secure transport)
+            if not ssl_args:
+                ssl_args = {}
             self.mysql_settings["ssl"] = ssl_args
+        else:
+            try:
+                _kw = {k: v for k, v in self.mysql_settings.items() if k != "cursorclass"}
+                c = pymysql.connect(**_kw)
+                c.close()
+            except Exception as e:
+                s = str(e)
+                if ("require_secure_transport" in s) or ("3159" in s) or ("Bad handshake" in s) or ("1043" in s):
+                    self.mysql_settings["ssl"] = {}
+        # Final fallback: ensure TLS handshake succeeds
+        try:
+            _kw = {k: v for k, v in self.mysql_settings.items() if k != "cursorclass"}
+            c = pymysql.connect(**_kw)
+            c.close()
+        except Exception as e1:
+            msg = str(e1)
+            if ("require_secure_transport" in msg) or ("3159" in msg) or ("Bad handshake" in msg) or ("1043" in msg):
+                for ssl_opt in ({}, {"fake_flag_to_enable_tls": True}, {"check_hostname": False, "verify_mode": _ssl.CERT_NONE}):
+                    try:
+                        self.mysql_settings["ssl"] = ssl_opt
+                        _kw = {k: v for k, v in self.mysql_settings.items() if k != "cursorclass"}
+                        c = pymysql.connect(**_kw)
+                        c.close()
+                        break
+                    except Exception:
+                        continue
 
         # --- mongo ---
         mongo_uri = build_mongo_uri(cfg.mongo_conf)
@@ -74,6 +99,7 @@ class SyncWorker:
             retryWrites=True,
             socketTimeoutMS=int(cfg.mongo_socket_timeout_ms or 20000),
             connectTimeoutMS=int(cfg.mongo_connect_timeout_ms or 10000),
+            compressors=cfg.mongo_compressors or None,
         )
         self.mongo_db = self.mongo[cfg.mongo_conf.database or "sync_db"]
 
@@ -89,12 +115,42 @@ class SyncWorker:
             converter=self.converter,
         )
         self.mongo_writer = MongoWriter(cfg.task_id, self.stop_event)
+        self.rate = RateLimiter(cfg)
 
         self._last_state_save_ts = 0.0
         self._last_progress_ts = 0.0
 
         self._auto_mode = (not bool(cfg.table_map))
         self._table_refresh_ts_holder = {"ts": 0.0}
+
+        # Status tracking
+        self._status = "initializing"
+        self._metrics = {
+            "phase": "init",
+            "current_table": "",
+            "processed_count": 0,
+            "speed": 0,
+            "binlog_file": "",
+            "binlog_pos": 0,
+            "last_update": time.time(),
+            "insert_count": 0,
+            "full_insert_count": 0,
+            "inc_insert_count": 0,
+            "update_count": 0,
+            "delete_count": 0
+        }
+
+    def get_status(self) -> Dict[str, Any]:
+        return {
+            "task_id": self.cfg.task_id,
+            "status": self._status,
+            "metrics": self._metrics,
+            "config": {
+                "mysql": f"{self.cfg.mysql_conf.host}:{self.cfg.mysql_conf.port}",
+                "mongo": f"{self.cfg.mongo_conf.host}:{self.cfg.mongo_conf.port}",
+                "tables": list(self.cfg.table_map.keys()) if self.cfg.table_map else ["*"]
+            }
+        }
 
     def stop(self):
         self.stop_event.set()
@@ -112,7 +168,7 @@ class SyncWorker:
         interval = max(1, int(self.cfg.state_save_interval_sec or 2))
         if now - self._last_state_save_ts >= interval:
             if log_file and log_pos:
-                save_state(self.cfg.task_id, log_file, log_pos)
+                save_state(self.cfg.task_id, log_file, log_pos, self._metrics)
             self._last_state_save_ts = now
 
     def _maybe_progress_log(self, msg: str):
@@ -145,16 +201,29 @@ class SyncWorker:
     # =========================
     def run(self):
         log(self.cfg.task_id, f"Task started (HardDelete={self.cfg.hard_delete})")
+        self._status = "running"
         try:
             self._auto_build_table_map_if_needed()
             state = load_state(self.cfg.task_id)
 
             if not state:
+                self._metrics["phase"] = "full_sync"
                 self.do_full_sync()
+                self._metrics["phase"] = "inc_sync"
                 self.do_inc_sync_with_reconnect(None, None)
             else:
+                # Restore metrics if available
+                if "metrics" in state and isinstance(state["metrics"], dict):
+                    saved_metrics = state["metrics"]
+                    for k in ["processed_count", "full_insert_count", "inc_insert_count", "update_count", "delete_count"]:
+                        if k in saved_metrics:
+                            self._metrics[k] = saved_metrics[k]
+
+                self._metrics["phase"] = "inc_sync"
                 self.do_inc_sync_with_reconnect(state.get("log_file"), state.get("log_pos"))
         except Exception as e:
+            self._status = "error"
+            self._metrics["error"] = str(e)
             log(self.cfg.task_id, f"CRASH {type(e).__name__}: {str(e)[:300]}")
 
     def do_full_sync(self):
@@ -180,38 +249,85 @@ class SyncWorker:
                     ops: List = []
                     start = time.time()
                     log(self.cfg.task_id, f"FullSync table={table} -> collection={coll_name}")
-
-                    while not self.stop_event.is_set():
-                        if last_id is None:
-                            c.execute(f"SELECT * FROM `{table}` ORDER BY `{pk}` LIMIT %s", (mysql_batch,))
-                        else:
-                            c.execute(
-                                f"SELECT * FROM `{table}` WHERE `{pk}` > %s ORDER BY `{pk}` LIMIT %s",
-                                (last_id, mysql_batch),
-                            )
-                        rows = c.fetchall()
-                        if not rows:
-                            break
-
-                        for r in rows:
-                            if pk in r:
-                                last_id = r[pk]
-
-                            doc = self.converter.row_to_base_doc(r)
-                            if self.cfg.use_pk_as_mongo_id and "_id" in doc:
-                                ops.append(ReplaceOne({"_id": doc["_id"]}, doc, upsert=True))
+                    
+                    self._metrics["current_table"] = table
+                    q = Queue(maxsize=max(1, int(self.cfg.prefetch_queue_size or 2)))
+                    def _producer():
+                        nonlocal last_id
+                        while not self.stop_event.is_set():
+                            if last_id is None:
+                                c.execute(f"SELECT * FROM `{table}` ORDER BY `{pk}` LIMIT %s", (mysql_batch,))
                             else:
-                                ops.append(InsertOne(doc))
+                                c.execute(
+                                    f"SELECT * FROM `{table}` WHERE `{pk}` > %s ORDER BY `{pk}` LIMIT %s",
+                                    (last_id, mysql_batch),
+                                )
+                            rs = c.fetchall()
+                            if not rs:
+                                break
+                            q.put(rs)
+                            last_id_local = last_id
+                            for r in rs:
+                                if pk in r:
+                                    last_id_local = r[pk]
+                            last_id = last_id_local
+                        q.put(None)
+                    t = threading.Thread(target=_producer, daemon=True)
+                    t.start()
+                    fast_insert = False
+                    if bool(self.cfg.full_sync_fast_insert_if_empty):
+                        try:
+                            fast_insert = coll.estimated_document_count() == 0
+                        except Exception:
+                            fast_insert = False
+                    while not self.stop_event.is_set():
+                        rows = q.get()
+                        if rows is None:
+                            break
+                        if fast_insert and not self.cfg.use_pk_as_mongo_id:
+                            docs = []
+                            for r in rows:
+                                d = self.converter.row_to_base_doc(r)
+                                docs.append(d)
+                                processed += 1
+                                self._metrics["full_insert_count"] += 1
+                            if docs:
+                                try:
+                                    _s = time.time()
+                                    coll.insert_many(docs, ordered=False, bypass_document_validation=True)
+                                    self.rate.update_write_stats(time.time() - _s, len(docs))
+                                    self.rate.sleep_if_needed()
+                                except Exception:
+                                    for d in docs:
+                                        ops.append(InsertOne(d))
+                        else:
+                            for r in rows:
+                                if pk in r:
+                                    last_id = r[pk]
 
-                            processed += 1
-                            if len(ops) >= mongo_batch:
-                                self.mongo_writer.safe_bulk_write(coll, ops, table, coll_name)
-                                ops.clear()
+                                doc = self.converter.row_to_base_doc(r)
+                                if self.cfg.use_pk_as_mongo_id and "_id" in doc:
+                                    ops.append(ReplaceOne({"_id": doc["_id"]}, doc, upsert=True))
+                                else:
+                                    ops.append(InsertOne(doc))
 
+                                processed += 1
+                                self._metrics["full_insert_count"] += 1
+                                if len(ops) >= mongo_batch:
+                                    _s = time.time()
+                                    self.mongo_writer.safe_bulk_write(coll, ops, table, coll_name)
+                                    self.rate.update_write_stats(time.time() - _s, len(ops))
+                                    self.rate.sleep_if_needed()
+                                    ops.clear()
+
+                        self._metrics["processed_count"] = processed
                         self._maybe_progress_log(f"FullSync prog table={table} done={processed}")
 
                     if ops:
+                        _s = time.time()
                         self.mongo_writer.safe_bulk_write(coll, ops, table, coll_name)
+                        self.rate.update_write_stats(time.time() - _s, len(ops))
+                        self.rate.sleep_if_needed()
                         ops.clear()
 
                     elapsed = max(1e-6, time.time() - start)
@@ -240,6 +356,9 @@ class SyncWorker:
                 cur_log_pos = state.get("log_pos", cur_log_pos)
                 log(self.cfg.task_id, f"MySQL OpErr. retry={retry} err={str(e)[:200]}")
             except Exception as e:
+                if self.stop_event.is_set() or "Already closed" in str(e) or "closed" in str(e).lower():
+                    log(self.cfg.task_id, "IncSync stopped by user or stream closed")
+                    break
                 retry += 1
                 state = load_state(self.cfg.task_id) or {}
                 cur_log_file = state.get("log_file", cur_log_file)
@@ -285,6 +404,7 @@ class SyncWorker:
         inc_batch = int(self.cfg.inc_flush_batch or 2000)
         flush_interval = max(1, int(self.cfg.inc_flush_interval_sec or 2))
 
+        log(self.cfg.task_id, f"IncSync connecting to MySQL {self.mysql_settings.get('host')}:{self.mysql_settings.get('port')}...")
         log(self.cfg.task_id, f"IncSync started events={[e.__name__ for e in only_events]} from={log_file}:{log_pos}")
         log(
             self.cfg.task_id,
@@ -293,7 +413,10 @@ class SyncWorker:
 
         def writer_func(coll_name: str, ops: List):
             coll = self.mongo_db.get_collection(coll_name, write_concern=write_concern)
+            _s = time.time()
             self.mongo_writer.safe_bulk_write(coll, ops, table="*", coll_name=coll_name)
+            self.rate.update_write_stats(time.time() - _s, len(ops))
+            self.rate.sleep_if_needed()
 
         def on_flush_done():
             try:
@@ -314,8 +437,14 @@ class SyncWorker:
             for ev in self.stream:
                 if self.stop_event.is_set():
                     break
+                
+                # update metrics
+                self._metrics["binlog_file"] = self.stream.log_file
+                self._metrics["binlog_pos"] = self.stream.log_pos
+                self._metrics["last_update"] = time.time()
 
                 table = ev.table
+                self._metrics["current_table"] = table or ""
                 if self.cfg.debug_binlog_events:
                     log(self.cfg.task_id, f"EV {type(ev).__name__} table={table}")
 
@@ -328,6 +457,10 @@ class SyncWorker:
 
                 # ---------------- Insert: base upsert ----------------
                 if isinstance(ev, WriteRowsEvent):
+                    try:
+                        self._metrics["inc_insert_count"] += max(1, len(getattr(ev, "rows", []) or []))
+                    except Exception:
+                        self._metrics["inc_insert_count"] += 1
                     for row in ev.rows:
                         data = row.get("values")
                         data = self.mysql_introspector.maybe_fix_row_unknown_cols(table, data)
@@ -342,6 +475,10 @@ class SyncWorker:
 
                 # ---------------- Update: new version doc ----------------
                 elif isinstance(ev, UpdateRowsEvent):
+                    try:
+                        self._metrics["update_count"] += max(1, len(getattr(ev, "rows", []) or []))
+                    except Exception:
+                        self._metrics["update_count"] += 1
                     for row in ev.rows:
                         data = row.get("after_values")
                         data = self.mysql_introspector.maybe_fix_row_unknown_cols(table, data)
@@ -371,6 +508,10 @@ class SyncWorker:
 
                 # ---------------- Delete: soft mark base doc only ----------------
                 elif isinstance(ev, DeleteRowsEvent) and self.cfg.handle_deletes:
+                    try:
+                        self._metrics["delete_count"] += max(1, len(getattr(ev, "rows", []) or []))
+                    except Exception:
+                        self._metrics["delete_count"] += 1
                     for row in ev.rows:
                         data = row.get("values")
                         data = self.mysql_introspector.maybe_fix_row_unknown_cols(table, data)
@@ -403,6 +544,16 @@ class SyncWorker:
                                     coll_name,
                                     UpdateOne({"_id": pk_val}, {"$set": set_doc}, upsert=self.cfg.delete_upsert_tombstone),
                                 )
+
+                try:
+                    self._metrics["processed_count"] = (
+                        int(self._metrics.get("full_insert_count") or 0)
+                        + int(self._metrics.get("inc_insert_count") or 0)
+                        + int(self._metrics.get("update_count") or 0)
+                        + int(self._metrics.get("delete_count") or 0)
+                    )
+                except Exception:
+                    pass
 
                 buf.flush_if_reach_batch()
                 buf.flush(force=False)

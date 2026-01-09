@@ -1,0 +1,2489 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Shark Platfrom</title>
+    <link id="dynamic-favicon" rel="icon" href="">
+    <script src="/ui/vendor/vue.global.prod.js"></script>
+    <link rel="stylesheet" href="/ui/vendor/element-plus/index.css" />
+    <link rel="stylesheet" href="https://unpkg.com/element-plus/dist/index.css" />
+    <script src="/ui/vendor/element-plus/index.full.min.js"></script>
+    <script src="/ui/vendor/echarts/echarts.min.js"></script>
+    <script src="/ui/vendor/icons/index.iife.min.js"></script>
+    <script>
+        (function(){
+            function ensure(checkFn, src){
+                try { if (checkFn()) return; } catch(e) {}
+                var s = document.createElement('script'); s.src = src; s.defer = true; document.head.appendChild(s);
+            }
+            ensure(function(){ return window.Vue; }, 'https://unpkg.com/vue@3/dist/vue.global.prod.js');
+            ensure(function(){ return window.ElementPlus; }, 'https://unpkg.com/element-plus');
+            ensure(function(){ return window.ElementPlusIconsVue; }, 'https://unpkg.com/@element-plus/icons-vue');
+            ensure(function(){ return window.echarts && window.echarts.version; }, 'https://unpkg.com/echarts@5/dist/echarts.min.js');
+        })();
+    </script>
+    <style>
+        body { margin: 0; padding: 0; font-family: Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif; height: 100vh; overflow: hidden; background-color: #f6f8f9; color: #303133; }
+        #app { height: 100%; display: flex; width: 100%; }
+        .el-aside { background-color: #304156; color: #fff; transition: width 0.3s; width: 220px; display: flex; flex-direction: column; flex-shrink: 0; }
+        .logo { height: 60px; display:flex; align-items:center; justify-content:center; gap:10px; font-size: 18px; font-weight: 700; background-color: #2b3649; color: #fff; }
+        .logo .logo-icon { color: #ffd04b; font-size: 20px; }
+        .brand-logo { width:32px; height:32px; border-radius:6px; background: rgba(255,255,255,0.1); position:relative; overflow:hidden; }
+        .brand-logo::before { content:""; position:absolute; inset:0; background-image: url('/ui/images/brand.png'); background-size: cover; background-position: center; }
+        .el-menu { border-right: none; background-color: transparent; }
+        .el-menu-item { color: #bfcbd9; }
+        .el-menu-item:hover { background-color: #263445 !important; }
+        .el-menu-item.is-active { color: #409EFF; background-color: #1f2d3d !important; }
+        .el-main { background: linear-gradient(rgba(240, 242, 245, 0.4), rgba(240, 242, 245, 0.4)), url('/ui/images/beijing.png'); background-size: cover; background-position: center; background-repeat: no-repeat; background-attachment: fixed; padding: 24px; overflow-y: auto; flex: 1; height: 100%; box-sizing: border-box; }
+        .page-header { background: rgba(255, 255, 255, 0.7); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); padding: 16px 24px; margin: -24px -24px 20px -24px; box-shadow: 0 1px 4px rgba(0,21,41,.08); display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.3); }
+        .page-header h2 { margin: 0; font-weight: 600; color: #303133; }
+        .el-card { border-radius: 8px; border: 1px solid rgba(255,255,255,0.6); background-color: rgba(255, 255, 255, 0.7); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); box-shadow: 0 4px 16px rgba(0,0,0,0.05); color: #303133; transition: all 0.3s ease; }
+        .el-card:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,0.12); }
+        .card-header { display: flex; justify-content: space-between; align-items: center; }
+        .metric-item { margin-bottom: 8px; font-size: 14px; color: #606266; display: flex; justify-content: space-between; }
+        .metric-label { font-weight: 500; }
+        .section-title { font-size: 16px; font-weight: 600; margin: 20px 0 10px; padding-left: 10px; border-left: 4px solid #409EFF; color: #303133; }
+        .mapping-row { display: flex; gap: 10px; margin-bottom: 10px; align-items: center; }
+        .mode-group .el-radio { display: block; margin-bottom: 6px; }
+        .mode-desc { margin: 4px 0 12px 26px; color: #909399; font-size: 12px; }
+        .el-tag { border-radius: 4px; }
+        
+        /* Monitor Styles */
+        .stat-card-compact { display: flex; align-items: center; padding: 20px; background: rgba(255, 255, 255, 0.7); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.05); height: 100px; box-sizing: border-box; border: 1px solid rgba(255,255,255,0.6); transition: all 0.3s ease; }
+        .stat-card-compact:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,0.12); }
+        .stat-icon { width: 48px; height: 48px; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 24px; color: #fff; margin-right: 16px; }
+        .stat-content { flex: 1; overflow: hidden; }
+        .stat-label { color: #909399; font-size: 14px; margin-bottom: 5px; }
+        .stat-number { font-size: 24px; font-weight: bold; color: #303133; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        
+        .icon-blue { background-color: #409EFF; }
+        .icon-green { background-color: #67C23A; }
+        .icon-red { background-color: #F56C6C; }
+        .icon-orange { background-color: #E6A23C; }
+
+        /* Monitor Layout */
+        .monitor-container { max-width: 100%; }
+        .monitor-actions .el-button { border-radius: 4px; padding: 8px 15px; }
+        .monitor-actions .el-button.is-plain { background-color: #fff; }
+        .monitor-actions .el-button + .el-button { margin-left: 10px; }
+        .config-section-title { font-size: 15px; font-weight: bold; color: #303133; margin-bottom: 15px; display: flex; align-items: center; }
+        .config-section-title:before { content: ""; display: inline-block; width: 3px; height: 14px; background: #409EFF; margin-right: 8px; border-radius: 2px; }
+
+        /* Tiles */
+        .tile { display:flex; align-items:center; justify-content:space-between; background: rgba(255, 255, 255, 0.7); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border-radius:8px; box-shadow:0 4px 16px rgba(0,0,0,0.05); padding:16px 20px; border:1px solid rgba(255,255,255,0.6); transition: all 0.3s ease; }
+        .tile:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,0.12); }
+        .tile-left { display:flex; align-items:center; gap:12px; }
+        .tile-icon { width:40px; height:40px; border-radius:8px; display:flex; align-items:center; justify-content:center; color:#fff; }
+        .tile-icon.primary { background-color: #409EFF; }
+        .tile-icon.success { background-color: #67C23A; }
+        .tile-icon.warning { background-color: #E6A23C; }
+        .tile-value { font-size:24px; font-weight:bold; color:#303133; }
+        .tile-label { font-size:14px; color:#909399; }
+        .dashboard-layout { display:flex; flex-direction:column; gap:0; }
+        .dashboard-overview { order:1; }
+        .dashboard-ring { order:2; }
+        @media (max-width: 768px) {
+            .dashboard-overview { order:2; }
+            .dashboard-ring { order:1; }
+        }
+    </style>
+    <script>
+        // Generate rounded favicon from brand image to avoid white edges
+        (function(){
+            const linkEl = document.getElementById('dynamic-favicon');
+            function setDefaultIcon(){
+                const svg = encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" rx="12" fill="#304156"/><circle cx="32" cy="32" r="18" fill="#409EFF"/></svg>');
+                linkEl.href = 'data:image/svg+xml;charset=utf-8,' + svg;
+            }
+            function setBrandIcon(img){
+                const size = 64;
+                const c = document.createElement('canvas');
+                c.width = c.height = size;
+                const ctx = c.getContext('2d');
+                ctx.clearRect(0,0,size,size);
+                // rounded background
+                const radius = 12;
+                ctx.fillStyle = '#ffffff';
+                ctx.beginPath();
+                ctx.moveTo(radius,0);
+                ctx.arcTo(size,0,size,size,radius);
+                ctx.arcTo(size,size,0,size,radius);
+                ctx.arcTo(0,size,0,0,radius);
+                ctx.arcTo(0,0,size,0,radius);
+                ctx.closePath();
+                ctx.fill();
+                // circular clip for image
+                ctx.save();
+                ctx.beginPath();
+                ctx.arc(size/2, size/2, size*0.36, 0, Math.PI*2);
+                ctx.closePath();
+                ctx.clip();
+                // draw image centered and cover
+                const iw = img.naturalWidth || img.width;
+                const ih = img.naturalHeight || img.height;
+                const s = Math.max(size*0.8/iw, size*0.8/ih);
+                const dw = iw*s, dh = ih*s;
+                ctx.drawImage(img, (size-dw)/2, (size-dh)/2, dw, dh);
+                ctx.restore();
+                // subtle inner ring
+                ctx.strokeStyle = 'rgba(0,0,0,0.1)';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.arc(size/2, size/2, size*0.36, 0, Math.PI*2);
+                ctx.stroke();
+                linkEl.href = c.toDataURL('image/png');
+            }
+            const img = new Image();
+            img.onload = function(){ setBrandIcon(img); };
+            img.onerror = function(){ setDefaultIcon(); };
+            img.src = '/ui/images/brand.png';
+        })();
+    </script>
+</head>
+<body>
+    <div id="app">
+        <!-- Sidebar -->
+        <el-aside>
+            <div class="logo"><span class="brand-logo"></span><el-icon class="logo-icon"><Lightning /></el-icon><span>shark Platform</span></div>
+            <el-menu :default-active="currentView" @select="handleMenuSelect" text-color="#bfcbd9" active-text-color="#409EFF" background-color="#304156">
+                <el-menu-item index="dashboard">
+                    <el-icon><Odometer /></el-icon>
+                    <span>Dashboard</span>
+                </el-menu-item>
+                <el-menu-item index="tasks">
+                    <el-icon><List /></el-icon>
+                    <span>Task Management</span>
+                </el-menu-item>
+                <el-menu-item index="connections">
+                    <el-icon><Connection /></el-icon>
+                    <span>Data Sources</span>
+                </el-menu-item>
+                <el-menu-item index="monitor">
+                    <el-icon><Bell /></el-icon>
+                    <span>Log Monitoring</span>
+                </el-menu-item>
+                <el-menu-item index="inspection">
+                    <el-icon><Aim /></el-icon>
+                    <span>Inspection</span>
+                </el-menu-item>
+            </el-menu>
+        </el-aside>
+
+        <!-- Main Content -->
+        <el-main>
+            <!-- DASHBOARD VIEW -->
+            <div v-if="currentView === 'dashboard'">
+                <div class="page-header">
+                    <h2>Dashboard</h2>
+                    <el-button type="primary" @click="currentView = 'tasks'; showCreateDialog()">
+                        <el-icon style="margin-right: 5px"><Plus /></el-icon> New Task
+                    </el-button>
+                </div>
+                
+                <div class="dashboard-layout">
+                <el-row class="dashboard-overview" :gutter="20" style="margin-bottom:20px;">
+                    <el-col :xs="24" :sm="12" :md="8">
+                        <div class="tile">
+                            <div class="tile-left">
+                                <div class="tile-icon primary"><el-icon><Odometer /></el-icon></div>
+                                <div>
+                                    <div class="tile-label">All Items</div>
+                                    <div class="tile-value">{{ overview.all }}</div>
+                                </div>
+                            </div>
+                        </div>
+                    </el-col>
+                    <el-col :xs="24" :sm="12" :md="8">
+                        <div class="tile">
+                            <div class="tile-left">
+                                <div class="tile-icon success"><el-icon><Connection /></el-icon></div>
+                                <div>
+                                    <div class="tile-label">Sync Tasks</div>
+                                    <div class="tile-value" style="color:#67C23A">{{ overview.sync }}</div>
+                                </div>
+                            </div>
+                        </div>
+                    </el-col>
+                    <el-col :xs="24" :sm="12" :md="8">
+                        <div class="tile">
+                            <div class="tile-left">
+                                <div class="tile-icon warning"><el-icon><Bell /></el-icon></div>
+                                <div>
+                                    <div class="tile-label">Log Monitors</div>
+                                    <div class="tile-value" style="color:#E6A23C">{{ overview.monitor }}</div>
+                                </div>
+                            </div>
+                        </div>
+                    </el-col>
+                </el-row>
+                <el-row class="dashboard-ring" :gutter="20" style="margin-bottom:20px;">
+                    <el-col :span="24">
+                        <div class="tile" style="padding:8px 10px;">
+                            <canvas id="syncStatusRingCanvas" height="140"></canvas>
+                        </div>
+                    </el-col>
+                </el-row>
+                </div>
+
+                <el-row :gutter="20">
+                    <el-col :span="24" v-if="tasks.length === 0">
+                        <el-empty description="No active tasks. Go to Task Management to create one."></el-empty>
+                    </el-col>
+                </el-row>
+
+                <!-- Bottom Panels: Sync + Monitor -->
+                <el-row :gutter="20" style="margin-top:10px;">
+                    <el-col :span="12">
+                        <el-card>
+                            <el-collapse v-model="collapseSync">
+                                <el-collapse-item name="sync">
+                                    <template #title>
+                                        <span style="font-weight:600; color:#303133;">Sync Tasks</span>
+                                        <el-tag size="small" type="success" style="margin-left:8px;">{{ overview.sync }}</el-tag>
+                                    </template>
+                                    <div v-if="syncTasks.length > 0">
+                                        <el-row :gutter="20">
+                                            <el-col :span="24" v-for="task in syncTasks" :key="task.task_id" style="margin-bottom: 14px;">
+                                                <el-card shadow="hover">
+                                                    <template #header>
+                                                        <div class="card-header">
+                                                            <span style="font-weight: bold;">{{ task.task_id }}</span>
+                                                            <el-tag :type="getStatusType(task.status)">{{ task.status.toUpperCase() }}</el-tag>
+                                                        </div>
+                                                    </template>
+                                                    <div class="metric-item">
+                                                        <span class="metric-label">Phase</span>
+                                                        <span>{{ task.metrics.phase }}</span>
+                                                    </div>
+                                                    <div class="metric-item">
+                                                        <span class="metric-label">Processed</span>
+                                                        <span>{{ task.metrics.processed_count }}</span>
+                                                    </div>
+                                                    <div class="metric-item">
+                                                        <span class="metric-label">Binlog</span>
+                                                        <el-tooltip :content="task.metrics.binlog_file + ':' + task.metrics.binlog_pos" placement="top">
+                                                            <span style="cursor: pointer; border-bottom: 1px dashed #999;">{{ task.metrics.binlog_pos }}</span>
+                                                        </el-tooltip>
+                                                    </div>
+                                                    <div class="metric-item">
+                                                        <span class="metric-label">Last Update</span>
+                                                        <span>{{ formatTime(task.metrics.last_update) }}</span>
+                                                    </div>
+                                                    <div v-if="task.metrics.error" style="margin-top: 10px; padding: 8px; background-color: #fef0f0; border-radius: 4px; font-size: 12px; color: #f56c6c;">
+                                                        {{ task.metrics.error }}
+                                                    </div>
+                                                    <div class="monitor-actions" style="margin-top: 12px; border-top: 1px solid #eee; padding-top: 10px; display: flex; gap: 10px; flex-wrap: wrap;">
+                                                        <el-button type="primary" plain size="small" @click="viewLogs(task.task_id)"><el-icon style="margin-right:4px"><List /></el-icon> Logs</el-button>
+                                                        <el-button type="success" plain size="small" @click="openStats(task.task_id)"><el-icon style="margin-right:4px"><Histogram /></el-icon> Stats</el-button>
+                                                        <el-button v-if="task.status === 'running'" type="warning" plain size="small" @click="confirmStop(task.task_id)"><el-icon style="margin-right:4px"><SwitchButton /></el-icon> Stop</el-button>
+                                                        <el-button v-else type="success" plain size="small" @click="confirmStart(task.task_id)"><el-icon style="margin-right:4px"><VideoPlay /></el-icon> Start</el-button>
+                                                        <el-button type="info" plain size="small" :disabled="task.status !== 'stopped'" @click="confirmResetAndStart(task.task_id)"><el-icon style="margin-right:4px"><Refresh /></el-icon> Reset</el-button>
+                                                        <el-button type="danger" plain size="small" @click="confirmDelete(task.task_id)"><el-icon style="margin-right:4px"><Delete /></el-icon> Delete</el-button>
+                                                    </div>
+                                                </el-card>
+                                            </el-col>
+                                        </el-row>
+                                    </div>
+                                    <div v-else style="color:#909399;">No sync tasks</div>
+                                </el-collapse-item>
+                            </el-collapse>
+                        </el-card>
+                    </el-col>
+                    <el-col :span="12">
+                        <el-card>
+                            <el-collapse v-model="collapseMonitor">
+                                <el-collapse-item name="monitor">
+                                    <template #title>
+                                        <span style="font-weight:600; color:#303133;">Log Monitors</span>
+                                        <el-tag size="small" type="warning" style="margin-left:8px;">{{ overview.monitor }}</el-tag>
+                                    </template>
+                                    <div v-if="monitorTasks.length > 0">
+                                        <el-row :gutter="20">
+                                            <el-col :span="24" v-for="task in monitorTasks" :key="task.task_id" style="margin-bottom: 14px;">
+                                                <el-card shadow="hover">
+                                                    <template #header>
+                                                        <div class="card-header">
+                                                            <span style="font-weight: bold;">{{ task.task_id }}</span>
+                                                            <el-tag :type="getStatusType(task.status)">{{ task.status.toUpperCase() }}</el-tag>
+                                                        </div>
+                                                    </template>
+                                                    <div class="metric-item">
+                                                        <span class="metric-label">Monitor</span>
+                                                        <span>{{ task.metrics.phase }}</span>
+                                                    </div>
+                                                    <div class="metric-item">
+                                                        <span class="metric-label">Alerts</span>
+                                                        <span>{{ task.metrics.processed_count }}</span>
+                                                    </div>
+                                                    <div class="metric-item">
+                                                        <span class="metric-label">Last Run</span>
+                                                        <span>{{ task.metrics.binlog_pos }}</span>
+                                                    </div>
+                                                    <div class="metric-item">
+                                                        <span class="metric-label">Last Update</span>
+                                                        <span>{{ formatTime(task.metrics.last_update) }}</span>
+                                                    </div>
+                                                    <div v-if="task.metrics.error" style="margin-top: 10px; padding: 8px; background-color: #fef0f0; border-radius: 4px; font-size: 12px; color: #f56c6c;">
+                                                        {{ task.metrics.error }}
+                                                    </div>
+                                                    <div class="monitor-actions" style="margin-top: 12px; border-top: 1px solid #eee; padding-top: 10px; display: flex; gap: 10px; flex-wrap: wrap;">
+                                                        <el-button type="primary" plain size="small" @click="viewLogs(task.task_id)"><el-icon style="margin-right:4px"><List /></el-icon> Events</el-button>
+                                                        <el-button type="success" plain size="small" @click="openStats(task.task_id)"><el-icon style="margin-right:4px"><Histogram /></el-icon> Metrics</el-button>
+                                                        <el-button v-if="task.status === 'running'" type="warning" plain size="small" @click="confirmStop(task.task_id)"><el-icon style="margin-right:4px"><SwitchButton /></el-icon> Stop Monitor</el-button>
+                                                        <el-button v-else type="success" plain size="small" @click="confirmStart(task.task_id)"><el-icon style="margin-right:4px"><VideoPlay /></el-icon> Start Monitor</el-button>
+                                                        <el-button type="info" plain size="small" :disabled="task.status !== 'stopped'" @click="confirmResetAndStart(task.task_id)"><el-icon style="margin-right:4px"><Refresh /></el-icon> Restart</el-button>
+                                                        <el-button type="danger" plain size="small" @click="confirmDelete(task.task_id)"><el-icon style="margin-right:4px"><Delete /></el-icon> Delete Monitor</el-button>
+                                                    </div>
+                                                </el-card>
+                                            </el-col>
+                                        </el-row>
+                                    </div>
+                                    <div v-else style="color:#909399;">No monitors</div>
+                                </el-collapse-item>
+                            </el-collapse>
+                        </el-card>
+                    </el-col>
+                </el-row>
+            </div>
+
+            <!-- TASKS VIEW -->
+            <div v-if="currentView === 'tasks'">
+                <div class="page-header">
+                    <h2>Task Management</h2>
+                    <el-button type="primary" @click="showCreateDialog">
+                        <el-icon style="margin-right: 5px"><Plus /></el-icon> Create Task
+                    </el-button>
+                </div>
+                
+                <el-table :data="tasks" style="width: 100%" border>
+                    <el-table-column prop="task_id" label="Task ID" width="180"></el-table-column>
+                    <el-table-column prop="status" label="Status" width="120">
+                        <template #default="scope">
+                            <el-tag :type="getStatusType(scope.row.status)">{{ scope.row.status }}</el-tag>
+                        </template>
+                    </el-table-column>
+                    <el-table-column label="Source -> Target">
+                        <template #default="scope">
+                            {{ scope.row.config.mysql }} <el-icon><Right /></el-icon> {{ scope.row.config.mongo }}
+                        </template>
+                    </el-table-column>
+                    <el-table-column label="Tables">
+                         <template #default="scope">
+                            <span>{{ truncateTables(scope.row.config.tables) }}</span>
+                            <el-button type="primary" link size="small" style="margin-left:6px" @click="openTables(scope.row.task_id)">View All Tables</el-button>
+                         </template>
+                    </el-table-column>
+                </el-table>
+            </div>
+
+            <!-- CONNECTIONS VIEW -->
+            <div v-if="currentView === 'connections'">
+                <div class="page-header">
+                    <h2>Data Sources</h2>
+                    <el-button type="primary" @click="showConnDialog">
+                        <el-icon style="margin-right: 5px"><Plus /></el-icon> Add Connection
+                    </el-button>
+                </div>
+
+                <el-table :data="connections" style="width: 100%" border>
+                    <el-table-column prop="id" label="ID" width="150"></el-table-column>
+                    <el-table-column prop="name" label="Name" width="180"></el-table-column>
+                    <el-table-column prop="type" label="Type" width="100">
+                        <template #default="scope">
+                            <el-tag :type="scope.row.type === 'mysql' ? 'primary' : 'success'">{{ scope.row.type }}</el-tag>
+                        </template>
+                    </el-table-column>
+                    <el-table-column label="Connection Info">
+                        <template #default="scope">
+                            {{ scope.row.user }}@{{ scope.row.host }}:{{ scope.row.port }}
+                        </template>
+                    </el-table-column>
+                    <el-table-column label="Actions" width="160" align="center">
+                        <template #default="scope">
+                            <el-button type="primary" circle size="small" style="margin-right:6px" @click="editConnection(scope.row.id)"><el-icon><Edit /></el-icon></el-button>
+                            <el-popconfirm title="Delete this connection?" @confirm="deleteConnection(scope.row.id)">
+                                <template #reference>
+                                    <el-button type="danger" circle size="small"><el-icon><Delete /></el-icon></el-button>
+                                </template>
+                            </el-popconfirm>
+                        </template>
+                    </el-table-column>
+                </el-table>
+            </div>
+
+        <!-- MONITOR VIEW -->
+            <div v-if="currentView === 'monitor'" class="monitor-container">
+                <div class="page-header">
+                    <h2>Log Monitoring</h2>
+                    <div>
+                        <el-tag :type="monitorStatus.status === 'running' ? 'success' : 'info'" effect="dark" style="margin-right: 12px; font-weight: bold;">
+                            {{ monitorStatus.status ? monitorStatus.status.toUpperCase() : 'UNKNOWN' }}
+                        </el-tag>
+                        <el-button v-if="monitorStatus.status === 'running'" type="danger" plain @click="stopMonitor" :loading="monitorActionLoading" icon="SwitchButton">Stop Monitor</el-button>
+                        <el-button v-else type="primary" @click="startMonitor" :loading="monitorActionLoading" icon="VideoPlay">Start Monitor</el-button>
+                    </div>
+                </div>
+
+                <!-- Status Cards (Compact Row) -->
+                <el-row :gutter="20" style="margin-bottom: 20px;">
+                    <el-col :xs="24" :sm="12" :md="6">
+                        <div class="stat-card-compact">
+                            <div class="stat-icon icon-blue"><el-icon><Monitor /></el-icon></div>
+                            <div class="stat-content">
+                                <div class="stat-label">Current Status</div>
+                                <div class="stat-number" :style="{color: monitorStatus.status === 'running' ? '#67C23A' : '#909399'}">
+                                    {{ monitorStatus.status }}
+                                </div>
+                            </div>
+                        </div>
+                    </el-col>
+                    <el-col :xs="24" :sm="12" :md="6">
+                        <div class="stat-card-compact">
+                            <div class="stat-icon icon-green"><el-icon><Clock /></el-icon></div>
+                            <div class="stat-content">
+                                <div class="stat-label">Last Run</div>
+                                <div class="stat-number" style="font-size: 16px;">{{ monitorStatus.last_run || '-' }}</div>
+                            </div>
+                        </div>
+                    </el-col>
+                    <el-col :xs="24" :sm="12" :md="6">
+                        <div class="stat-card-compact">
+                            <div class="stat-icon icon-orange"><el-icon><Bell /></el-icon></div>
+                            <div class="stat-content">
+                                <div class="stat-label">Alerts Sent</div>
+                                <div class="stat-number">{{ monitorStatus.alerts_sent }}</div>
+                            </div>
+                        </div>
+                    </el-col>
+                    <el-col :xs="24" :sm="12" :md="6">
+                        <div class="stat-card-compact">
+                            <div class="stat-icon icon-red"><el-icon><Warning /></el-icon></div>
+                            <div class="stat-content">
+                                <div class="stat-label">Last Error</div>
+                                <el-tooltip v-if="monitorStatus.last_error" :content="monitorStatus.last_error" placement="top">
+                                    <div class="stat-number" style="font-size: 14px; color: #F56C6C; cursor: pointer;">{{ monitorStatus.last_error }}</div>
+                                </el-tooltip>
+                                <div class="stat-number" v-else>-</div>
+                            </div>
+                        </div>
+                    </el-col>
+                </el-row>
+
+                <!-- Configuration Panel -->
+                <el-card shadow="never" class="config-card">
+                    <template #header>
+                        <div class="card-header">
+                            <span style="font-weight: bold;">Configuration</span>
+                            <el-button type="primary" link @click="saveMonitorConfig" :loading="monitorSaving">
+                                <el-icon><Check /></el-icon> Save
+                            </el-button>
+                        </div>
+                    </template>
+
+                    <el-form :model="monitorConfig" label-width="140px" label-position="left">
+                        <el-row :gutter="40">
+                            <!-- Left Column -->
+                            <el-col :xs="24" :lg="12">
+                                <div class="config-section-title">General Settings</div>
+                                <el-form-item label="Enable Monitor">
+                                    <el-switch v-model="monitorConfig.enabled" active-text="Enabled" inactive-text="Disabled"></el-switch>
+                                </el-form-item>
+                                <el-form-item label="Poll Interval (s)">
+                                    <el-input-number v-model="monitorConfig.poll_interval_seconds" :min="10" controls-position="right" style="width: 100%;"></el-input-number>
+                                </el-form-item>
+
+                                <div class="config-section-title" style="margin-top: 30px;">Elasticsearch Connection</div>
+                                <el-form-item label="ES Hosts">
+                                    <el-input v-model="monitorConfig.es_hosts" placeholder="https://localhost:9200"></el-input>
+                                </el-form-item>
+                                <el-form-item label="Index Pattern">
+                                    <el-input v-model="monitorConfig.index_pattern" placeholder="trace_log-*"></el-input>
+                                </el-form-item>
+                                <el-row :gutter="10">
+                                    <el-col :span="12">
+                                        <el-form-item label="Username" label-width="80px">
+                                            <el-input v-model="monitorConfig.es_username"></el-input>
+                                        </el-form-item>
+                                    </el-col>
+                                    <el-col :span="12">
+                                        <el-form-item label="Password" label-width="80px">
+                                            <el-input v-model="monitorConfig.es_password" type="password" show-password></el-input>
+                                        </el-form-item>
+                                    </el-col>
+                                </el-row>
+                            </el-col>
+
+                            <!-- Right Column -->
+                            <el-col :xs="24" :lg="12">
+                                <div class="config-section-title">Alerting Rules</div>
+                                <el-form-item label="Slack Webhook">
+                                    <el-input v-model="monitorConfig.slack_webhook_url" placeholder="https://hooks.slack.com/services/..."></el-input>
+                                </el-form-item>
+                                
+                                <el-form-item label="Alert Keywords">
+                                    <el-select 
+                                        v-model="monitorConfig.alert_keywords" 
+                                        multiple 
+                                        filterable 
+                                        allow-create 
+                                        default-first-option 
+                                        placeholder="Type and hit enter" 
+                                        style="width: 100%">
+                                    </el-select>
+                                    <div style="font-size: 12px; color: #909399; line-height: 1.2; margin-top: 4px;">Log messages matching these phrases will trigger alerts (OR logic).</div>
+                                </el-form-item>
+
+                                <el-form-item label="Record Only">
+                                    <el-select 
+                                        v-model="monitorConfig.record_only_keywords" 
+                                        multiple 
+                                        filterable 
+                                        allow-create 
+                                        default-first-option 
+                                        placeholder="Type and hit enter" 
+                                        style="width: 100%">
+                                    </el-select>
+                                    <div style="font-size: 12px; color: #909399; line-height: 1.2; margin-top: 4px;">Logs matching these phrases will be recorded locally but NOT sent to Slack.</div>
+                                </el-form-item>
+                                
+                                <el-form-item label="Ignore Keywords">
+                                    <el-select 
+                                        v-model="monitorConfig.ignore_keywords" 
+                                        multiple 
+                                        filterable 
+                                        allow-create 
+                                        default-first-option 
+                                        placeholder="Type and hit enter" 
+                                        style="width: 100%">
+                                    </el-select>
+                                    <div style="font-size: 12px; color: #909399; line-height: 1.2; margin-top: 4px;">Logs matching these phrases will be ignored.</div>
+                                </el-form-item>
+                                
+                                <el-alert
+                                    title="Monitor Info"
+                                    type="info"
+                                    description="The monitor runs in the background and checks Elasticsearch for errors periodically."
+                                    show-icon
+                                    :closable="false"
+                                    style="margin-top: 20px"
+                                />
+                            </el-col>
+                        </el-row>
+
+                        <!-- Bottom Save Action -->
+                        <el-divider></el-divider>
+                        <div style="text-align: right;">
+                             <el-button @click="fetchMonitorStatus">Refresh Status</el-button>
+                             <el-button type="primary" size="large" @click="saveMonitorConfig" :loading="monitorSaving" icon="Check" style="width: 180px;">Save & Restart</el-button>
+                        </div>
+
+                    </el-form>
+                </el-card>
+            </div>
+
+            <!-- INSPECTION VIEW -->
+            <div v-if="currentView === 'inspection'">
+                <div class="page-header">
+                    <h2>System Inspection</h2>
+                    <div style="display:flex; gap:10px; align-items:center;">
+                        <el-button @click="inspectionConfigVisible = true">
+                            <el-icon style="margin-right: 5px"><Setting /></el-icon> Configuration
+                        </el-button>
+                        <el-button @click="viewLogs('inspection')">
+                            <el-icon style="margin-right: 5px"><List /></el-icon> Logs
+                        </el-button>
+                        <el-button type="primary" @click="runInspection" :loading="inspectionLoading">
+                            <el-icon style="margin-right: 5px"><VideoPlay /></el-icon> Run Inspection
+                        </el-button>
+                    </div>
+                </div>
+
+                <div style="display:flex; gap:10px; align-items:center; margin-bottom: 14px;">
+                    <el-select v-model="inspectionHistorySelected" filterable clearable placeholder="选择历史日报" style="width: 220px;">
+                        <el-option v-for="id in inspectionHistoryList" :key="id" :label="id" :value="id"></el-option>
+                    </el-select>
+                    <el-button @click="fetchInspectionHistory" :loading="inspectionHistoryLoading">刷新列表</el-button>
+                    <el-button type="primary" plain @click="loadInspectionReport" :disabled="!inspectionHistorySelected">加载</el-button>
+                    <el-button type="info" plain @click="openWeeklyReport" :disabled="!inspectionReport || !inspectionReport.weekly_report_id">周报</el-button>
+                    <el-button type="info" plain @click="openMonthlyReport" :disabled="!inspectionReport || !inspectionReport.monthly_report_id">月报</el-button>
+                </div>
+
+                <div v-if="inspectionReport">
+                    <!-- Charts Row -->
+                    <el-row :gutter="20" style="margin-bottom: 20px;">
+                        <el-col :span="12">
+                            <el-card>
+                                <template #header><div class="card-header"><span>Down Targets by Job</span></div></template>
+                                <div id="inspTargetsChart" style="height: 300px;"></div>
+                            </el-card>
+                        </el-col>
+                        <el-col :span="12">
+                            <el-card>
+                                <template #header><div class="card-header"><span>Alerts Severity Distribution</span></div></template>
+                                <div id="inspAlertsChart" style="height: 300px;"></div>
+                            </el-card>
+                        </el-col>
+                    </el-row>
+
+                    <el-row :gutter="20" style="margin-bottom: 20px;">
+                        <el-col :span="8">
+                            <el-card>
+                                <template #header><div class="card-header"><span>CPU Top5</span></div></template>
+                                <div id="inspCpuTopChart" style="height: 260px;"></div>
+                            </el-card>
+                        </el-col>
+                        <el-col :span="8">
+                            <el-card>
+                                <template #header><div class="card-header"><span>Memory Top5</span></div></template>
+                                <div id="inspMemTopChart" style="height: 260px;"></div>
+                            </el-card>
+                        </el-col>
+                        <el-col :span="8">
+                            <el-card>
+                                <template #header><div class="card-header"><span>Disk(/) Top5</span></div></template>
+                                <div id="inspDiskTopChart" style="height: 260px;"></div>
+                            </el-card>
+                        </el-col>
+                    </el-row>
+
+                    <el-card style="margin-bottom: 20px;">
+                        <template #header><div class="card-header"><span>趋势与预测</span></div></template>
+                        <div v-if="inspectionReport.risk_summary" style="display:flex; gap:18px; flex-wrap:wrap;">
+                            <div class="metric-item" style="min-width:260px;">
+                                <span class="metric-label">今日风险分</span>
+                                <span style="font-weight:700;">{{ inspectionReport.risk_summary.score }}（{{ inspectionReport.risk_summary.level }}）</span>
+                            </div>
+                            <div class="metric-item" style="min-width:260px;" v-if="inspectionReport.compare_with_yesterday && inspectionReport.compare_with_yesterday.delta">
+                                <span class="metric-label">较昨日风险分</span>
+                                <span style="font-weight:700;">{{ inspectionReport.compare_with_yesterday.delta.risk_score }}</span>
+                            </div>
+                            <div class="metric-item" style="min-width:260px;" v-if="inspectionReport.compare_with_yesterday && inspectionReport.compare_with_yesterday.delta">
+                                <span class="metric-label">Down Targets 变化</span>
+                                <span style="font-weight:700;">{{ inspectionReport.compare_with_yesterday.delta.down_targets }}</span>
+                            </div>
+                            <div class="metric-item" style="min-width:260px;" v-if="inspectionReport.compare_with_yesterday && inspectionReport.compare_with_yesterday.delta">
+                                <span class="metric-label">Firing Alerts 变化</span>
+                                <span style="font-weight:700;">{{ inspectionReport.compare_with_yesterday.delta.firing_alerts }}</span>
+                            </div>
+                        </div>
+                        <div v-if="inspectionReport.forecast_7_15_30 && inspectionReport.forecast_7_15_30.predictions" style="margin-top: 10px;">
+                            <div class="metric-item" style="max-width:520px;">
+                                <span class="metric-label">未来 7 天风险分预测</span>
+                                <span style="font-weight:700;">{{ inspectionReport.forecast_7_15_30.predictions['7d'].risk_score }}</span>
+                            </div>
+                            <div class="metric-item" style="max-width:520px;">
+                                <span class="metric-label">未来 15 天风险分预测</span>
+                                <span style="font-weight:700;">{{ inspectionReport.forecast_7_15_30.predictions['15d'].risk_score }}</span>
+                            </div>
+                            <div class="metric-item" style="max-width:520px;">
+                                <span class="metric-label">未来 30 天风险分预测</span>
+                                <span style="font-weight:700;">{{ inspectionReport.forecast_7_15_30.predictions['30d'].risk_score }}</span>
+                            </div>
+                        </div>
+                        <div v-else style="color:#909399;">暂无历史数据，预测将从累积日报后生效</div>
+                    </el-card>
+
+                    <!-- AI Analysis -->
+                    <el-card style="margin-bottom: 20px;">
+                        <template #header>
+                            <div class="card-header">
+                                <span style="font-weight: bold; display:flex; align-items:center;">
+                                    <el-icon style="margin-right:8px; color:#409EFF"><ChatLineSquare /></el-icon>
+                                    Inspection analysis
+                                </span>
+                            </div>
+                        </template>
+                        <div style="white-space: pre-wrap; line-height: 1.6; font-size: 14px; color: #303133;">{{ inspectionReport.ai_analysis }}</div>
+                    </el-card>
+
+                    <!-- Key Metrics Table -->
+                    <el-card style="margin-bottom: 20px;">
+                        <template #header><div class="card-header"><span>Key Metrics Details</span></div></template>
+                        <el-table :data="inspectionReport.metrics_summary" style="width: 100%" max-height="520">
+                            <el-table-column prop="category" label="Category" width="120"></el-table-column>
+                            <el-table-column prop="display" label="Metric" min-width="160"></el-table-column>
+                            <el-table-column label="Labels" min-width="180" show-overflow-tooltip>
+                                <template #default="scope">
+                                    <span>{{ formatMetricLabels(scope.row.labels) }}</span>
+                                </template>
+                            </el-table-column>
+                            <el-table-column prop="value" label="Value" width="120">
+                                <template #default="scope">
+                                    <span style="font-weight: 700;">{{ scope.row.value }}</span>
+                                </template>
+                            </el-table-column>
+                            <el-table-column prop="unit" label="Unit" width="80"></el-table-column>
+                            <el-table-column prop="level" label="Level" width="110">
+                                <template #default="scope">
+                                    <el-tag :type="getMetricLevelType(scope.row.level)">{{ scope.row.level }}</el-tag>
+                                </template>
+                            </el-table-column>
+                            <el-table-column prop="status" label="Status" width="110">
+                                <template #default="scope">
+                                    <el-tag :type="getMetricStatusType(scope.row.status)">{{ scope.row.status }}</el-tag>
+                                </template>
+                            </el-table-column>
+                            <el-table-column prop="query" label="PromQL" min-width="220" show-overflow-tooltip></el-table-column>
+                        </el-table>
+                    </el-card>
+
+                    <!-- Details Tables -->
+                    <el-row :gutter="20">
+                        <el-col :span="12">
+                            <el-card>
+                                <template #header><div class="card-header"><span>Down Targets ({{ inspectionReport.down_targets.length }})</span></div></template>
+                                <el-table :data="inspectionReport.down_targets" style="width: 100%" max-height="300">
+                                    <el-table-column prop="job" label="Job"></el-table-column>
+                                    <el-table-column prop="instance" label="Instance"></el-table-column>
+                                    <el-table-column prop="last_error" label="Error"></el-table-column>
+                                </el-table>
+                            </el-card>
+                        </el-col>
+                        <el-col :span="12">
+                            <el-card>
+                                <template #header><div class="card-header"><span>Firing Alerts ({{ inspectionReport.firing_alerts.length }})</span></div></template>
+                                <el-table :data="inspectionReport.firing_alerts" style="width: 100%" max-height="300">
+                                    <el-table-column prop="name" label="Alert"></el-table-column>
+                                    <el-table-column prop="severity" label="Severity" width="100">
+                                        <template #default="scope">
+                                            <el-tag :type="scope.row.severity === 'critical' ? 'danger' : 'warning'">{{ scope.row.severity }}</el-tag>
+                                        </template>
+                                    </el-table-column>
+                                    <el-table-column prop="summary" label="Summary"></el-table-column>
+                                </el-table>
+                            </el-card>
+                        </el-col>
+                    </el-row>
+                </div>
+                <div v-else-if="!inspectionLoading" style="text-align: center; color: #909399; margin-top: 50px;">
+                    <el-empty description="Click 'Run Inspection' to start analysis"></el-empty>
+                </div>
+            </div>
+
+            <el-dialog v-model="inspectionConfigVisible" title="config" width="700px">
+                <el-form :model="inspectionConfig" label-width="140px">
+                    <el-form-item label="Prometheus 地址">
+                        <el-input v-model="inspectionConfig.prometheus_url" placeholder="https://prometheus.example.com"></el-input>
+                    </el-form-item>
+                    <el-form-item label="Ark 基础地址">
+                        <el-input v-model="inspectionConfig.ark_base_url" placeholder="https://ark.cn-beijing.volces.com/api/v3"></el-input>
+                    </el-form-item>
+                    <el-form-item label="Ark API 密钥">
+                        <el-input v-model="inspectionConfig.ark_api_key" type="password" show-password placeholder="Your API Key"></el-input>
+                    </el-form-item>
+                    <el-form-item label="Ark 模型 ID">
+                        <el-input v-model="inspectionConfig.ark_model_id" placeholder="doubao-seed-1-6-251015"></el-input>
+                    </el-form-item>
+                </el-form>
+                <template #footer>
+                    <el-button @click="inspectionConfigVisible = false">关闭</el-button>
+                </template>
+            </el-dialog>
+
+            <el-dialog v-model="weeklyReportVisible" title="周报" width="720px" destroy-on-close>
+                <div v-if="weeklyReportData && weeklyReportData.items">
+                    <el-table :data="weeklyReportData.items" style="width: 100%" max-height="520">
+                        <el-table-column prop="id" label="Date" width="140"></el-table-column>
+                        <el-table-column prop="risk_score" label="Risk Score"></el-table-column>
+                    </el-table>
+                </div>
+                <div v-else style="color:#909399;">暂无周报数据</div>
+            </el-dialog>
+
+            <el-dialog v-model="monthlyReportVisible" title="月报" width="720px" destroy-on-close>
+                <div v-if="monthlyReportData && monthlyReportData.items">
+                    <el-table :data="monthlyReportData.items" style="width: 100%" max-height="520">
+                        <el-table-column prop="id" label="Date" width="140"></el-table-column>
+                        <el-table-column prop="risk_score" label="Risk Score"></el-table-column>
+                    </el-table>
+                </div>
+                <div v-else style="color:#909399;">暂无月报数据</div>
+            </el-dialog>
+
+        </el-main>
+
+            <!-- CREATE TASK DIALOG -->
+        <el-dialog v-model="createVisible" title="Create Sync Task" width="900px" destroy-on-close>
+            <el-steps :active="activeStep" finish-status="success" simple style="margin-bottom: 20px;">
+                <el-step title="Info"></el-step>
+                <el-step title="MySQL"></el-step>
+                <el-step title="Mongo"></el-step>
+                <el-step title="Mapping"></el-step>
+            </el-steps>
+
+            <el-form :model="form" label-width="120px" label-position="left">
+                <!-- Step 1 -->
+                <div v-show="activeStep === 0">
+                    <el-form-item label="Task ID" required>
+                        <el-input v-model="form.task_id"></el-input>
+                    </el-form-item>
+                </div>
+
+                <!-- Step 2: MySQL Source -->
+                <div v-show="activeStep === 1">
+                    <div class="section-title">Select MySQL Source</div>
+                    <el-radio-group v-model="sourceSelectionMode" style="margin-bottom: 20px;">
+                        <el-radio-button label="saved">Saved Connection</el-radio-button>
+                        <el-radio-button label="manual">Manual Input</el-radio-button>
+                    </el-radio-group>
+
+                    <div v-if="sourceSelectionMode === 'saved'">
+                        <el-form-item label="Connection">
+                            <el-select v-model="selectedSourceId" placeholder="Select MySQL Connection" style="width: 100%">
+                                <el-option v-for="c in mysqlConnections" :key="c.id" :label="c.name + ' (' + c.host + ')'" :value="c.id"></el-option>
+                            </el-select>
+                        </el-form-item>
+                        <el-form-item label="Database">
+                            <el-select v-model="selectedDatabase" placeholder="Select Database" style="width: 100%" @visible-change="v => v && loadMysqlDatabasesSaved()">
+                                <el-option v-for="d in mysqlDbList" :key="d" :label="d" :value="d"></el-option>
+                            </el-select>
+                        </el-form-item>
+                        <el-form-item label="Tables (optional)">
+                            <el-select v-model="selectedTables" multiple collapse-tags placeholder="Leave empty for full sync" style="width: 100%" :disabled="!selectedDatabase" @visible-change="v => v && loadMysqlTables()">
+                                <el-option v-for="t in mysqlTableList" :key="t" :label="t" :value="t"></el-option>
+                            </el-select>
+                        </el-form-item>
+                    </div>
+                    <div v-else>
+                        <el-form-item label="Host"><el-input v-model="form.mysql.host"></el-input></el-form-item>
+                        <el-form-item label="Port"><el-input-number v-model="form.mysql.port"></el-input-number></el-form-item>
+                        <el-form-item label="User"><el-input v-model="form.mysql.user"></el-input></el-form-item>
+                        <el-form-item label="Password"><el-input v-model="form.mysql.password" type="password" show-password></el-input></el-form-item>
+                        <el-form-item label="Database">
+                            <el-select v-model="selectedDatabase" placeholder="Select Database" style="width: 100%" @visible-change="v => v && loadMysqlDatabasesManual()">
+                                <el-option v-for="d in mysqlDbList" :key="d" :label="d" :value="d"></el-option>
+                            </el-select>
+                        </el-form-item>
+                        <el-form-item label="Tables (optional)">
+                            <el-select v-model="selectedTables" multiple collapse-tags placeholder="Leave empty for full sync" style="width: 100%" :disabled="!selectedDatabase" @visible-change="v => v && loadMysqlTables(true)">
+                                <el-option v-for="t in mysqlTableList" :key="t" :label="t" :value="t"></el-option>
+                            </el-select>
+                        </el-form-item>
+                    </div>
+                </div>
+
+                <!-- Step 3: Mongo Target -->
+                <div v-show="activeStep === 2">
+                    <div class="section-title">Select MongoDB Target</div>
+                    <el-radio-group v-model="targetSelectionMode" style="margin-bottom: 20px;">
+                        <el-radio-button label="saved">Saved Connection</el-radio-button>
+                        <el-radio-button label="manual">Manual Input</el-radio-button>
+                    </el-radio-group>
+
+                    <div v-if="targetSelectionMode === 'saved'">
+                         <el-form-item label="Connection">
+                            <el-select v-model="selectedTargetId" placeholder="Select Mongo Connection" style="width: 100%">
+                                <el-option v-for="c in mongoConnections" :key="c.id" :label="c.name + ' (' + c.host + ')'" :value="c.id"></el-option>
+                            </el-select>
+                        </el-form-item>
+                        <el-form-item label="Target DB">
+                             <el-input v-model="form.mongo.database" placeholder="Override DB name (Optional)"></el-input>
+                        </el-form-item>
+                    </div>
+                    <div v-else>
+                        <el-form-item label="Host"><el-input v-model="form.mongo.host"></el-input></el-form-item>
+                        <el-form-item label="Port"><el-input-number v-model="form.mongo.port"></el-input-number></el-form-item>
+                        <el-form-item label="User"><el-input v-model="form.mongo.user"></el-input></el-form-item>
+                        <el-form-item label="Password"><el-input v-model="form.mongo.password" type="password" show-password></el-input></el-form-item>
+                        <el-form-item label="Database"><el-input v-model="form.mongo.database"></el-input></el-form-item>
+                        <el-form-item label="Auth Source"><el-input v-model="form.mongo.auth_source"></el-input></el-form-item>
+                    </div>
+                </div>
+
+                <!-- Step 4: Mode & Scope -->
+                <div v-show="activeStep === 3">
+                    <div class="section-title">Sync Strategy</div>
+                    
+                    <el-form-item label="Sync Scope">
+                        <el-radio-group v-model="syncScope">
+                            <el-radio-button label="full">Full Database</el-radio-button>
+                            <el-radio-button label="partial">Selected Tables</el-radio-button>
+                        </el-radio-group>
+                    </el-form-item>
+
+                    <div v-if="syncScope === 'partial'">
+                        <div class="section-title">Table Mappings</div>
+                        <div v-for="(map, index) in form.mappings" :key="index" class="mapping-row">
+                            <el-input v-model="map.source" placeholder="MySQL Table" style="flex: 1"></el-input>
+                            <el-icon><Right /></el-icon>
+                            <el-input v-model="map.target" placeholder="Mongo Collection" style="flex: 1"></el-input>
+                            <el-button type="danger" circle size="small" @click="form.mappings.splice(index, 1)">
+                                <el-icon><Delete /></el-icon>
+                            </el-button>
+                        </div>
+                        <el-button type="primary" link @click="form.mappings.push({source:'', target:''})">+ Add Mapping</el-button>
+                    </div>
+                    <div v-else>
+                         <el-alert title="All tables in the source database will be synced. New tables will be automatically discovered." type="info" show-icon :closable="false"></el-alert>
+                    </div>
+
+                    <div class="section-title">Sync Mode</div>
+                    <el-form-item label="Mode">
+                        <el-radio-group v-model="syncMode" class="mode-group">
+                            <el-radio label="history"><strong>History Retention (Append)</strong></el-radio>
+                            <div class="mode-desc">Updates create new versions; Deletes append tombstone records.</div>
+                            <el-radio label="mirror"><strong>Mirror Mode (In-Place)</strong></el-radio>
+                            <div class="mode-desc">Target stays identical to Source. Updates overwrite; Deletes are soft-marked (or hard deleted if configured).</div>
+                        </el-radio-group>
+                    </el-form-item>
+
+                    <el-form-item label="Primary Key">
+                        <el-input v-model="form.pk_field" placeholder="id"></el-input>
+                    </el-form-item>
+                </div>
+            </el-form>
+            <template #footer>
+                <el-button @click="createVisible = false">Cancel</el-button>
+                <el-button v-if="activeStep > 0" @click="activeStep--">Back</el-button>
+                <el-button v-if="activeStep < 3" type="primary" @click="activeStep++">Next</el-button>
+                <el-button v-if="activeStep === 3" type="success" @click="createTask" :loading="creating">Start Task</el-button>
+            </template>
+        </el-dialog>
+
+        <!-- CREATE CONNECTION DIALOG -->
+        <el-dialog v-model="connVisible" :title="editingConnId ? 'Edit Data Source' : 'Add Data Source'" width="600px">
+            <el-form :model="connForm" label-width="100px">
+                <el-form-item label="Type">
+                    <el-select v-model="connForm.type" placeholder="Select Type" style="width: 100%">
+                        <el-option label="MySQL" value="mysql"></el-option>
+                        <el-option label="MongoDB" value="mongo"></el-option>
+                    </el-select>
+                </el-form-item>
+                <el-form-item label="Name" required>
+                    <el-input v-model="connForm.name" placeholder="e.g. Prod DB"></el-input>
+                </el-form-item>
+                <el-form-item label="ID" required>
+                    <el-input v-model="connForm.id" placeholder="Unique ID (e.g. mysql_prod)" :disabled="!!editingConnId"></el-input>
+                </el-form-item>
+                <el-divider></el-divider>
+                <template v-if="connForm.type === 'mysql'">
+                    <el-form-item label="Host" required><el-input v-model="connForm.host"></el-input></el-form-item>
+                    <el-form-item label="Port" required><el-input-number v-model="connForm.port"></el-input-number></el-form-item>
+                    <el-form-item label="User" required><el-input v-model="connForm.user"></el-input></el-form-item>
+                    <el-form-item label="Password" required><el-input v-model="connForm.password" type="password" show-password></el-input></el-form-item>
+                    <el-form-item label="Database"><el-input v-model="connForm.database"></el-input></el-form-item>
+                </template>
+                <template v-else>
+                    <el-form-item label="Hosts">
+                        <el-input v-model="connForm.mongo_hosts" placeholder="mongo1:27017,mongo2:27017,mongo3:27017"></el-input>
+                        <div style="font-size: 12px; color: #999;">填写副本集多个节点（逗号分隔）。如不填则使用单节点 Host/Port。</div>
+                    </el-form-item>
+                    <el-form-item label="Replica Set">
+                        <el-input v-model="connForm.replica_set" placeholder="rs0"></el-input>
+                    </el-form-item>
+                    <el-form-item label="Host"><el-input v-model="connForm.host" placeholder="单节点 Host"></el-input></el-form-item>
+                    <el-form-item label="Port"><el-input-number v-model="connForm.port"></el-input-number></el-form-item>
+                    <el-form-item label="User" required><el-input v-model="connForm.user"></el-input></el-form-item>
+                    <el-form-item label="Password" required><el-input v-model="connForm.password" type="password" show-password></el-input></el-form-item>
+                    <el-form-item label="Database"><el-input v-model="connForm.database"></el-input></el-form-item>
+                    <el-form-item label="Auth Source"><el-input v-model="connForm.auth_source"></el-input></el-form-item>
+                </template>
+                <el-alert v-if="testMsg" :title="testMsg" :type="testPassed ? 'success' : 'error'" show-icon :closable="false"></el-alert>
+            </el-form>
+            <template #footer>
+                <el-button @click="connVisible = false">Cancel</el-button>
+                <el-button @click="testConnection" :loading="testing">测试连接</el-button>
+                <el-button type="primary" @click="saveConnection" :disabled="!testPassed">{{ editingConnId ? 'Update' : '保存' }}</el-button>
+            </template>
+        </el-dialog>
+        
+                <el-dialog v-model="logsVisible" title="Task Logs" width="800px" destroy-on-close append-to-body center>
+            <div style="margin-bottom: 10px; border-bottom: 1px solid #eee; padding-bottom: 10px;">
+                 <el-row :gutter="10" align="middle">
+                    <el-col :span="6">
+                        <el-input v-model="logsDownloadKeyword" placeholder="Filter/Download keyword" size="small" clearable></el-input>
+                    </el-col>
+                    <el-col :span="10">
+                        <el-date-picker
+                            v-model="logsDownloadTimeRange"
+                            type="datetimerange"
+                            range-separator="To"
+                            start-placeholder="Start time"
+                            end-placeholder="End time"
+                            size="small"
+                            style="width: 100%">
+                        </el-date-picker>
+                    </el-col>
+                    <el-col :span="4">
+                         <el-button type="primary" size="small" icon="Download" @click="downloadLogs">Download</el-button>
+                    </el-col>
+                    <el-col :span="4" style="text-align: right;">
+                        <el-pagination
+                            v-model:current-page="logsPage"
+                            v-model:page-size="logsLineCount"
+                            :page-sizes="[100, 500, 1000]"
+                            :small="true"
+                            layout="sizes, prev, next"
+                            :total="logsTotal"
+                            @size-change="handleLogsSizeChange"
+                            @current-change="handleLogsPageChange">
+                        </el-pagination>
+                    </el-col>
+                 </el-row>
+            </div>
+            <div style="background-color: #1e1e1e; color: #d4d4d4; padding: 15px; border-radius: 4px; height: 500px; overflow-y: auto; font-family: 'Consolas', 'Monaco', monospace; font-size: 13px; line-height: 1.5;">
+                <div v-if="logsLines.length === 0" style="color: #666; text-align: center; margin-top: 200px;">No logs available</div>
+                <div v-for="(line, idx) in logsLines" :key="idx">{{ line.trim() }}</div>
+            </div>
+            <template #footer>
+                <el-button @click="logsVisible = false">Close</el-button>
+            </template>
+        </el-dialog>
+
+        <el-dialog v-model="metricsVisible" title="Metrics" width="800px" destroy-on-close append-to-body center>
+            <div style="display:flex; gap:12px; margin-bottom:12px;">
+                <template v-if="metricsTaskId !== 'monitor'">
+                    <el-tag type="primary">Full Insert: {{ displayCounts.full }}</el-tag>
+                    <el-tag type="success">Inc Insert: {{ displayCounts.inc }}</el-tag>
+                    <el-tag type="warning">Update: {{ displayCounts.update }}</el-tag>
+                    <el-tag type="danger">Delete: {{ displayCounts.delete }}</el-tag>
+                </template>
+                <template v-else>
+                    <el-tag type="danger">Error: {{ displayCounts.full }}</el-tag>
+                    <el-tag type="warning">Warn: {{ displayCounts.inc }}</el-tag>
+                    <el-tag type="primary">Info: {{ displayCounts.update }}</el-tag>
+                    <el-tag>Other: {{ displayCounts.delete }}</el-tag>
+                </template>
+            </div>
+            <div style="display:flex; justify-content:flex-end; margin-bottom:8px;">
+                <el-radio-group v-model="metricsChartType" size="small">
+                    <el-radio-button label="bar">Bar</el-radio-button>
+                    <el-radio-button label="donut">Donut</el-radio-button>
+                </el-radio-group>
+            </div>
+            <div style="background:#fff; padding:10px; border-radius:6px;">
+                <canvas id="metricsChart" height="240"></canvas>
+            </div>
+            <div style="background:#fff; padding:10px; border-radius:6px; margin-top:10px;">
+                <canvas id="metricsTrend" height="120"></canvas>
+            </div>
+            <template #footer>
+                <el-button @click="metricsVisible = false">Close</el-button>
+            </template>
+        </el-dialog>
+        
+        <el-dialog v-model="tablesVisible" title="Tables" width="600px" destroy-on-close append-to-body center>
+            <el-table :data="tablesPageData" size="small" style="width:100%" border>
+                <el-table-column prop="name" label="Table"></el-table-column>
+            </el-table>
+            <div style="display:flex; justify-content:flex-end; margin-top:8px;">
+                <el-pagination
+                    :current-page="tablesPage"
+                    :page-size="tablesPageSize"
+                    :total="tablesTotal"
+                    layout="prev, pager, next"
+                    @current-change="handleTablesPageChange">
+                </el-pagination>
+            </div>
+            <template #footer>
+                <el-button @click="tablesVisible = false">Close</el-button>
+            </template>
+        </el-dialog>
+
+    
+
+    <script>
+        const { createApp, ref, reactive, onMounted, computed, watch, nextTick } = Vue;
+        const { ElMessage, ElMessageBox } = ElementPlus;
+        const { Odometer, List, Connection, Plus, Delete, Right, Edit, Download, Setting, VideoPlay, Aim, Bell, ChatLineSquare, Histogram, Refresh, SwitchButton } = ElementPlusIconsVue;
+
+                const app = createApp({
+                    components: { Odometer, List, Connection, Plus, Delete, Right, Edit, Download, Setting, VideoPlay, Aim, Bell, ChatLineSquare, Histogram, Refresh, SwitchButton },
+                    setup() {
+                        const currentView = ref('dashboard');
+                        const tasks = ref([]);
+                        const connections = ref([]);
+                        const overview = reactive({ all: 0, sync: 0, monitor: 0 });
+                
+                // --- Task Creation State ---
+                const createVisible = ref(false);
+                const activeStep = ref(0);
+                const creating = ref(false);
+                const sourceSelectionMode = ref('saved');
+                const targetSelectionMode = ref('saved');
+                const selectedSourceId = ref('');
+                const selectedTargetId = ref('');
+                const syncScope = ref('partial');
+                const syncMode = ref('history');
+                const logsVisible = ref(false);
+                const logsTaskId = ref('');
+                const logsLineCount = ref(100);
+                const logsPage = ref(1);
+                const logsTotal = ref(0);
+                const logsLines = ref([]);
+                const logsDownloadKeyword = ref('');
+                const logsDownloadTimeRange = ref([]);
+                let logsTimer = null;
+
+                // Monitor
+                const monitorStatus = ref({ status: 'unknown', last_run: '', alerts_sent: 0, last_error: '' });
+                const inspectionReport = ref(null);
+                const inspectionLoading = ref(false);
+                const inspectionConfigVisible = ref(false);
+                const inspectionConfig = ref({
+                    prometheus_url: 'https://prometheus.test.exc888.org',
+                    ark_api_key: '7a15ca7d-a3ec-4818-a0f4-0046cd1bcd49',
+                    ark_model_id: 'doubao-seed-1-6-251015',
+                    ark_base_url: 'https://ark.cn-beijing.volces.com/api/v3'
+                });
+                const inspectionHistoryList = ref([]);
+                const inspectionHistorySelected = ref('');
+                const inspectionHistoryLoading = ref(false);
+                const weeklyReportVisible = ref(false);
+                const weeklyReportData = ref(null);
+                const monthlyReportVisible = ref(false);
+                const monthlyReportData = ref(null);
+                const monitorConfig = ref({ 
+                    enabled: false, 
+                    es_hosts: '', 
+                    es_username: '', 
+                    es_password: '', 
+                    index_pattern: '', 
+                    slack_webhook_url: '', 
+                    poll_interval_seconds: 60,
+                    alert_keywords: [],
+                    ignore_keywords: []
+                });
+                const monitorActionLoading = ref(false);
+                const monitorSaving = ref(false);
+
+                const metricsVisible = ref(false);
+                const metricsTaskId = ref('');
+                const metricsCounts = reactive({ full: 0, inc: 0, update: 0, delete: 0 });
+                const displayCounts = reactive({ full: 0, inc: 0, update: 0, delete: 0 });
+                const collapseSync = ref([]);
+                const collapseMonitor = ref([]);
+                let metricsTimer = null;
+                let metricsCanvas = null;
+                let metricsCtx = null;
+                let trendCanvas = null;
+                let trendCtx = null;
+                let metricsEchart = null;
+                const metricsChartType = ref('bar');
+                let metricsLast = [0,0,0,0];
+                let glowAngle = 0;
+                const trendData = reactive({
+                    full: Array(40).fill(0),
+                    inc: Array(40).fill(0),
+                    update: Array(40).fill(0),
+                    delete: Array(40).fill(0),
+                });
+                const tablesVisible = ref(false);
+                const tablesTaskId = ref('');
+                const tablesAllList = ref([]);
+                const tablesPage = ref(1);
+                const tablesPageSize = ref(10);
+                const tablesTotal = ref(0);
+                const tablesPageData = ref([]);
+                const mysqlDbList = ref([]);
+                const mysqlTableList = ref([]);
+                const selectedDatabase = ref('');
+                const selectedTables = ref([]);
+
+                const form = reactive({
+                    task_id: '',
+                    mysql: { host: 'localhost', port: 3306, user: 'root', password: '', database: '' },
+                    mongo: { host: 'localhost', port: 27017, user: 'root', password: '', database: '', auth_source: 'admin' },
+                    mappings: [{source: '', target: ''}],
+                    pk_field: 'id'
+                });
+
+                // --- Connection Creation / Edit State ---
+                const connVisible = ref(false);
+                const connForm = reactive({
+                    id: '', name: '', type: 'mysql',
+                    host: 'localhost', port: 3306, user: 'root', password: '', database: '', auth_source: 'admin',
+                    mongo_hosts: '', replica_set: ''
+                });
+                const testing = ref(false);
+                const testPassed = ref(false);
+                const testMsg = ref('');
+                const editingConnId = ref('');
+
+                // --- Computed ---
+                const syncTasks = computed(() => tasks.value.filter(t => t.type !== 'monitor'));
+                        const monitorTasks = computed(() => tasks.value.filter(t => t.type === 'monitor'));
+                        let overviewCanvas = null, overviewCtx = null;
+                        const _drawOverviewRing = (running, stopped, error) => {
+                            const el = document.getElementById('syncStatusRingCanvas');
+                            if (!el) return;
+                            const dpr = window.devicePixelRatio || 1;
+                            const cssW = el.parentElement ? el.parentElement.clientWidth - 12 : 360;
+                            const cssH = 140;
+                            el.width = Math.max(240, cssW) * dpr;
+                            el.height = cssH * dpr;
+                            el.style.width = Math.max(240, cssW) + 'px';
+                            el.style.height = cssH + 'px';
+                            const ctx = el.getContext('2d');
+                            ctx.setTransform(dpr,0,0,dpr,0,0);
+                            ctx.clearRect(0,0,cssW,cssH);
+                            const values = [running, stopped, error];
+                            const colors = ['#67C23A', '#909399', '#F56C6C'];
+                            const labels = ['运行中', '已停止', '错误'];
+                            const total = Math.max(1, running + stopped + error);
+                            const cx = cssW/2, cy = cssH/2 + 4;
+                            const R = Math.min(cssW, cssH) * 0.38;
+                            const thickness = Math.max(10, R * 0.28);
+                            // track background
+                            ctx.beginPath();
+                            ctx.arc(cx, cy, R, 0, Math.PI*2);
+                            ctx.strokeStyle = '#ebeef5';
+                            ctx.lineWidth = thickness;
+                            ctx.stroke();
+                            let start = -Math.PI/2;
+                            for (let i=0;i<values.length;i++){
+                                const frac = values[i] / total;
+                                const end = start + frac * Math.PI*2;
+                                ctx.beginPath();
+                                ctx.arc(cx, cy, R, start, end);
+                                const grad = ctx.createLinearGradient(cx - R, cy - R, cx + R, cy + R);
+                                grad.addColorStop(0, colors[i]);
+                                grad.addColorStop(1, '#ffffff');
+                                ctx.strokeStyle = grad;
+                                ctx.lineCap = 'round';
+                                ctx.lineWidth = thickness;
+                                ctx.stroke();
+                                start = end;
+                            }
+                            // center text
+                            ctx.fillStyle = '#303133';
+                            ctx.font = '600 18px system-ui';
+                            ctx.textAlign = 'center';
+                            ctx.fillText(total + ' 任务', cx, cy+6);
+                            const lx = 14, ly = 18;
+                            ctx.textBaseline = 'middle';
+                            const colW = cssW / 3;
+                            const legendX = Math.floor(colW * 0.7) + lx; // 更靠左的第二列位置
+                            for (let i=0;i<labels.length;i++){
+                                const y = ly + i*24;
+                                ctx.fillStyle = '#000';
+                                ctx.font = '500 12px system-ui';
+                                ctx.fillText(labels[i] + '：' + values[i], legendX, y);
+                            }
+                        };
+                        const _updateOverview = () => {
+                            overview.sync = syncTasks.value.length;
+                            overview.monitor = monitorTasks.value.length;
+                            overview.all = tasks.value.length;
+                            const running = syncTasks.value.filter(t => t.status === 'running').length;
+                            const stopped = syncTasks.value.filter(t => t.status === 'stopped').length;
+                            const error = syncTasks.value.filter(t => t.status === 'error').length;
+                            _drawOverviewRing(running, stopped, error);
+                        };
+                        onMounted(() => {
+                            _updateOverview();
+                        });
+                        watch(tasks, () => _updateOverview(), { deep: true });
+                const mysqlConnections = computed(() => connections.value.filter(c => c.type === 'mysql'));
+                const mongoConnections = computed(() => connections.value.filter(c => c.type === 'mongo'));
+
+                // --- Methods ---
+                const handleMenuSelect = (index) => {
+                    currentView.value = index;
+                    if (index === 'connections') fetchConnections();
+                    if (index === 'dashboard' || index === 'tasks') fetchTasks();
+                    if (index === 'monitor') {
+                        fetchMonitorStatus();
+                        fetchMonitorConfig();
+                    }
+                    if (index === 'inspection') {
+                        fetchInspectionHistory();
+                    }
+                };
+
+                const fetchTasks = async () => {
+                    const res = await fetch('/tasks/status');
+                    const data = await res.json();
+                    tasks.value = data.tasks;
+                };
+
+                const fetchConnections = async () => {
+                    const res = await fetch('/connections');
+                    const data = await res.json();
+                    connections.value = data.connections;
+                };
+
+                // Polling
+                setInterval(() => {
+                    if (currentView.value === 'dashboard' || currentView.value === 'tasks') {
+                        fetchTasks();
+                    }
+                    if (currentView.value === 'monitor') {
+                        fetchMonitorStatus();
+                    }
+                }, 3000);
+
+                const showCreateDialog = async () => {
+                    await fetchConnections();
+                    form.task_id = 'task_' + Date.now();
+                    activeStep.value = 0;
+                    createVisible.value = true;
+                };
+
+                const showConnDialog = () => {
+                    connForm.id = 'conn_' + Date.now();
+                    // 新增模式清空下方字段，不填历史
+                    connForm.name = '';
+                    connForm.type = 'mysql';
+                    connForm.host = '';
+                    connForm.port = null;
+                    connForm.user = '';
+                    connForm.password = '';
+                    connForm.database = '';
+                    connForm.auth_source = '';
+                    connForm.mongo_hosts = '';
+                    connForm.replica_set = '';
+                    connVisible.value = true;
+                    testPassed.value = false;
+                    testMsg.value = '';
+                    editingConnId.value = '';
+                };
+
+                const _buildConnectionPayload = () => {
+                    const payload = { ...connForm };
+                    if (payload.type === 'mongo') {
+                        // If mongo_hosts provided or host contains commas, prefer replica set mode
+                        const hostsStr = (payload.mongo_hosts || '').trim() || (payload.host || '');
+                        if (hostsStr.includes(',')) {
+                            payload.hosts = hostsStr.split(',').map(s => s.trim()).filter(Boolean);
+                            // keep replica_set as provided
+                        } else {
+                            // single host mode, ensure hosts not set
+                            payload.hosts = undefined;
+                            payload.replica_set = undefined;
+                        }
+                    }
+                    return payload;
+                };
+
+                const _buildMysqlConnForQuery = async (fromManual = false) => {
+                    // Manual mode builds full payload with password from user input
+                    return { id: 'manual', name: 'manual', type: 'mysql', host: form.mysql.host, port: form.mysql.port, user: form.mysql.user, password: form.mysql.password, database: selectedDatabase.value || '' };
+                };
+                const loadMysqlDatabasesSaved = async () => {
+                    try {
+                        if (!selectedSourceId.value) return;
+                        const res = await fetch('/mysql/databases_by_id/' + selectedSourceId.value, { method: 'POST' });
+                        const data = await res.json();
+                        mysqlDbList.value = data.databases || [];
+                    } catch(e) { ElMessage.error(e.message); }
+                };
+                const loadMysqlDatabasesManual = async () => {
+                    try {
+                        const conn = await _buildMysqlConnForQuery(true);
+                        const res = await fetch('/mysql/databases', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(conn) });
+                        const data = await res.json();
+                        mysqlDbList.value = data.databases || [];
+                    } catch(e) { ElMessage.error(e.message); }
+                };
+                const loadMysqlTables = async (fromManual = false) => {
+                    try {
+                        if (!selectedDatabase.value) return;
+                        let res;
+                        if (sourceSelectionMode.value === 'saved' && !fromManual) {
+                            res = await fetch('/mysql/tables_by_id/' + selectedSourceId.value, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ database: selectedDatabase.value }) });
+                        } else {
+                            const conn = await _buildMysqlConnForQuery(true);
+                            conn.database = selectedDatabase.value;
+                            res = await fetch('/mysql/tables', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(conn) });
+                        }
+                        const data = await res.json();
+                        mysqlTableList.value = data.tables || [];
+                    } catch(e) { ElMessage.error(e.message); }
+                };
+
+                const editConnection = async (id) => {
+                    try {
+                        const res = await fetch('/connections/' + id);
+                        if (!res.ok) throw new Error('加载连接失败');
+                        const cfg = await res.json();
+                        connForm.id = id;
+                        connForm.name = cfg.name || id;
+                        connForm.type = cfg.type || 'mysql';
+                        connForm.user = cfg.user || '';
+                        connForm.password = '';
+                        connForm.database = cfg.database || '';
+                        connForm.auth_source = cfg.auth_source || 'admin';
+                        if (connForm.type === 'mongo') {
+                            if (cfg.hosts && Array.isArray(cfg.hosts) && cfg.hosts.length > 0) {
+                                connForm.mongo_hosts = cfg.hosts.join(',');
+                                connForm.replica_set = cfg.replica_set || '';
+                                connForm.host = '';
+                                connForm.port = 27017;
+                            } else {
+                                connForm.mongo_hosts = '';
+                                connForm.replica_set = '';
+                                connForm.host = cfg.host || 'localhost';
+                                connForm.port = cfg.port || 27017;
+                            }
+                        } else {
+                            connForm.host = cfg.host || 'localhost';
+                            connForm.port = cfg.port || 3306;
+                            connForm.mongo_hosts = '';
+                            connForm.replica_set = '';
+                        }
+                        testPassed.value = false;
+                        testMsg.value = '为安全起见，请重新输入密码并测试连接';
+                        editingConnId.value = id;
+                        connVisible.value = true;
+                    } catch(e) {
+                        ElMessage.error(e.message);
+                    }
+                };
+
+                const testConnection = async () => {
+                    if (connForm.type === 'mysql' && (!connForm.password || !connForm.password.trim())) {
+                        ElMessage.error('请输入密码后再测试连接');
+                        return;
+                    }
+                    testing.value = true;
+                    testPassed.value = false;
+                    testMsg.value = '';
+                    try {
+                        const res = await fetch('/connections/test', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify(_buildConnectionPayload())
+                        });
+                        const data = await res.json();
+                        if (res.ok && data.ok) {
+                            testPassed.value = true;
+                            testMsg.value = `连接成功，延迟 ${data.latency_ms} ms`;
+                            ElMessage.success('测试连接成功');
+                        } else {
+                            testPassed.value = false;
+                            testMsg.value = (data.detail || '测试失败');
+                            ElMessage.error('测试连接失败');
+                        }
+                    } catch(e) {
+                        testPassed.value = false;
+                        testMsg.value = e.message;
+                        ElMessage.error(e.message);
+                    } finally {
+                        testing.value = false;
+                    }
+                };
+
+                const saveConnection = async () => {
+                    if (connForm.type === 'mysql' && (!connForm.password || !connForm.password.trim())) {
+                        ElMessage.error('请输入密码后再保存');
+                        return;
+                    }
+                    if (!testPassed.value) {
+                        ElMessage.error('请先测试连接，成功后再保存');
+                        return;
+                    }
+                    try {
+                        const res = await fetch('/connections', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify(_buildConnectionPayload())
+                        });
+                        if (res.ok) {
+                            ElMessage.success(editingConnId.value ? 'Connection updated' : 'Connection saved');
+                            connVisible.value = false;
+                            editingConnId.value = '';
+                            fetchConnections();
+                        } else {
+                            ElMessage.error('Failed to save connection');
+                        }
+                    } catch(e) { ElMessage.error(e.message); }
+                };
+
+                const deleteConnection = async (id) => {
+                    await fetch('/connections/' + id, { method: 'DELETE' });
+                    fetchConnections();
+                    ElMessage.success('Deleted');
+                };
+
+                const confirmStop = (id) => {
+                    ElMessageBox.confirm(
+                        'Stop this task? Configuration will be kept.',
+                        'Confirm Stop',
+                        { confirmButtonText: 'Stop', cancelButtonText: 'Cancel', type: 'warning', center: true }
+                    ).then(async () => {
+                        await fetch('/tasks/stop_soft/' + id, { method: 'POST' });
+                        ElMessage.success('Stop command sent');
+                        fetchTasks();
+                    }).catch(() => {});
+                };
+
+                const confirmReset = (id) => {
+                    ElMessageBox.confirm(
+                        'Reset task state? This will trigger a full resync next time.',
+                        'Confirm Reset',
+                        { confirmButtonText: 'Reset', cancelButtonText: 'Cancel', type: 'info', center: true }
+                    ).then(async () => {
+                        await fetch('/tasks/reset/' + id, { method: 'POST' });
+                        ElMessage.success('Reset done');
+                        fetchTasks();
+                    }).catch(() => {});
+                };
+
+                const confirmDelete = (id) => {
+                    ElMessageBox.confirm(
+                        'Permanently delete task config, state, and logs?',
+                        'Confirm Delete',
+                        { confirmButtonText: 'Delete', cancelButtonText: 'Cancel', type: 'danger', center: true }
+                    ).then(async () => {
+                        await fetch('/tasks/delete/' + id, { method: 'POST' });
+                        ElMessage.success('Deleted');
+                        fetchTasks();
+                    }).catch(() => {});
+                };
+                
+                const confirmStart = (id) => {
+                    ElMessageBox.confirm(
+                        'Start this task from saved position?',
+                        'Confirm Start',
+                        { confirmButtonText: 'Start', cancelButtonText: 'Cancel', type: 'success', center: true }
+                    ).then(async () => {
+                        try {
+                            const res = await fetch('/tasks/start_existing/' + id, { method: 'POST' });
+                            if (res.ok) {
+                                ElMessage.success('Start command sent');
+                            } else {
+                                let err = {};
+                                try { err = await res.json(); } catch(_) {}
+                                ElMessage.error('Failed to start: ' + (err.detail || res.statusText));
+                            }
+                        } catch(e) {
+                            ElMessage.error('Failed to start: ' + (e?.message || e));
+                        } finally {
+                            fetchTasks();
+                        }
+                    }).catch(() => {});
+                };
+
+                const confirmResetAndStart = (id) => {
+                    ElMessageBox.confirm(
+                        'Reset task state and restart from the beginning?',
+                        'Reset & Start',
+                        { confirmButtonText: 'Reset & Start', cancelButtonText: 'Cancel', type: 'warning', center: true }
+                    ).then(async () => {
+                        try {
+                            const res = await fetch('/tasks/reset_and_start/' + id, { method: 'POST' });
+                            if (res.ok) {
+                                ElMessage.success('Reset and start sent');
+                            } else {
+                                let err = {};
+                                try { err = await res.json(); } catch(_) {}
+                                ElMessage.error('Failed: ' + (err.detail || res.statusText));
+                            }
+                        } catch(e) {
+                            ElMessage.error('Failed: ' + (e?.message || e));
+                        } finally {
+                            fetchTasks();
+                        }
+                    }).catch(() => {});
+                };
+                
+                const truncateTables = (list) => {
+                    if (!list || !Array.isArray(list) || list.length === 0) return '-';
+                    const maxLen = 60;
+                    let res = [];
+                    let cur = 0;
+                    for (let i = 0; i < list.length; i++) {
+                        const name = list[i];
+                        const part = (res.length > 0 ? ', ' : '') + name;
+                        if (cur + part.length > maxLen) {
+                            res.push('.*');
+                            break;
+                        }
+                        res.push(name);
+                        cur += part.length;
+                    }
+                    return res.join(', ');
+                };
+                const openTables = (id) => {
+                    const t = tasks.value.find(x => x.task_id === id);
+                    if (!t) return;
+                    tablesTaskId.value = id;
+                    const arr = (t.config && Array.isArray(t.config.tables)) ? t.config.tables.slice() : [];
+                    tablesAllList.value = arr;
+                    tablesTotal.value = arr.length;
+                    tablesPage.value = 1;
+                    const ps = Number(tablesPageSize.value) || 10;
+                    tablesPageData.value = arr.slice(0, ps).map(n => ({ name: n }));
+                    tablesVisible.value = true;
+                };
+                const handleTablesPageChange = (p) => {
+                    tablesPage.value = p;
+                    const ps = Number(tablesPageSize.value) || 10;
+                    const start = (p - 1) * ps;
+                    const end = start + ps;
+                    const arr = tablesAllList.value || [];
+                    tablesPageData.value = arr.slice(start, end).map(n => ({ name: n }));
+                };
+                
+                const fetchLogs = async () => {
+                    if (!logsTaskId.value) return;
+                    try {
+                        const res = await fetch(`/tasks/logs/${logsTaskId.value}?page=${logsPage.value}&page_size=${logsLineCount.value}&_=${Date.now()}`);
+                        const data = await res.json();
+                        logsLines.value = data.lines || [];
+                        logsTotal.value = data.total || 0;
+                        if (data.page) logsPage.value = data.page;
+                    } catch (e) {
+                        console.error('Fetch logs error:', e);
+                    }
+                };
+
+                const viewLogs = async (id) => {
+                    try {
+                        logsTaskId.value = id;
+                        logsLineCount.value = 100;
+                        logsPage.value = -1; // Request last page
+                        logsVisible.value = true;
+                        await nextTick();
+                        
+                        await fetchLogs();
+                        if (logsTimer) clearInterval(logsTimer);
+                        logsTimer = setInterval(fetchLogs, 2000);
+                        ElMessage.success('Logs loaded');
+                    } catch (e) {
+                        ElMessage.error('Failed to load logs: ' + (e?.message || e));
+                    }
+                };
+                
+                const handleLogsPageChange = () => fetchLogs();
+                const handleLogsSizeChange = () => fetchLogs();
+
+                const downloadLogs = () => {
+                    let url = `/tasks/logs/${logsTaskId.value}/download?t=${Date.now()}`;
+                    if (logsDownloadKeyword.value) {
+                        url += `&keyword=${encodeURIComponent(logsDownloadKeyword.value)}`;
+                    }
+                    if (logsDownloadTimeRange.value && logsDownloadTimeRange.value.length === 2) {
+                        // Format: YYYY-MM-DD HH:MM:SS
+                        const fmt = (d) => {
+                            const pad = (n) => n < 10 ? '0' + n : n;
+                            return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+                        };
+                        const start = fmt(new Date(logsDownloadTimeRange.value[0]));
+                        const end = fmt(new Date(logsDownloadTimeRange.value[1]));
+                        url += `&start_time=${encodeURIComponent(start)}&end_time=${encodeURIComponent(end)}`;
+                    }
+                    window.open(url, '_blank');
+                };
+
+                // Close logs dialog clears timer
+                watch(() => logsVisible.value, (v) => {
+                    if (!v && logsTimer) {
+                        clearInterval(logsTimer);
+                        logsTimer = null;
+                    }
+                });
+
+                const _fetchMetricsOnce = async (id) => {
+                    const headers = {};
+                    if (lastMetricsETag) headers['If-None-Match'] = lastMetricsETag;
+                    const res = await fetch(`/tasks/status/${id}?_=${Date.now()}`, { headers });
+                    if (res.status === 304) return;
+                    if (!res.ok) {
+                        _hydrateMetricsFromList(id);
+                        return;
+                    }
+                    const newTag = res.headers.get('ETag');
+                    if (newTag) lastMetricsETag = newTag;
+                    const data = await res.json();
+                    const m = (data.metrics || {});
+                    const prev = [metricsCounts.full, metricsCounts.inc, metricsCounts.update, metricsCounts.delete];
+                    if (id === 'monitor') {
+                        metricsCounts.full = m.error_count || 0;
+                        metricsCounts.inc = m.warn_count || 0;
+                        metricsCounts.update = m.info_count || 0;
+                        metricsCounts.delete = m.other_count || 0;
+                    } else {
+                        metricsCounts.full = m.full_insert_count || 0;
+                        metricsCounts.inc = m.inc_insert_count || 0;
+                        metricsCounts.update = m.update_count || 0;
+                        metricsCounts.delete = m.delete_count || 0;
+                    }
+                    _animateCounts(prev, [metricsCounts.full, metricsCounts.inc, metricsCounts.update, metricsCounts.delete]);
+                    
+                    const deltaFull = Math.max(0, metricsCounts.full - prev[0]);
+                    const deltaInc = Math.max(0, metricsCounts.inc - prev[1]);
+                    const deltaUpd = Math.max(0, metricsCounts.update - prev[2]);
+                    const deltaDel = Math.max(0, metricsCounts.delete - prev[3]);
+                    
+                    trendData.full.push(deltaFull); trendData.full.shift();
+                    trendData.inc.push(deltaInc); trendData.inc.shift();
+                    trendData.update.push(deltaUpd); trendData.update.shift();
+                    trendData.delete.push(deltaDel); trendData.delete.shift();
+                    
+                    _drawTrend();
+                    _drawMetricsChart();
+                };
+
+                const _animateCounts = (fromArr, toArr) => {
+                    const start = performance.now();
+                    const dur = 400;
+                    function ease(t){return t<0.5?2*t*t:1-Math.pow(-2*t+2,2)/2}
+                    function step(now){
+                        const p = Math.min(1, (now-start)/dur);
+                        const k = ease(p);
+                        displayCounts.full = Math.round(fromArr[0] + (toArr[0]-fromArr[0])*k);
+                        displayCounts.inc = Math.round(fromArr[1] + (toArr[1]-fromArr[1])*k);
+                        displayCounts.update = Math.round(fromArr[2] + (toArr[2]-fromArr[2])*k);
+                        displayCounts.delete = Math.round(fromArr[3] + (toArr[3]-fromArr[3])*k);
+                        if (p<1) requestAnimationFrame(step);
+                    }
+                    requestAnimationFrame(step);
+                };
+
+                const _drawMetricsChart = () => {
+                    if (!metricsCtx || !metricsCanvas) return;
+                    const dpr = window.devicePixelRatio || 1;
+                    const cssW = metricsCanvas.parentElement ? metricsCanvas.parentElement.clientWidth - 20 : 760;
+                    const cssH = 240;
+                    metricsCanvas.width = Math.max(320, cssW) * dpr;
+                    metricsCanvas.height = cssH * dpr;
+                    metricsCanvas.style.width = Math.max(320, cssW) + 'px';
+                    metricsCanvas.style.height = cssH + 'px';
+                    const ctx = metricsCtx;
+                    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+                    ctx.clearRect(0, 0, cssW, cssH);
+                    const values = [metricsCounts.full, metricsCounts.inc, metricsCounts.update, metricsCounts.delete];
+                    const labels = metricsTaskId.value === 'monitor' ? ['Error', 'Warn', 'Info', 'Other'] : ['Full', 'Inc', 'Update', 'Delete'];
+                    const colors = metricsTaskId.value === 'monitor' ? ['#F56C6C', '#E6A23C', '#409EFF', '#909399'] : ['#409EFF', '#67C23A', '#E6A23C', '#F56C6C'];
+                    const duration = 400;
+                    const start = performance.now();
+                    const from = metricsLast.slice();
+                    const to = values.slice();
+                    function ease(t){return t<0.5?2*t*t:1-Math.pow(-2*t+2,2)/2}
+                    function frame(now){
+                        const p = Math.min(1,(now-start)/duration);
+                        const k = ease(p);
+                        const cur = from.map((v,i)=>v+(to[i]-v)*k);
+                        if (metricsChartType.value === 'bar'){
+                            const padding = 36;
+                            const chartW = cssW - padding * 2;
+                            const chartH = cssH - padding * 2;
+                            const maxVal = Math.max(10, ...to); // 最小刻度10，避免全0时无法显示
+                            const gap = 28;
+                            const barW = Math.max(22, (chartW - gap * (cur.length - 1)) / cur.length);
+                            ctx.clearRect(0,0,cssW,cssH);
+                            ctx.strokeStyle = '#e5e5e5';
+                            ctx.lineWidth = 1;
+                            ctx.beginPath();
+                            ctx.moveTo(padding, cssH - padding);
+                            ctx.lineTo(cssW - padding, cssH - padding);
+                            ctx.stroke();
+                            labels.forEach((lbl,i)=>{
+                                const x = padding + i * (barW + gap);
+                                const h = Math.round((cur[i] / maxVal) * (chartH - 24));
+                                const y = cssH - padding - h;
+                                const grad = ctx.createLinearGradient(x, y, x, cssH - padding);
+                                grad.addColorStop(0, colors[i]);
+                                grad.addColorStop(1, '#ffffff');
+                                ctx.fillStyle = grad;
+                                ctx.shadowColor = 'rgba(0,0,0,0.15)';
+                                ctx.shadowBlur = 8;
+                                ctx.shadowOffsetY = 4;
+                                // 即使高度为0也画一个像素的底线，或者直接画
+                                if (h > 0) ctx.fillRect(x, y, barW, h);
+                                ctx.shadowColor = 'transparent';
+                                ctx.fillStyle = '#333';
+                                ctx.font = '12px system-ui';
+                                ctx.textAlign = 'center';
+                                ctx.fillText(lbl, x + barW/2, cssH - padding + 16);
+                                ctx.fillStyle = colors[i];
+                                ctx.font = 'bold 12px system-ui';
+                                ctx.fillText(String(Math.round(cur[i])), x + barW/2, y - 8);
+                            });
+                        } else {
+                            const cx = cssW/2, cy = cssH/2, radius = Math.min(cssW, cssH)/3;
+                            const total = Math.max(1, to.reduce((a,b)=>a+b,0));
+                            const startAng = -Math.PI/2;
+                            ctx.clearRect(0,0,cssW,cssH);
+                            let acc = 0;
+                            // 修正：如果所有数据都是0，画一个灰色的空圈
+                            if (to.every(v => v === 0)) {
+                                ctx.beginPath();
+                                ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+                                ctx.strokeStyle = '#f0f0f0';
+                                ctx.lineWidth = 20;
+                                ctx.stroke();
+                                ctx.fillStyle = '#999';
+                                ctx.font = '14px system-ui';
+                                ctx.textAlign = 'center';
+                                ctx.fillText('No Data', cx, cy);
+                                if (p<1) requestAnimationFrame(frame); else metricsLast = to.slice();
+                                return;
+                            }
+                            
+                            cur.forEach((v,i)=>{
+                                if (v <= 0.01) return; // 忽略过小的值，避免标签重叠
+                                const ang = (v/total) * Math.PI*2;
+                                const a0 = startAng + (acc/total)*Math.PI*2;
+                                const a1 = a0 + ang;
+                                const grad = ctx.createRadialGradient(cx, cy, radius*0.6, cx, cy, radius);
+                                grad.addColorStop(0, colors[i]);
+                                grad.addColorStop(1, '#ffffff');
+                                ctx.beginPath();
+                                ctx.arc(cx, cy, radius, a0, a1);
+                                ctx.arc(cx, cy, radius*0.6, a1, a0, true);
+                                ctx.closePath();
+                                ctx.fillStyle = grad;
+                                ctx.shadowColor = 'rgba(64,158,255,0.25)';
+                                ctx.shadowBlur = 18;
+                                ctx.fill();
+                                ctx.shadowColor = 'transparent';
+                                
+                                // 标签防重叠处理：简单的左右对齐
+                                const mid = a0 + (a1-a0)/2;
+                                // 基础偏移距离
+                                const labelR = radius + 20;
+                                let tx = cx + Math.cos(mid) * labelR;
+                                let ty = cy + Math.sin(mid) * labelR;
+                                
+                                ctx.fillStyle = colors[i];
+                                ctx.font = '12px system-ui';
+                                ctx.textAlign = 'center';
+                                ctx.textBaseline = 'middle';
+                                ctx.fillText(labels[i], tx, ty - 8);
+                                ctx.font = 'bold 12px system-ui';
+                                ctx.fillText(String(Math.round(cur[i])), tx, ty + 8);
+                                acc += v;
+                            });
+                            // 环形炫光：绕圈高亮
+                            glowAngle = (glowAngle + 0.08) % (Math.PI*2);
+                            const glowStart = glowAngle;
+                            const glowEnd = glowStart + Math.PI/6;
+                            const glowGrad = ctx.createRadialGradient(cx, cy, radius*0.9, cx, cy, radius*1.05);
+                            glowGrad.addColorStop(0, 'rgba(255,255,255,0.0)');
+                            glowGrad.addColorStop(1, 'rgba(64,158,255,0.35)');
+                            ctx.beginPath();
+                            ctx.arc(cx, cy, radius*1.02, glowStart, glowEnd);
+                            ctx.arc(cx, cy, radius*0.85, glowEnd, glowStart, true);
+                            ctx.closePath();
+                            ctx.fillStyle = glowGrad;
+                            ctx.shadowColor = 'rgba(64,158,255,0.5)';
+                            ctx.shadowBlur = 20;
+                            ctx.fill();
+                            ctx.shadowColor = 'transparent';
+                            ctx.fillStyle = '#333';
+                            ctx.font = 'bold 14px system-ui';
+                            ctx.textAlign = 'center';
+                            ctx.fillText('Total', cx, cy-6);
+                            ctx.fillStyle = '#409EFF';
+                            ctx.font = 'bold 16px system-ui';
+                            ctx.fillText(String(Math.round(cur.reduce((a,b)=>a+b,0))), cx, cy+16);
+                        }
+                        if (p<1) requestAnimationFrame(frame); else metricsLast = to.slice();
+                    }
+                    requestAnimationFrame(frame);
+                };
+
+                const _drawTrend = () => {
+                    if (!trendCtx || !trendCanvas) return;
+                    const dpr = window.devicePixelRatio || 1;
+                    const cssW = trendCanvas.parentElement ? trendCanvas.parentElement.clientWidth - 20 : 760;
+                    const cssH = 120;
+                    trendCanvas.width = Math.max(320, cssW) * dpr;
+                    trendCanvas.height = cssH * dpr;
+                    trendCanvas.style.width = Math.max(320, cssW) + 'px';
+                    trendCanvas.style.height = cssH + 'px';
+                    const ctx = trendCtx;
+                    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+                    ctx.clearRect(0,0,cssW,cssH);
+                    const padding = 6;
+                    const w = cssW - padding*2;
+                    const h = cssH - padding*2;
+                    const series = [
+                        { data: trendData.full, color: '#409EFF' },
+                        { data: trendData.inc, color: '#67C23A' },
+                        { data: trendData.update, color: '#E6A23C' },
+                        { data: trendData.delete, color: '#F56C6C' },
+                    ];
+                    const allZero = series.every(s => s.data.every(v => v === 0));
+                    if (allZero) {
+                        ctx.strokeStyle = '#e5e5e5';
+                        ctx.lineWidth = 1;
+                        ctx.beginPath();
+                        ctx.moveTo(padding, cssH - padding);
+                        ctx.lineTo(cssW - padding, cssH - padding);
+                        ctx.stroke();
+                        ctx.fillStyle = '#999';
+                        ctx.font = '12px system-ui';
+                        ctx.textAlign = 'center';
+                        ctx.fillText('No Data', cssW/2, cssH/2);
+                        return;
+                    }
+                    const maxY = Math.max(1, ...series.map(s => Math.max(...s.data)));
+                    series.forEach((s, idx) => {
+                        const grad = ctx.createLinearGradient(padding, padding, padding, cssH-padding);
+                        grad.addColorStop(0, s.color);
+                        grad.addColorStop(1, 'rgba(255,255,255,0.6)');
+                        ctx.strokeStyle = s.color;
+                        ctx.lineWidth = 2;
+                        ctx.shadowColor = s.color;
+                        ctx.shadowBlur = 8;
+                        ctx.beginPath();
+                        s.data.forEach((v,i) => {
+                            const x = padding + (i/(s.data.length-1))*w;
+                            const y = cssH - padding - (v/maxY)*h;
+                            if (i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+                        });
+                        ctx.stroke();
+                        ctx.shadowColor = 'transparent';
+                    });
+                };
+
+                let lastMetricsETag = '';
+                const openStats = async (id) => {
+                    metricsTaskId.value = id;
+                    lastMetricsETag = '';
+                    metricsVisible.value = true;
+                    // 给 DOM 渲染留足时间，避免 Canvas 获取失败
+                    await nextTick();
+                    await new Promise(r => setTimeout(r, 50)); 
+                    
+                    metricsCanvas = document.getElementById('metricsChart');
+                    trendCanvas = document.getElementById('metricsTrend');
+                    
+                    if (metricsCanvas) {
+                        metricsCtx = metricsCanvas.getContext('2d');
+                        _drawMetricsChart();
+                    }
+                    if (trendCanvas) {
+                        trendCtx = trendCanvas.getContext('2d');
+                        _drawTrend();
+                    }
+                    
+                    _hydrateMetricsFromList(id);
+                    await _fetchMetricsOnce(id);
+                    if (metricsTimer) clearInterval(metricsTimer);
+                    metricsTimer = setInterval(() => _fetchMetricsOnce(id), 2000);
+                };
+                watch(() => metricsVisible.value, (v) => {
+                    if (!v && metricsTimer) {
+                        clearInterval(metricsTimer);
+                        metricsTimer = null;
+                        metricsCanvas = null;
+                        metricsCtx = null;
+                        trendCanvas = null;
+                        trendCtx = null;
+                    }
+                });
+                watch(() => metricsChartType.value, () => {
+                    if (!metricsVisible.value) return;
+                    _drawMetricsChart();
+                });
+                
+                const _hydrateMetricsFromList = (id) => {
+                    const t = tasks.value.find(x => x.task_id === id);
+                    if (!t || !t.metrics) return;
+                    const prev = [metricsCounts.full, metricsCounts.inc, metricsCounts.update, metricsCounts.delete];
+                    if (id === 'monitor') {
+                        metricsCounts.full = t.metrics.error_count || 0;
+                        metricsCounts.inc = t.metrics.warn_count || 0;
+                        metricsCounts.update = t.metrics.info_count || 0;
+                        metricsCounts.delete = t.metrics.other_count || 0;
+                    } else {
+                        metricsCounts.full = t.metrics.full_insert_count || 0;
+                        metricsCounts.inc = t.metrics.inc_insert_count || 0;
+                        metricsCounts.update = t.metrics.update_count || 0;
+                        metricsCounts.delete = t.metrics.delete_count || 0;
+                    }
+                    _animateCounts(prev, [metricsCounts.full, metricsCounts.inc, metricsCounts.update, metricsCounts.delete]);
+                    _drawTrend();
+                    _drawMetricsChart();
+                };
+
+                const fetchMonitorStatus = async () => {
+                    try {
+                        const res = await fetch('/monitor/status');
+                        if (res.ok) {
+                            monitorStatus.value = await res.json();
+                        }
+                    } catch (e) { console.error(e); }
+                };
+
+                const fetchMonitorConfig = async () => {
+                    try {
+                        const res = await fetch('/monitor/config');
+                        if (res.ok) {
+                            monitorConfig.value = await res.json();
+                        }
+                    } catch (e) { console.error(e); }
+                };
+
+                const startMonitor = async () => {
+                    monitorActionLoading.value = true;
+                    try {
+                        const res = await fetch('/monitor/start', { method: 'POST' });
+                        if (res.ok) {
+                            ElMessage.success('Monitor started');
+                            fetchMonitorStatus();
+                        } else {
+                            let err = {};
+                            try { err = await res.json(); } catch(_) {}
+                            ElMessage.error('Failed to start monitor: ' + (err.detail || res.statusText));
+                        }
+                    } catch (e) { ElMessage.error(e.message); }
+                    finally { monitorActionLoading.value = false; }
+                };
+
+                const stopMonitor = async () => {
+                    monitorActionLoading.value = true;
+                    try {
+                        const res = await fetch('/monitor/stop', { method: 'POST' });
+                        if (res.ok) {
+                            ElMessage.success('Monitor stopped');
+                            fetchMonitorStatus();
+                        } else {
+                            ElMessage.error('Failed to stop monitor');
+                        }
+                    } catch (e) { ElMessage.error(e.message); }
+                    finally { monitorActionLoading.value = false; }
+                };
+
+                const runInspection = async () => {
+                    inspectionLoading.value = true;
+                    try {
+                        const res = await fetch('/inspection/run', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(inspectionConfig.value)
+                        });
+                        if (res.ok) {
+                            inspectionReport.value = await res.json();
+                            ElMessage.success('Inspection completed');
+                            await nextTick();
+                            _renderInspectionCharts();
+                            fetchInspectionHistory();
+                        } else {
+                            let err = {};
+                            try { err = await res.json(); } catch(_) {}
+                            ElMessage.error('Inspection failed: ' + (err.detail ? JSON.stringify(err.detail) : res.statusText));
+                        }
+                    } catch (e) { ElMessage.error(e.message); }
+                    finally { inspectionLoading.value = false; }
+                };
+
+                const fetchInspectionHistory = async () => {
+                    inspectionHistoryLoading.value = true;
+                    try {
+                        const res = await fetch('/inspection/reports?kind=daily&limit=30');
+                        if (!res.ok) throw new Error('获取历史列表失败');
+                        const data = await res.json();
+                        inspectionHistoryList.value = data.items || [];
+                    } catch (e) {
+                        ElMessage.error(e.message);
+                    } finally {
+                        inspectionHistoryLoading.value = false;
+                    }
+                };
+
+                const loadInspectionReport = async () => {
+                    if (!inspectionHistorySelected.value) return;
+                    inspectionLoading.value = true;
+                    try {
+                        const res = await fetch('/inspection/reports/' + encodeURIComponent(inspectionHistorySelected.value) + '?kind=daily');
+                        if (!res.ok) throw new Error('加载历史日报失败');
+                        inspectionReport.value = await res.json();
+                        await nextTick();
+                        _renderInspectionCharts();
+                    } catch (e) {
+                        ElMessage.error(e.message);
+                    } finally {
+                        inspectionLoading.value = false;
+                    }
+                };
+
+                const openWeeklyReport = async () => {
+                    if (!inspectionReport.value || !inspectionReport.value.weekly_report_id) return;
+                    try {
+                        const res = await fetch('/inspection/reports/' + encodeURIComponent(inspectionReport.value.weekly_report_id) + '?kind=weekly');
+                        if (!res.ok) throw new Error('加载周报失败');
+                        weeklyReportData.value = await res.json();
+                        weeklyReportVisible.value = true;
+                    } catch (e) {
+                        ElMessage.error(e.message);
+                    }
+                };
+
+                const openMonthlyReport = async () => {
+                    if (!inspectionReport.value || !inspectionReport.value.monthly_report_id) return;
+                    try {
+                        const res = await fetch('/inspection/reports/' + encodeURIComponent(inspectionReport.value.monthly_report_id) + '?kind=monthly');
+                        if (!res.ok) throw new Error('加载月报失败');
+                        monthlyReportData.value = await res.json();
+                        monthlyReportVisible.value = true;
+                    } catch (e) {
+                        ElMessage.error(e.message);
+                    }
+                };
+
+                const formatMetricLabels = (labels) => {
+                    if (!labels) return '';
+                    const keys = Object.keys(labels);
+                    if (keys.length === 0) return '';
+                    return keys.map(k => `${k}=${labels[k]}`).join(', ');
+                };
+
+                const getMetricLevelType = (level) => {
+                    if (level === 'critical') return 'danger';
+                    if (level === 'warning') return 'warning';
+                    if (level === 'ok') return 'success';
+                    return 'info';
+                };
+
+                const getMetricStatusType = (status) => {
+                    if (status === 'success') return 'success';
+                    if (status === 'no_data') return 'info';
+                    if (status === 'error') return 'danger';
+                    return 'warning';
+                };
+
+                const _renderInspectionCharts = (attempt = 0) => {
+                    if (!inspectionReport.value) return;
+                    if (!window.echarts || !window.echarts.version) {
+                        if (attempt === 0) ElMessage.error('ECharts 未正确加载，无法渲染图表');
+                        return;
+                    }
+
+                    const warnOnce = (msg) => {
+                        if (attempt === 0) ElMessage.warning(msg);
+                    };
+
+                    const initChartById = (id) => {
+                        const el = document.getElementById(id);
+                        if (!el) return null;
+                        if (el.clientWidth === 0 || el.clientHeight === 0) return { __retry: true };
+                        const prev = echarts.getInstanceByDom(el);
+                        if (prev) prev.dispose();
+                        return echarts.init(el);
+                    };
+
+                    const renderNoData = (chart, text = '暂无数据') => {
+                        chart.setOption({
+                            xAxis: { show: false },
+                            yAxis: { show: false },
+                            series: [],
+                            graphic: {
+                                type: 'text',
+                                left: 'center',
+                                top: 'middle',
+                                style: { text, fill: '#909399', fontSize: 14 }
+                            }
+                        });
+                        requestAnimationFrame(() => chart.resize());
+                    };
+
+                    let needsRetry = false;
+
+                    try {
+                        const downByJob = {};
+                        (inspectionReport.value.down_targets || []).forEach(t => {
+                            const k = t && t.job ? t.job : 'unknown';
+                            downByJob[k] = (downByJob[k] || 0) + 1;
+                        });
+                        const tChart = initChartById('inspTargetsChart');
+                        if (tChart && tChart.__retry) {
+                            needsRetry = true;
+                        } else if (tChart) {
+                            tChart.setOption({
+                                tooltip: { trigger: 'item' },
+                                legend: { bottom: '5%', left: 'center' },
+                                series: [{
+                                    name: 'Down Targets',
+                                    type: 'pie',
+                                    radius: ['40%', '70%'],
+                                    avoidLabelOverlap: false,
+                                    itemStyle: { borderRadius: 10, borderColor: '#fff', borderWidth: 2 },
+                                    label: { show: false, position: 'center' },
+                                    emphasis: { label: { show: true, fontSize: 20, fontWeight: 'bold' } },
+                                    data: Object.keys(downByJob).length > 0
+                                        ? Object.keys(downByJob).map(k => ({ value: downByJob[k], name: k }))
+                                        : [{ value: 1, name: 'All Good', itemStyle: { color: '#67C23A' } }]
+                                }]
+                            });
+                            requestAnimationFrame(() => tChart.resize());
+                        }
+                    } catch (e) {
+                        console.error('Render Targets Chart error:', e);
+                        warnOnce('部分图表渲染失败（Targets）');
+                    }
+
+                    try {
+                        const alerts = inspectionReport.value.firing_alerts || [];
+                        const severityMap = {};
+                        alerts.forEach(a => {
+                            const k = a && a.severity ? a.severity : 'unknown';
+                            severityMap[k] = (severityMap[k] || 0) + 1;
+                        });
+                        const aChart = initChartById('inspAlertsChart');
+                        if (aChart && aChart.__retry) {
+                            needsRetry = true;
+                        } else if (aChart) {
+                            aChart.setOption({
+                                tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+                                grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
+                                xAxis: { type: 'category', data: Object.keys(severityMap).length > 0 ? Object.keys(severityMap) : ['No Alerts'] },
+                                yAxis: { type: 'value' },
+                                series: [{
+                                    data: Object.keys(severityMap).length > 0
+                                        ? Object.values(severityMap).map((v, i) => ({
+                                            value: v,
+                                            itemStyle: { color: Object.keys(severityMap)[i] === 'critical' ? '#F56C6C' : '#E6A23C' }
+                                        }))
+                                        : [{ value: 0, itemStyle: { color: '#67C23A' } }],
+                                    type: 'bar'
+                                }]
+                            });
+                            requestAnimationFrame(() => aChart.resize());
+                        }
+                    } catch (e) {
+                        console.error('Render Alerts Chart error:', e);
+                        warnOnce('部分图表渲染失败（Alerts）');
+                    }
+
+                    try {
+                        const metrics = (inspectionReport.value.metrics_summary || []).filter(m => m && m.status === 'success');
+                        const renderTopBar = (elId, title, metricName, unit, color) => {
+                            const chart = initChartById(elId);
+                            if (!chart) return;
+                            if (chart.__retry) {
+                                needsRetry = true;
+                                return;
+                            }
+                            const rows = metrics
+                                .filter(m => m.name === metricName)
+                                .map(m => {
+                                    const label = (m.labels && (m.labels.instance || m.labels.node || m.labels.pod)) || formatMetricLabels(m.labels) || metricName;
+                                    const v = Number(m.value);
+                                    return { label, value: Number.isFinite(v) ? v : null };
+                                })
+                                .filter(x => x.value !== null)
+                                .sort((a, b) => b.value - a.value)
+                                .slice(0, 5)
+                                .reverse();
+
+                            if (rows.length === 0) {
+                                renderNoData(chart);
+                                return;
+                            }
+
+                            chart.setOption({
+                                tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+                                grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
+                                xAxis: { type: 'value' },
+                                yAxis: { type: 'category', data: rows.map(r => r.label) },
+                                series: [{
+                                    name: title,
+                                    type: 'bar',
+                                    data: rows.map(r => r.value),
+                                    itemStyle: { color: color || '#409EFF' },
+                                    label: { show: true, position: 'right', formatter: (p) => unit ? `${p.value}${unit}` : `${p.value}` }
+                                }]
+                            });
+                            requestAnimationFrame(() => chart.resize());
+                        };
+
+                        renderTopBar('inspCpuTopChart', 'CPU', 'cpu_usage_top5', '%', '#409EFF');
+                        renderTopBar('inspMemTopChart', 'Memory', 'mem_usage_top5', '%', '#E6A23C');
+                        renderTopBar('inspDiskTopChart', 'Disk', 'rootfs_usage_top5', '%', '#67C23A');
+                    } catch (e) {
+                        console.error('Render Metrics Charts error:', e);
+                        warnOnce('部分图表渲染失败（Metrics）');
+                    }
+
+                    if (needsRetry && attempt < 6) {
+                        setTimeout(() => _renderInspectionCharts(attempt + 1), 120);
+                    }
+                };
+
+                const saveMonitorConfig = async () => {
+                    if (!monitorConfig.value.slack_webhook_url) {
+                        ElMessage.error('Slack Webhook URL 不能为空，请重新输入');
+                        return;
+                    }
+                    if (!monitorConfig.value.es_password) {
+                        ElMessage.error('Elasticsearch Password 不能为空，请重新输入');
+                        return;
+                    }
+
+                    monitorSaving.value = true;
+                    try {
+                        const res = await fetch('/monitor/config', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(monitorConfig.value)
+                        });
+                        if (res.ok) {
+                            ElMessage.success('Configuration saved & monitor restarted');
+                            fetchMonitorStatus();
+                        } else {
+                            let err = {};
+                            try { err = await res.json(); } catch(_) {}
+                            ElMessage.error('Failed to save configuration: ' + (err.detail || 'Unknown error'));
+                        }
+                    } catch (e) { ElMessage.error(e.message); }
+                    finally { monitorSaving.value = false; }
+                };
+
+                const createTask = async () => {
+                    // Prepare payload
+                    const payload = {
+                        task_id: form.task_id,
+                        table_map: {},
+                        pk_field: form.pk_field,
+                        update_insert_new_doc: syncMode.value === 'history',
+                        delete_append_new_doc: syncMode.value === 'history',
+                        auto_discover_new_tables: (!selectedTables.value || selectedTables.value.length === 0)
+                    };
+
+                    // Fill Table Map
+                    if (selectedTables.value && selectedTables.value.length > 0) {
+                        selectedTables.value.forEach(t => { payload.table_map[t] = t; });
+                    }
+                    // If full, table_map stays empty to trigger auto-discovery logic in worker
+
+                    // Fill MySQL Config
+                    const useSavedSource = (sourceSelectionMode.value === 'saved' && !!selectedSourceId.value);
+                    const useSavedTarget = (targetSelectionMode.value === 'saved' && !!selectedTargetId.value);
+                    if (!useSavedSource) {
+                        payload.mysql_conf = {...form.mysql};
+                    }
+                    if (!selectedDatabase.value) {
+                        ElMessage.error('请选择 MySQL 数据库');
+                        return;
+                    }
+                    if (payload.mysql_conf) {
+                        payload.mysql_conf.database = selectedDatabase.value;
+                    }
+
+                    // Fill Mongo Config
+                    if (!useSavedTarget) {
+                        payload.mongo_conf = {...form.mongo};
+                        if (!payload.mongo_conf.database) payload.mongo_conf.database = form.mongo.database || '';
+                    }
+
+                    creating.value = true;
+                    try {
+                        let res;
+                        if (useSavedSource || useSavedTarget) {
+                            const body = {
+                                task_id: payload.task_id,
+                                table_map: payload.table_map,
+                                pk_field: payload.pk_field,
+                                update_insert_new_doc: payload.update_insert_new_doc,
+                                delete_append_new_doc: payload.delete_append_new_doc,
+                                auto_discover_new_tables: payload.auto_discover_new_tables,
+                                source_conn_id: useSavedSource ? selectedSourceId.value : null,
+                                target_conn_id: useSavedTarget ? selectedTargetId.value : null,
+                                mysql_database: selectedDatabase.value,
+                                mongo_database: form.mongo.database || '',
+                                mysql_conf_override: useSavedSource ? undefined : payload.mysql_conf,
+                                mongo_conf_override: useSavedTarget ? undefined : payload.mongo_conf,
+                            };
+                            res = await fetch('/tasks/start_with_conn_ids', {
+                                method: 'POST',
+                                headers: {'Content-Type': 'application/json'},
+                                body: JSON.stringify(body)
+                            });
+                        } else {
+                            res = await fetch('/tasks/start', {
+                                method: 'POST',
+                                headers: {'Content-Type': 'application/json'},
+                                body: JSON.stringify(payload)
+                            });
+                        }
+                        if (res.ok) {
+                            ElMessage.success('Task Started');
+                            createVisible.value = false;
+                            currentView.value = 'tasks';
+                            fetchTasks();
+                        } else {
+                            const err = await res.json();
+                            ElMessage.error('Error: ' + JSON.stringify(err));
+                        }
+                    } catch(e) { ElMessage.error(e.message); }
+                    finally { creating.value = false; }
+                };
+
+                const getStatusType = (s) => {
+                    if (s === 'running') return 'success';
+                    if (s === 'error') return 'danger';
+                    return 'warning';
+                };
+                
+                const formatTime = (ts) => ts ? new Date(ts * 1000).toLocaleString() : '-';
+
+                onMounted(() => {
+                    fetchTasks();
+                    fetchConnections();
+                });
+                // Reset test status if critical fields change
+                watch(() => [connForm.type, connForm.host, connForm.port, connForm.mongo_hosts, connForm.replica_set, connForm.user, connForm.password, connForm.database, connForm.auth_source], () => {
+                    if (connVisible.value) {
+                        testPassed.value = false;
+                        testMsg.value = '';
+                    }
+                });
+                // Adjust default port when type changes
+                watch(() => connForm.type, (t) => {
+                    if (t === 'mongo') {
+                        connForm.port = 27017;
+                    } else {
+                        connForm.port = 3306;
+                    }
+                }, { immediate: true });
+                // Reset tables when database changes
+                watch(() => selectedDatabase.value, () => {
+                    selectedTables.value = [];
+                    mysqlTableList.value = [];
+                });
+                // Reset db list when source connection changes
+                watch(() => selectedSourceId.value, () => {
+                    selectedDatabase.value = '';
+                    mysqlDbList.value = [];
+                    selectedTables.value = [];
+                    mysqlTableList.value = [];
+                });
+
+                return {
+                    currentView, tasks, connections, syncTasks, monitorTasks, overview, collapseSync, collapseMonitor,
+                    createVisible, activeStep, creating, form,
+                    sourceSelectionMode, targetSelectionMode, selectedSourceId, selectedTargetId,
+                    connVisible, connForm, editingConnId,
+                    mysqlConnections, mongoConnections, syncScope, syncMode,
+                    testing, testPassed, testMsg,
+                    handleMenuSelect, showCreateDialog, showConnDialog, saveConnection, deleteConnection, testConnection,
+                    editConnection,
+                    confirmStop, confirmStart, confirmResetAndStart, confirmReset, confirmDelete, viewLogs,
+                    logsVisible, logsTaskId, logsLines, logsLineCount, logsPage, logsTotal, handleLogsPageChange, handleLogsSizeChange,
+                    logsDownloadKeyword, logsDownloadTimeRange, downloadLogs,
+                    metricsVisible, metricsCounts, openStats,
+                    metricsChartType, displayCounts,
+                    tablesVisible, tablesTaskId, tablesPage, tablesPageSize, tablesTotal, tablesPageData,
+                    truncateTables, openTables, handleTablesPageChange,
+                    // mysql db/table selects
+                    mysqlDbList, mysqlTableList, selectedDatabase, selectedTables,
+                    loadMysqlDatabasesSaved, loadMysqlDatabasesManual, loadMysqlTables,
+                    createTask, getStatusType, formatTime,
+                    // monitor
+                    monitorStatus, monitorConfig, monitorActionLoading, monitorSaving,
+                    startMonitor, stopMonitor, saveMonitorConfig,
+                    inspectionReport, inspectionLoading, runInspection, inspectionConfigVisible, inspectionConfig,
+                    inspectionHistoryList, inspectionHistorySelected, inspectionHistoryLoading,
+                    fetchInspectionHistory, loadInspectionReport,
+                    weeklyReportVisible, weeklyReportData, openWeeklyReport,
+                    monthlyReportVisible, monthlyReportData, openMonthlyReport,
+                    formatMetricLabels, getMetricLevelType, getMetricStatusType
+                };
+            }
+        });
+
+        app.use(ElementPlus);
+        for (const [key, component] of Object.entries(ElementPlusIconsVue)) {
+            app.component(key, component)
+        }
+        app.mount('#app');
+    </script>
+</body>
+</html>

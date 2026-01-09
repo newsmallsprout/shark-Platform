@@ -3,6 +3,24 @@ from typing import Optional, Dict, List
 from pydantic import BaseModel, Field
 
 
+class ConnectionConfig(BaseModel):
+    id: str
+    name: str
+    type: str  # "mysql" or "mongo"
+    host: str
+    port: int
+    user: str
+    password: str
+    database: Optional[str] = None
+    
+    # Mongo specific
+    auth_source: Optional[str] = "admin"
+    replica_set: Optional[str] = None
+    hosts: Optional[List[str]] = None
+    
+    # MySQL specific
+    use_ssl: bool = False
+
 class DBConfig(BaseModel):
     host: Optional[str] = None
     port: Optional[int] = None
@@ -64,6 +82,7 @@ class SyncTaskRequest(BaseModel):
     mongo_write_j: bool = False
     mongo_socket_timeout_ms: int = 20000
     mongo_connect_timeout_ms: int = 10000
+    mongo_compressors: List[str] = Field(default_factory=lambda: ["snappy", "zlib"])
 
     # MySQL 设置
     mysql_connect_timeout: int = 10
@@ -96,3 +115,10 @@ class SyncTaskRequest(BaseModel):
 
     # Debug
     debug_binlog_events: bool = False
+    # 性能优化
+    full_sync_fast_insert_if_empty: bool = True
+    prefetch_queue_size: int = 2
+    rate_limit_enabled: bool = True
+    max_load_avg_ratio: float = 0.8
+    min_sleep_ms: int = 5
+    max_sleep_ms: int = 200
