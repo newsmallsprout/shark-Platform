@@ -6,7 +6,7 @@
 [![MongoDB](https://img.shields.io/badge/MongoDB-4.4%2B-green.svg)](https://www.mongodb.com/)
 [![Docker](https://img.shields.io/badge/Docker-Supported-blue.svg)](https://www.docker.com/)
 
-Shark Platform 是一个轻量级运维平台：在保留 **MySQL → MongoDB** 同步能力的基础上，补齐 **日志监控告警** 与 **系统巡检报表**，并通过统一的 Web 控制台进行配置与观测。
+Shark Platform 自己摸索学习的工具：现在主要功能**MySQL → MongoDB** 数据同步， **日志监控告警** 与 **系统巡检**，并通过Web 控制台进行配置与观测。
 
 ---
 
@@ -17,7 +17,7 @@ graph TB
   UI["Web 控制台 /ui (Vue3 + Element Plus)"] --> API["FastAPI API"]
   API --> Sync["同步任务 Sync（全量 + 增量 CDC）"]
   API --> Monitor["日志监控 Monitor（ES 扫描 + Slack 告警）"]
-  API --> Inspect["系统巡检 Inspection（Prometheus + 报表 + 可选 AI）"]
+  API --> Inspect["系统巡检 Inspection（Prometheus + 报表 + AI）"]
 
   Sync --> MySQL[("MySQL")]
   Sync --> Mongo[("MongoDB")]
@@ -116,7 +116,7 @@ graph TB
 
 ---
 
-## 🩺 巡检模块（Prometheus → 报表 + 可选 AI）
+## 🩺 巡检模块（Prometheus → 报表 + AI）
 
 ### 架构
 
@@ -325,5 +325,4 @@ mysql_to_mongo/
 ---
 
 ## 📄 许可证 (License)
-
-[MIT License](LICENSE) © 2025 Your Organization
+个人学习使用
