@@ -2,9 +2,15 @@ from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 
 class InspectionRequest(BaseModel):
-    prometheus_url: str = "https://prometheus.test.exc888.org"
-    ark_api_key: str = "7a15ca7d-a3ec-4818-a0f4-0046cd1bcd49"
-    ark_model_id: str = "doubao-seed-1-6-251015"
+    prometheus_url: str = "https://prometheus_url"
+    ark_api_key: str = "ai_key"
+    ark_model_id: str = "ai_model"
+    ark_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
+
+class InspectionConfig(BaseModel):
+    prometheus_url: str = "https://prometheus_url"
+    ark_api_key: str = "ai_key"
+    ark_model_id: str = "ai_model"
     ark_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
 
 class InspectionReport(BaseModel):

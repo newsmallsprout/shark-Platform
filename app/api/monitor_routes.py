@@ -19,11 +19,18 @@ def get_monitor_config():
 
 @router.post("/config")
 def update_monitor_config(cfg: MonitorConfig):
-    # Enforce re-entry of sensitive fields
-    if not cfg.slack_webhook_url:
-        raise HTTPException(status_code=400, detail="Slack Webhook URL is required (please re-enter)")
-    if not cfg.es_password:
-        raise HTTPException(status_code=400, detail="Elasticsearch Password is required (please re-enter)")
+    # Load existing config to merge sensitive fields if empty
+    old_cfg = load_monitor_config()
+
+    if not cfg.slack_webhook_url and old_cfg.slack_webhook_url:
+        cfg.slack_webhook_url = old_cfg.slack_webhook_url
+    
+    if not cfg.es_password and old_cfg.es_password:
+        cfg.es_password = old_cfg.es_password
+
+    # Optional: Enforce requirement only if truly empty
+    # if not cfg.slack_webhook_url:
+    #     raise HTTPException(status_code=400, detail="Slack Webhook URL is required")
         
     save_monitor_config(cfg)
     # Restart if running to apply changes

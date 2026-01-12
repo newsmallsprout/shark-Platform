@@ -6,3 +6,4 @@ mysql-replication
 pydantic==2.9.2
 cryptography
 elasticsearch==8.11.0
+requests

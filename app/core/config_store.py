@@ -27,6 +27,8 @@ def iter_task_config_files():
             continue
         if name == "monitor.json":
             continue
+        if name == "inspection.json":
+            continue
         yield os.path.join(TASK_CONFIG_DIR, name)
 
 

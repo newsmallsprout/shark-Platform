@@ -133,7 +133,7 @@ class MonitorEngine:
             if k == "_meta":
                 continue
             last = v.get("last_seen_ts", 0)
-            if now_ts - last > self.cfg.dedupe_ttl_seconds:
+            if now_ts - last > self.cfg.dedup_window_sec:
                 expired.append(k)
         for k in expired:
             state.pop(k, None)

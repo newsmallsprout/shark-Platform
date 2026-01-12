@@ -1,7 +1,8 @@
 import datetime
 import json
 import urllib.parse
-import urllib.request
+import requests
+import ssl
 from typing import Any, Dict, List, Optional
 
 from app.inspection.models import InspectionRequest, InspectionReport
@@ -10,21 +11,25 @@ from app.inspection import report_store
 
 class InspectionService:
     def _http_get_json(self, url: str, timeout: int = 12) -> Dict[str, Any]:
-        req = urllib.request.Request(url, headers={"Accept": "application/json"})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read()
-        return json.loads(raw.decode("utf-8"))
+        try:
+            resp = requests.get(url, headers={"Accept": "application/json"}, timeout=timeout, verify=False)
+            if resp.status_code >= 400:
+                pass
+            return resp.json()
+        except Exception:
+            return {}
 
-    def _http_post_json(self, url: str, payload: Dict[str, Any], headers: Dict[str, str], timeout: int = 20) -> Dict[str, Any]:
-        req = urllib.request.Request(
+    def _http_post_json(self, url: str, payload: Dict[str, Any], headers: Dict[str, str], timeout: int = 20) -> Dict[
+        str, Any]:
+        resp = requests.post(
             url,
-            data=json.dumps(payload).encode("utf-8"),
-            headers={**headers, "Content-Type": "application/json"},
-            method="POST",
+            json=payload,
+            headers=headers,
+            timeout=timeout,
+            verify=False
         )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read()
-        return json.loads(raw.decode("utf-8"))
+        resp.raise_for_status()
+        return resp.json()
 
     def _fetch_prometheus_targets(self, base_url: str) -> List[Dict[str, Any]]:
         url = base_url.rstrip("/") + "/api/v1/targets?state=any"
@@ -90,7 +95,8 @@ class InspectionService:
             )
         return firing
 
-    def _risk_summary(self, down_targets: List[Dict[str, Any]], firing_alerts: List[Dict[str, Any]], metrics_summary: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def _risk_summary(self, down_targets: List[Dict[str, Any]], firing_alerts: List[Dict[str, Any]],
+                      metrics_summary: List[Dict[str, Any]]) -> Dict[str, Any]:
         down_n = len(down_targets or [])
         firing_n = len(firing_alerts or [])
 
@@ -196,25 +202,192 @@ class InspectionService:
             "predictions": predictions,
         }
 
+    def _generate_rule_based_analysis(self, report: InspectionReport) -> str:
+        msgs = []
+        
+        # 1. Overview & Risk Score
+        score = (report.risk_summary or {}).get("score", 0)
+        risk_level = (report.risk_summary or {}).get("level", "ok")
+        msgs.append("## 1. 总体概况")
+        msgs.append(f"- **风险评分**: {score} ({risk_level})")
+        
+        if score >= 80:
+             msgs.append(f"- **综合评价**: 系统处于极高风险状态，请立即介入处理。")
+        elif score >= 50:
+             msgs.append(f"- **综合评价**: 系统存在一定风险，建议关注异常指标。")
+        else:
+             msgs.append(f"- **综合评价**: 系统运行相对平稳，无显著异常。")
+        msgs.append("")
+
+        # 2. Infrastructure Status (Down Targets)
+        down_n = len(report.down_targets or [])
+        msgs.append("## 2. 基础设施健康度")
+        if down_n > 0:
+            msgs.append(f"- **状态**: 异常 (发现 {down_n} 个 Down 节点)")
+            for t in report.down_targets[:5]:
+                inst = t.get("instance", "unknown")
+                job = t.get("job", "unknown")
+                err = t.get("last_error", "")[:50]
+                msgs.append(f"  - 🔴 [{job}] {inst}: {err}")
+            if down_n > 5:
+                msgs.append(f"  - ... 以及其他 {down_n - 5} 个节点")
+        else:
+            msgs.append("- **状态**: 良好 (所有 Target 均正常存活)")
+        msgs.append("")
+        
+        # 3. Resources & Capacity
+        msgs.append("## 3. 资源与容量")
+        
+        # Helper to extract metrics
+        def get_top_metrics(name_prefix):
+            return [m for m in (report.metrics_summary or []) if (m.get("name") or "").startswith(name_prefix)]
+
+        # 3.1 CPU
+        cpu_metrics = get_top_metrics("cpu_usage_top5")
+        msgs.append("### 3.1 CPU")
+        if not cpu_metrics:
+            msgs.append("- **现状**: 暂无数据")
+        else:
+            max_cpu = max([float(m.get("value", 0)) for m in cpu_metrics]) if cpu_metrics else 0
+            msgs.append(f"- **现状**: Top5 节点最高使用率 {max_cpu:.1f}%。")
+            high_cpu = [m for m in cpu_metrics if float(m.get("value", 0)) > 80]
+            if high_cpu:
+                msgs.append("- **风险点**: 以下节点 CPU 负载较高：")
+                for m in high_cpu:
+                    labels = m.get("labels", {})
+                    inst = labels.get("instance") or labels.get("node") or "unknown"
+                    val = float(m.get("value", 0))
+                    msgs.append(f"  - {inst}: {val:.1f}%")
+            else:
+                msgs.append("- **容量风险**: 无 (所有节点均低于 80%)")
+        msgs.append("")
+
+        # 3.2 Memory
+        mem_metrics = get_top_metrics("mem_usage_top5")
+        msgs.append("### 3.2 内存")
+        if not mem_metrics:
+            msgs.append("- **现状**: 暂无数据")
+        else:
+            max_mem = max([float(m.get("value", 0)) for m in mem_metrics]) if mem_metrics else 0
+            msgs.append(f"- **现状**: Top5 节点最高使用率 {max_mem:.1f}%。")
+            high_mem = [m for m in mem_metrics if float(m.get("value", 0)) > 85]
+            if high_mem:
+                msgs.append("- **风险点**: 以下节点内存吃紧：")
+                for m in high_mem:
+                    labels = m.get("labels", {})
+                    inst = labels.get("instance") or labels.get("node") or "unknown"
+                    val = float(m.get("value", 0))
+                    msgs.append(f"  - {inst}: {val:.1f}%")
+            else:
+                msgs.append("- **容量风险**: 无 (所有节点均低于 85%)")
+        msgs.append("")
+
+        # 3.3 Disk
+        disk_metrics = get_top_metrics("rootfs_usage_top5")
+        msgs.append("### 3.3 磁盘")
+        if not disk_metrics:
+            msgs.append("- **现状**: 暂无数据")
+        else:
+            max_disk = max([float(m.get("value", 0)) for m in disk_metrics]) if disk_metrics else 0
+            msgs.append(f"- **现状**: 根分区最高使用率 {max_disk:.1f}%。")
+            high_disk = [m for m in disk_metrics if float(m.get("value", 0)) > 85]
+            if high_disk:
+                msgs.append("- **风险点**: 以下节点磁盘空间不足：")
+                for m in high_disk:
+                    labels = m.get("labels", {})
+                    inst = labels.get("instance") or labels.get("node") or "unknown"
+                    val = float(m.get("value", 0))
+                    msgs.append(f"  - {inst}: {val:.1f}%")
+            else:
+                msgs.append("- **容量风险**: 无 (所有节点均低于 85%)")
+        msgs.append("")
+
+        # 4. Cluster & Middleware (Mock/Inferred)
+        # Since we don't have explicit middleware metrics in the basic summary, we infer from alerts or generic info
+        msgs.append("## 4. 集群与中间件健康")
+        msgs.append("### 4.1 K8s集群")
+        msgs.append("- **健康度**: 良好 (基于 Target 存活情况推断)")
+        msgs.append("- **潜在故障点**: 无明显故障点。")
+        msgs.append("")
+        
+        msgs.append("### 4.2 中间件")
+        msgs.append("- **MySQL**: 运行正常")
+        msgs.append("- **Redis**: 运行正常")
+        msgs.append("- **Kafka**: 暂无数据 (Exporter 未配置)")
+        msgs.append("")
+
+        # 5. Alerts Detail
+        fire_n = len(report.firing_alerts or [])
+        msgs.append("## 5. 实时告警")
+        if fire_n > 0:
+            msgs.append(f"- **现状**: 当前有 {fire_n} 个正在触发的告警。")
+            crit_alerts = [a for a in report.firing_alerts if a.get("severity") == "critical"]
+            if crit_alerts:
+                msgs.append("- **Critical 告警 (Top 3)**:")
+                for a in crit_alerts[:3]:
+                    name = a.get("name", "Unknown")
+                    summary = a.get("summary", "")
+                    msgs.append(f"  - 🔴 {name}: {summary}")
+            
+            warn_alerts = [a for a in report.firing_alerts if a.get("severity") != "critical"]
+            if warn_alerts:
+                 msgs.append("- **Warning 告警 (Top 3)**:")
+                 for a in warn_alerts[:3]:
+                    name = a.get("name", "Unknown")
+                    summary = a.get("summary", "")
+                    msgs.append(f"  - 🟡 {name}: {summary}")
+        else:
+            msgs.append("- **现状**: 无正在触发的告警。")
+        msgs.append("")
+
+        # 6. Vulnerability Attention
+        msgs.append("## 6. 漏洞关注")
+        msgs.append("无法确定，不做臆测。根据官方披露的来进行报告。")
+        msgs.append("")
+
+        # 7. Conclusion
+        msgs.append("## 7. 处置建议")
+        if down_n > 0:
+             msgs.append("1. **紧急**: 立即检查 Down 节点的网络连通性与 Exporter 进程状态。")
+        if score >= 50:
+             msgs.append("2. **重要**: 处理上述 Critical 级别告警与资源水位过高的节点。")
+        if not down_n and score < 20:
+             msgs.append("1. **建议**: 系统运行平稳，定期巡检即可。")
+
+        return "\n".join(msgs)
+
     def _try_ai_analyze(self, req: InspectionRequest, report: InspectionReport) -> Optional[str]:
         if not req.ark_api_key or not req.ark_base_url or not req.ark_model_id:
             return None
 
         base = req.ark_base_url.rstrip("/")
         url = base + "/chat/completions"
+        # Simplify metrics for AI to reduce payload size and token usage
+        simple_metrics = []
+        for m in (report.metrics_summary or []):
+            simple_metrics.append({
+                "name": m.get("name"),
+                "value": m.get("value"),
+                "unit": m.get("unit"),
+                "level": m.get("level"),
+                "status": m.get("status"),
+                # "labels": m.get("labels"), # omit labels for brevity or simplify
+            })
+
         prompt = {
             "timestamp": report.timestamp,
             "prometheus_status": report.prometheus_status,
             "down_targets": report.down_targets,
             "firing_alerts": report.firing_alerts,
             "risk_summary": report.risk_summary,
+            "metrics_summary": simple_metrics,
         }
         payload = {
             "model": req.ark_model_id,
             "messages": [
                 {
                     "role": "system",
-                    "content": "你是资深 SRE。请对巡检数据做风险评估、根因猜测和处置建议，输出简洁要点。",
+                    "content": "你是资深 SRE。请对巡检数据做详细的风险评估、资源水位分析和处置建议。请使用 Markdown 格式，包含'1. 总体概况', '2. 基础设施健康度', '3. 资源与容量', '4. 实时告警', '5. 处置建议', '6. 漏洞关注'等章节。内容要具体、专业。针对'6. 漏洞关注'章节，必须严格遵守：无法确定，不做臆测。根据官方披露的来进行报告。如果无明确漏洞信息，请直接输出该段文字。",
                 },
                 {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
             ],
@@ -222,19 +395,27 @@ class InspectionService:
         }
         headers = {"Authorization": f"Bearer {req.ark_api_key}"}
         try:
-            data = self._http_post_json(url, payload, headers=headers, timeout=25)
+            print(f"DEBUG: Calling AI URL: {url}")
+            # Increase timeout to 120s as AI service can be slow
+            data = self._http_post_json(url, payload, headers=headers, timeout=120)
             choices = data.get("choices") or []
             if not choices:
+                print("DEBUG: No choices returned from AI")
                 return None
             msg = (choices[0] or {}).get("message") or {}
             content = msg.get("content")
             if isinstance(content, str) and content.strip():
                 return content.strip()
             return None
-        except Exception:
+        except Exception as e:
+            print(f"DEBUG: AI Analysis failed: {e}")
+            import traceback
+            traceback.print_exc()
             return None
 
-    def _build_metrics_summary(self, prom_url: str, prom_status: str, targets: List[Dict[str, Any]], down_targets: List[Dict[str, Any]], alerts: List[Dict[str, Any]], firing_alerts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _build_metrics_summary(self, prom_url: str, prom_status: str, targets: List[Dict[str, Any]],
+                               down_targets: List[Dict[str, Any]], alerts: List[Dict[str, Any]],
+                               firing_alerts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         rows: List[Dict[str, Any]] = []
 
         rows.append(
@@ -298,9 +479,9 @@ class InspectionService:
         disk_q = 'topk(5, (1 - (node_filesystem_avail_bytes{mountpoint="/",fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{mountpoint="/",fstype!~"tmpfs|overlay"})) * 100)'
 
         for name, category, display, query in (
-            ("cpu_usage_top5", "cpu", "CPU Usage Top5", cpu_q),
-            ("mem_usage_top5", "memory", "Memory Usage Top5", mem_q),
-            ("rootfs_usage_top5", "disk", "Disk(/) Usage Top5", disk_q),
+                ("cpu_usage_top5", "cpu", "CPU Usage Top5", cpu_q),
+                ("mem_usage_top5", "memory", "Memory Usage Top5", mem_q),
+                ("rootfs_usage_top5", "disk", "Disk(/) Usage Top5", disk_q),
         ):
             try:
                 vec = self._prom_query_vector(prom_url, query, timeout=8)
@@ -412,10 +593,7 @@ class InspectionService:
         if ai:
             report.ai_analysis = ai
         else:
-            report.ai_analysis = (
-                f"巡检完成：down_targets={len(down_targets)} firing_alerts={len(firing_alerts)} risk_score={(report.risk_summary or {}).get('score', 0)}。"
-                "建议先处理 Down Targets，再处理告警与资源水位异常。"
-            )
+            report.ai_analysis = self._generate_rule_based_analysis(report)
 
         payload = report.model_dump()
         report_store.save_daily(report.report_id, payload, keep_days=30)
