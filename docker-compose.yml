@@ -1,7 +1,7 @@
 version: '3.8'
 
 services:
-  # 1. 源数据库 MySQL
+  # 1. Source MySQL
   mysql_source:
     image: mysql:8.0
     container_name: mysql_source
@@ -15,10 +15,9 @@ services:
       - ./mysql_init:/docker-entrypoint-initdb.d:ro
       - mysql_data:/var/lib/mysql
     command: --default-authentication-plugin=mysql_native_password
+    restart: unless-stopped
 
-  # -----------------------------
-  # 2. MongoDB Replica Set (3 nodes)
-  # -----------------------------
+  # 2. MongoDB Replica Set
   mongo1:
     image: mongo:latest
     container_name: mongo1
@@ -34,6 +33,7 @@ services:
       bash -c "
         exec mongod --replSet rs0 --bind_ip_all --keyFile /etc/mongo_key/mongo-keyfile
       "
+    restart: unless-stopped
 
   mongo2:
     image: mongo:latest
@@ -50,6 +50,7 @@ services:
       bash -c "
         exec mongod --replSet rs0 --bind_ip_all --keyFile /etc/mongo_key/mongo-keyfile
       "
+    restart: unless-stopped
 
   mongo3:
     image: mongo:latest
@@ -66,8 +67,9 @@ services:
       bash -c "
         exec mongod --replSet rs0 --bind_ip_all --keyFile /etc/mongo_key/mongo-keyfile
       "
+    restart: unless-stopped
 
-  # 3. 自动初始化副本集
+  # 3. RS Init
   mongo_rs_init:
     image: mongo:latest
     depends_on:
@@ -76,12 +78,11 @@ services:
       - mongo3
     entrypoint: >
       bash -ec "
-        echo 'Waiting for mongo1 to accept connections...';
+        echo 'Waiting for mongo1...';
         until mongosh --host mongo1:27017 -u root -p root --authenticationDatabase admin --eval 'db.runCommand({ ping: 1 })' >/dev/null 2>&1; do
           sleep 2;
         done
-
-        echo 'Initiating replica set (if not already initiated)...';
+        echo 'Initiating replica set...';
         mongosh --host mongo1:27017 -u root -p root --authenticationDatabase admin --eval '
           try {
             rs.status();
@@ -102,7 +103,7 @@ services:
       "
     restart: "no"
   
-  # 3.1 统一初始化副本集 keyFile（所有节点共享）
+  # 3.1 Key Init
   mongo_key_init:
     image: alpine:3.19
     entrypoint: >
@@ -111,12 +112,12 @@ services:
           dd if=/dev/urandom bs=741 count=1 2>/dev/null | base64 > /key/mongo-keyfile;
           chmod 400 /key/mongo-keyfile;
         fi
-        ls -l /key/mongo-keyfile
       "
     volumes:
       - mongo_keyfile:/key
     restart: "no"
 
+  # 4. Main App
   syncer_app:
     build:
       context: .
@@ -125,23 +126,20 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./app:/app/app
-      - ./static:/app/static        # static 挂载，前端页面
-      - ./state:/app/state          # state 持久化
-      - ./configs:/app/configs      # configs 持久化（任务恢复需要）
-      - ./connections:/app/connections # 连接信息持久化
-      - ./configs_keys:/app/configs_keys # 密钥持久化
-      - ./logs:/app/logs            # 日志持久化
+      # Data persistence (Only SQLite DB and Logs)
+      - ./state:/app/state
+      - ./logs:/app/logs
     depends_on:
       - mysql_source
       - mongo1
       - mongo2
       - mongo3
       - mongo_rs_init
-      - mongo_key_init
     environment:
-      PYTHONUNBUFFERED: "1"
-    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]
+      - DEBUG=False
+      - ALLOWED_HOSTS=*
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
 
 volumes:
   mysql_data:
