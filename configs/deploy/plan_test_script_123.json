@@ -1,0 +1,34 @@
+{
+  "id": "test_script_123",
+  "req": {
+    "task_id": "test_script_123",
+    "server_ids": [],
+    "environment": "machine",
+    "services": [
+      {
+        "name": "mysql",
+        "version": null,
+        "config": {
+          "root_password": "rootpass",
+          "innodb_buffer_pool_size": "512M",
+          "max_connections": "500"
+        }
+      },
+      {
+        "name": "nginx",
+        "version": null,
+        "config": {}
+      }
+    ],
+    "cluster": false,
+    "replicas": 1,
+    "namespace": "default",
+    "execute": false
+  },
+  "artifacts": [
+    "deploy_artifacts/test_script_123/install.sh"
+  ],
+  "commands": [],
+  "status": "completed",
+  "error": null
+}

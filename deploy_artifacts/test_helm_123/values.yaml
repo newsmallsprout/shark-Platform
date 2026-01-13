@@ -1,0 +1,8 @@
+global:
+  imagePullPolicy: IfNotPresent
+prometheus:
+  enabled: true
+  retention: "15d"
+grafana:
+  enabled: true
+  adminPassword: "admin"

@@ -1,0 +1,43 @@
+{
+  "id": "test_task_123",
+  "req": {
+    "task_id": "test_task_123",
+    "server_ids": [],
+    "environment": "docker",
+    "services": [
+      {
+        "name": "mysql",
+        "version": "8.0",
+        "config": {
+          "root_password": "rootpass",
+          "innodb_buffer_pool_size": "512M",
+          "max_connections": "500"
+        }
+      },
+      {
+        "name": "nginx",
+        "version": null,
+        "config": {}
+      },
+      {
+        "name": "prometheus",
+        "version": null,
+        "config": {
+          "retention": "15d"
+        }
+      }
+    ],
+    "cluster": false,
+    "replicas": 1,
+    "namespace": "default",
+    "execute": false
+  },
+  "artifacts": [
+    "deploy_artifacts/test_task_123/docker-compose.yml",
+    "deploy_artifacts/test_task_123/nginx.conf",
+    "deploy_artifacts/test_task_123/prometheus.yml"
+  ],
+  "commands": [],
+  "status": "completed",
+  "error": null
+}

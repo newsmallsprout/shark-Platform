@@ -167,6 +167,10 @@
                     <el-icon><Aim /></el-icon>
                     <span>Inspection</span>
                 </el-menu-item>
+                <el-menu-item index="deploy">
+                    <el-icon><Setting /></el-icon>
+                    <span>Sevcer Deploy</span>
+                </el-menu-item>
             </el-menu>
         </el-aside>
 
@@ -375,6 +379,141 @@
                          </template>
                     </el-table-column>
                 </el-table>
+            </div>
+
+            <!-- DEPLOY VIEW -->
+            <div v-if="currentView === 'deploy'">
+                <div class="page-header">
+                    <h2>Deployment</h2>
+                </div>
+                <el-row :gutter="20">
+                    <el-col :span="10">
+                        <el-card>
+                            <template #header>
+                                <div class="card-header">
+                                    <span>Server Management</span>
+                                    <el-button type="primary" size="small" style="margin-left:auto;" @click="openServerDialog">Add Server</el-button>
+                                </div>
+                            </template>
+                            <el-table :data="deployServers" style="width:100%" size="small" border>
+                                <el-table-column prop="name" label="Name" width="160"></el-table-column>
+                                <el-table-column prop="host" label="Host" width="160"></el-table-column>
+                                <el-table-column prop="user" label="User" width="80"></el-table-column>
+                                <el-table-column label="Actions" width="140">
+                                    <template #default="scope">
+                                        <el-button type="primary" text size="small" @click="editServer(scope.row)">Edit</el-button>
+                                    </template>
+                                </el-table-column>
+                            </el-table>
+                        </el-card>
+                        <el-card style="margin-top:16px;">
+                            <template #header>
+                                <div class="card-header">
+                                    <span>Environment & Services</span>
+                                </div>
+                            </template>
+                            <el-form :model="deployForm" label-width="110px" label-position="left" size="small">
+                                <el-form-item label="Environment">
+                                    <el-radio-group v-model="deployForm.environment">
+                                        <el-radio-button label="machine">Machine</el-radio-button>
+                                        <el-radio-button label="docker">Docker</el-radio-button>
+                                        <el-radio-button label="k8s">Kubernetes</el-radio-button>
+                                        <el-radio-button label="helm">Helm</el-radio-button>
+                                    </el-radio-group>
+                                </el-form-item>
+                                <el-form-item label="Servers">
+                                    <el-select v-model="deployForm.server_ids" multiple placeholder="Select target servers" style="width:100%">
+                                        <el-option v-for="s in deployServers" :key="s.id" :label="s.name + ' (' + s.host + ')'" :value="s.id"></el-option>
+                                    </el-select>
+                                </el-form-item>
+                                <el-form-item label="Namespace" v-if="deployForm.environment === 'k8s' || deployForm.environment === 'helm'">
+                                    <el-input v-model="deployForm.namespace" placeholder="default"></el-input>
+                                </el-form-item>
+                                <el-form-item label="Replicas" v-if="deployForm.environment === 'k8s'">
+                                    <el-input-number v-model="deployForm.replicas" :min="1"></el-input-number>
+                                </el-form-item>
+                                <el-form-item label="One-click Stack">
+                                    <el-switch v-model="deployForm.stack_prometheus" active-text="Prometheus+Grafana+Alertmanager"></el-switch>
+                                </el-form-item>
+                            </el-form>
+                        </el-card>
+                    </el-col>
+                    <el-col :span="14">
+                        <el-card>
+                            <template #header>
+                                <div class="card-header">
+                                    <span>Service Selection</span>
+                                    <el-button type="primary" size="small" style="margin-left:auto;" @click="addServiceRow">Add Service</el-button>
+                                </div>
+                            </template>
+                            <el-table :data="deployForm.services" style="width:100%" size="small" border>
+                                <el-table-column prop="name" label="Service" width="180">
+                                    <template #default="scope">
+                                        <el-select v-model="scope.row.name" placeholder="Select service" style="width:100%">
+                                            <el-option label="nginx" value="nginx"></el-option>
+                                            <el-option label="mysql" value="mysql"></el-option>
+                                            <el-option label="mongo" value="mongo"></el-option>
+                                            <el-option label="elasticsearch" value="elasticsearch"></el-option>
+                                            <el-option label="rabbitmq" value="rabbitmq"></el-option>
+                                            <el-option label="kafka" value="kafka"></el-option>
+                                            <el-option label="node_exporter" value="node_exporter"></el-option>
+                                            <el-option label="mysqld_exporter" value="mysqld_exporter"></el-option>
+                                            <el-option label="blackbox_exporter" value="blackbox_exporter"></el-option>
+                                            <el-option label="prometheus" value="prometheus"></el-option>
+                                            <el-option label="grafana" value="grafana"></el-option>
+                                            <el-option label="alertmanager" value="alertmanager"></el-option>
+                                        </el-select>
+                                    </template>
+                                </el-table-column>
+                                <el-table-column prop="version" label="Version" width="140">
+                                    <template #default="scope">
+                                        <el-input v-model="scope.row.version" placeholder="latest"></el-input>
+                                    </template>
+                                </el-table-column>
+                                <el-table-column label="Config" min-width="220">
+                                    <template #default="scope">
+                                        <el-input
+                                            v-model="scope.row.config_raw"
+                                            placeholder="k=v,k2=v2 (for exporter/prometheus/grafana)"
+                                        ></el-input>
+                                    </template>
+                                </el-table-column>
+                                <el-table-column label="Actions" width="80">
+                                    <template #default="scope">
+                                        <el-button type="danger" text size="small" @click="removeServiceRow(scope.$index)">Remove</el-button>
+                                    </template>
+                                </el-table-column>
+                            </el-table>
+                        </el-card>
+                        <el-card style="margin-top:16px;">
+                            <template #header>
+                                <div class="card-header">
+                                    <span>Artifacts Preview & Execute</span>
+                                    <div style="margin-left:auto; display:flex; gap:8px;">
+                                        <el-switch v-model="deployForm.execute" active-text="Execute after generate"></el-switch>
+                                        <el-button type="primary" :loading="deployRunning" @click="runDeploy">
+                                            <el-icon style="margin-right:4px"><VideoPlay /></el-icon> Run Deploy
+                                        </el-button>
+                                    </div>
+                                </div>
+                            </template>
+                            <el-tabs v-model="deployPreviewTab">
+                                <el-tab-pane label="Commands" name="commands">
+                                    <el-table :data="deployPreview.commands" size="small" style="width:100%" border height="220">
+                                        <el-table-column type="index" width="40"></el-table-column>
+                                        <el-table-column prop="cmd" label="Command"></el-table-column>
+                                    </el-table>
+                                </el-tab-pane>
+                                <el-tab-pane label="Artifacts" name="artifacts">
+                                    <el-table :data="deployPreview.artifacts" size="small" style="width:100%" border height="220">
+                                        <el-table-column type="index" width="40"></el-table-column>
+                                        <el-table-column prop="path" label="File Path"></el-table-column>
+                                    </el-table>
+                                </el-tab-pane>
+                            </el-tabs>
+                        </el-card>
+                    </el-col>
+                </el-row>
             </div>
 
             <!-- CONNECTIONS VIEW -->
@@ -781,6 +920,38 @@
                 </template>
             </el-dialog>
 
+        <el-dialog v-model="serverDialogVisible" title="Server Config" width="500px" destroy-on-close append-to-body>
+            <el-form :model="serverForm" label-width="100px" size="small">
+                <el-form-item label="Name" required>
+                    <el-input v-model="serverForm.name" placeholder="Server Alias"></el-input>
+                </el-form-item>
+                <el-form-item label="Host" required>
+                    <el-input v-model="serverForm.host" placeholder="IP or Hostname"></el-input>
+                </el-form-item>
+                <el-form-item label="Port">
+                    <el-input-number v-model="serverForm.port" :min="1" :max="65535"></el-input-number>
+                </el-form-item>
+                <el-form-item label="User">
+                    <el-input v-model="serverForm.user" placeholder="root"></el-input>
+                </el-form-item>
+                <el-form-item label="Auth Method">
+                    <el-radio-group v-model="serverForm.auth_method">
+                        <el-radio-button label="key">SSH Key</el-radio-button>
+                        <el-radio-button label="password">Password</el-radio-button>
+                    </el-radio-group>
+                </el-form-item>
+                <el-form-item label="Password" v-if="serverForm.auth_method === 'password'">
+                    <el-input v-model="serverForm.password" type="password" show-password></el-input>
+                </el-form-item>
+                <el-form-item label="Key Path" v-if="serverForm.auth_method === 'key'">
+                    <el-input v-model="serverForm.key_path" placeholder="/root/.ssh/id_rsa"></el-input>
+                </el-form-item>
+            </el-form>
+            <template #footer>
+                <el-button @click="serverDialogVisible = false">Cancel</el-button>
+                <el-button type="primary" :loading="savingServer" @click="saveServer">Save</el-button>
+            </template>
+        </el-dialog>
             <el-dialog v-model="weeklyReportVisible" title="周报" width="720px" destroy-on-close>
                 <div v-if="weeklyReportData && weeklyReportData.items">
                     <el-table :data="weeklyReportData.items" style="width: 100%" max-height="520">
@@ -1289,6 +1460,10 @@
                     }
                     if (index === 'inspection') {
                         fetchInspectionHistory();
+                    }
+                    if (index === 'deploy') {
+                        fetchDeployServers();
+                        initDeployDefaults();
                     }
                 };
 
@@ -2417,6 +2592,7 @@
                 onMounted(() => {
                     fetchTasks();
                     fetchConnections();
+                    fetchDeployServers();
                 });
                 // Reset test status if critical fields change
                 watch(() => [connForm.type, connForm.host, connForm.port, connForm.mongo_hosts, connForm.replica_set, connForm.user, connForm.password, connForm.database, connForm.auth_source], () => {
@@ -2446,6 +2622,153 @@
                     mysqlTableList.value = [];
                 });
 
+                const deployServers = ref([]);
+                const fetchDeployServers = async () => {
+                    try {
+                        const res = await fetch('/deploy/servers');
+                        const data = await res.json();
+                        deployServers.value = data.servers || [];
+                    } catch(e) { ElMessage.error(e.message); }
+                };
+
+                const serverDialogVisible = ref(false);
+                const serverForm = reactive({
+                    id: '', name: '', host: '', port: 22, user: 'root', auth_method: 'key', password: '', key_path: ''
+                });
+                const openServerDialog = () => {
+                    serverForm.id = 'srv_' + Date.now();
+                    serverForm.name = '';
+                    serverForm.host = '';
+                    serverForm.port = 22;
+                    serverForm.user = 'root';
+                    serverForm.auth_method = 'key';
+                    serverForm.password = '';
+                    serverForm.key_path = '';
+                    serverDialogVisible.value = true;
+                };
+                const editServer = (row) => {
+                    serverForm.id = row.id;
+                    serverForm.name = row.name;
+                    serverForm.host = row.host;
+                    serverForm.port = row.port || 22;
+                    serverForm.user = row.user || 'root';
+                    serverForm.auth_method = row.auth_method || 'key';
+                    serverForm.password = row.password || '';
+                    serverForm.key_path = row.key_path || '';
+                    serverDialogVisible.value = true;
+                };
+                const savingServer = ref(false);
+                const saveServer = async () => {
+                    try {
+                        savingServer.value = true;
+                        const res = await fetch('/deploy/servers', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({
+                                id: serverForm.id,
+                                name: serverForm.name,
+                                host: serverForm.host,
+                                port: serverForm.port,
+                                user: serverForm.user,
+                                auth_method: serverForm.auth_method,
+                                password: serverForm.auth_method === 'password' ? serverForm.password : null,
+                                key_path: serverForm.auth_method === 'key' ? serverForm.key_path : null
+                            })
+                        });
+                        if (!res.ok) {
+                            const err = await res.json();
+                            ElMessage.error('Save failed: ' + (err.detail || res.status));
+                            return;
+                        }
+                        ElMessage.success('Server saved');
+                        serverDialogVisible.value = false;
+                        fetchDeployServers();
+                    } catch(e) { ElMessage.error(e.message); }
+                    finally { savingServer.value = false; }
+                };
+
+                const deployForm = reactive({
+                    task_id: '',
+                    environment: 'docker',
+                    server_ids: [],
+                    namespace: 'default',
+                    replicas: 1,
+                    execute: false,
+                    stack_prometheus: false,
+                    services: []
+                });
+                const deployRunning = ref(false);
+                const deployPreview = reactive({ commands: [], artifacts: [] });
+                const deployPreviewTab = ref('commands');
+                const initDeployDefaults = () => {
+                    if (!deployForm.task_id) deployForm.task_id = 'deploy_' + Date.now();
+                };
+                const addServiceRow = () => {
+                    deployForm.services.push({ name: '', version: '', config_raw: '' });
+                };
+                const removeServiceRow = (idx) => {
+                    deployForm.services.splice(idx, 1);
+                };
+                const _parseConfigRaw = (raw) => {
+                    const m = {};
+                    if (!raw) return m;
+                    raw.split(',').map(s => s.trim()).filter(Boolean).forEach(pair => {
+                        const i = pair.indexOf('=');
+                        if (i > 0) {
+                            const k = pair.slice(0,i).trim();
+                            const v = pair.slice(i+1).trim();
+                            if (k) m[k] = v;
+                        }
+                    });
+                    return m;
+                };
+                const _ensurePromStack = (services) => {
+                    const names = services.map(s => s.name);
+                    if (!names.includes('prometheus')) services.push({ name: 'prometheus', version: '', config: {} });
+                    if (!names.includes('grafana')) services.push({ name: 'grafana', version: '', config: {} });
+                    if (!names.includes('alertmanager')) services.push({ name: 'alertmanager', version: '', config: {} });
+                };
+                const runDeploy = async () => {
+                    try {
+                        if (!deployForm.server_ids || deployForm.server_ids.length === 0) {
+                            ElMessage.error('请选择目标服务器');
+                            return;
+                        }
+                        const services = deployForm.services
+                            .filter(s => s.name)
+                            .map(s => ({ name: s.name, version: s.version || null, config: _parseConfigRaw(s.config_raw) }));
+                        if (deployForm.stack_prometheus) {
+                            _ensurePromStack(services);
+                        }
+                        const payload = {
+                            task_id: deployForm.task_id,
+                            server_ids: deployForm.server_ids,
+                            environment: deployForm.environment,
+                            services,
+                            cluster: deployForm.environment === 'k8s' && deployForm.replicas > 1,
+                            replicas: deployForm.environment === 'k8s' ? (deployForm.replicas || 1) : 1,
+                            namespace: (deployForm.environment === 'k8s' || deployForm.environment === 'helm') ? (deployForm.namespace || 'default') : 'default',
+                            execute: deployForm.execute
+                        };
+                        deployRunning.value = true;
+                        const res = await fetch('/deploy/run', {
+                            method: 'POST',
+                            headers: {'Content-Type':'application/json'},
+                            body: JSON.stringify(payload)
+                        });
+                        const data = await res.json();
+                        if (!res.ok) {
+                            ElMessage.error((data && data.detail) || 'Deploy failed');
+                            return;
+                        }
+                        const plan = data.plan || {};
+                        deployPreview.commands = (plan.commands || []).map(c => ({ cmd: c }));
+                        deployPreview.artifacts = (plan.artifacts || []).map(p => ({ path: p }));
+                        ElMessage.success('Plan generated' + (deployForm.execute ? ' and executed' : ''));
+                    } catch(e) { ElMessage.error(e.message); }
+                    finally { deployRunning.value = false; }
+                };
+
                 return {
                     currentView, tasks, connections, syncTasks, monitorTasks, overview, collapseSync, collapseMonitor,
                     createVisible, activeStep, creating, form,
@@ -2474,7 +2797,10 @@
                     fetchInspectionHistory, loadInspectionReport,
                     weeklyReportVisible, weeklyReportData, openWeeklyReport,
                     monthlyReportVisible, monthlyReportData, openMonthlyReport,
-                    formatMetricLabels, getMetricLevelType, getMetricStatusType
+                    formatMetricLabels, getMetricLevelType, getMetricStatusType,
+                    // deploy
+                    deployServers, fetchDeployServers, serverDialogVisible, serverForm, openServerDialog, editServer, saveServer, savingServer,
+                    deployForm, addServiceRow, removeServiceRow, runDeploy, deployPreview, deployPreviewTab, deployRunning
                 };
             }
         });

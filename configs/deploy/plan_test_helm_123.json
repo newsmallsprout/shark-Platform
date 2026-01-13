@@ -1,0 +1,34 @@
+{
+  "id": "test_helm_123",
+  "req": {
+    "task_id": "test_helm_123",
+    "server_ids": [],
+    "environment": "helm",
+    "services": [
+      {
+        "name": "prometheus",
+        "version": null,
+        "config": {
+          "retention": "15d"
+        }
+      },
+      {
+        "name": "grafana",
+        "version": null,
+        "config": {
+          "admin_password": "admin"
+        }
+      }
+    ],
+    "cluster": false,
+    "replicas": 1,
+    "namespace": "monitoring",
+    "execute": false
+  },
+  "artifacts": [
+    "deploy_artifacts/test_helm_123/values.yaml"
+  ],
+  "commands": [],
+  "status": "completed",
+  "error": null
+}

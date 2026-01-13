@@ -1,0 +1,76 @@
+{
+  "id": "deploy_demo",
+  "req": {
+    "task_id": "deploy_demo",
+    "server_ids": [
+      "s1"
+    ],
+    "environment": "docker",
+    "services": [
+      {
+        "name": "nginx",
+        "version": null,
+        "config": {}
+      },
+      {
+        "name": "mysql",
+        "version": null,
+        "config": {
+          "root_password": "rootpass"
+        }
+      },
+      {
+        "name": "mongo",
+        "version": null,
+        "config": {}
+      },
+      {
+        "name": "elasticsearch",
+        "version": null,
+        "config": {}
+      },
+      {
+        "name": "rabbitmq",
+        "version": null,
+        "config": {}
+      },
+      {
+        "name": "kafka",
+        "version": null,
+        "config": {}
+      },
+      {
+        "name": "node_exporter",
+        "version": null,
+        "config": {}
+      },
+      {
+        "name": "mysqld_exporter",
+        "version": null,
+        "config": {
+          "dsn": "root:rootpass@(localhost:3306)/"
+        }
+      },
+      {
+        "name": "blackbox_exporter",
+        "version": null,
+        "config": {}
+      }
+    ],
+    "cluster": false,
+    "replicas": 1,
+    "namespace": "default",
+    "execute": false
+  },
+  "artifacts": [
+    "deploy_artifacts/deploy_demo/docker-compose.yml"
+  ],
+  "commands": [
+    "scp -i ~/.ssh/id_rsa deploy_artifacts/deploy_demo/docker-compose.yml root@127.0.0.1:/root/deploy/deploy_demo/docker-compose.yml",
+    "ssh -i ~/.ssh/id_rsa root@127.0.0.1 mkdir -p ~/deploy && mkdir -p ~/deploy/deploy_demo",
+    "ssh -i ~/.ssh/id_rsa root@127.0.0.1 docker compose version || docker-compose -v || echo no_compose",
+    "ssh -i ~/.ssh/id_rsa root@127.0.0.1 cd ~/deploy/deploy_demo && docker compose up -d || docker-compose up -d"
+  ],
+  "status": "completed",
+  "error": null
+}

@@ -10,6 +10,7 @@ from app.api.monitor_routes import router as monitor_router
 from app.api.routes import router
 from app.core.cdn_cache import ensure_vendor_assets
 from app.inspection.routes import router as inspection_router
+from app.api.deploy_routes import router as deploy_router
 from app.monitor.engine import monitor_engine
 from app.sync.task_manager import task_manager
 
@@ -74,6 +75,7 @@ async def docs():
 app.include_router(router)
 app.include_router(monitor_router, prefix="/monitor", tags=["monitor"])
 app.include_router(inspection_router, prefix="/inspection", tags=["inspection"])
+app.include_router(deploy_router, prefix="/deploy", tags=["deploy"])
 
 
 @app.on_event("startup")

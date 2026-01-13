@@ -1,0 +1,44 @@
+{
+  "id": "deploy_k8s",
+  "req": {
+    "task_id": "deploy_k8s",
+    "server_ids": [
+      "s1"
+    ],
+    "environment": "k8s",
+    "services": [
+      {
+        "name": "nginx",
+        "version": null,
+        "config": {}
+      },
+      {
+        "name": "mysql",
+        "version": null,
+        "config": {}
+      }
+    ],
+    "cluster": true,
+    "replicas": 3,
+    "namespace": "prod",
+    "execute": false
+  },
+  "artifacts": [
+    "deploy_artifacts/deploy_k8s/deploy_k8s_0.yaml",
+    "deploy_artifacts/deploy_k8s/deploy_k8s_1.yaml",
+    "deploy_artifacts/deploy_k8s/deploy_k8s_2.yaml",
+    "deploy_artifacts/deploy_k8s/deploy_k8s_3.yaml"
+  ],
+  "commands": [
+    "scp -i ~/.ssh/id_rsa deploy_artifacts/deploy_k8s/deploy_k8s_0.yaml root@127.0.0.1:/root/deploy/deploy_k8s_0.yaml",
+    "ssh -i ~/.ssh/id_rsa root@127.0.0.1 kubectl apply -f /root/deploy/deploy_k8s_0.yaml",
+    "scp -i ~/.ssh/id_rsa deploy_artifacts/deploy_k8s/deploy_k8s_1.yaml root@127.0.0.1:/root/deploy/deploy_k8s_1.yaml",
+    "ssh -i ~/.ssh/id_rsa root@127.0.0.1 kubectl apply -f /root/deploy/deploy_k8s_1.yaml",
+    "scp -i ~/.ssh/id_rsa deploy_artifacts/deploy_k8s/deploy_k8s_2.yaml root@127.0.0.1:/root/deploy/deploy_k8s_2.yaml",
+    "ssh -i ~/.ssh/id_rsa root@127.0.0.1 kubectl apply -f /root/deploy/deploy_k8s_2.yaml",
+    "scp -i ~/.ssh/id_rsa deploy_artifacts/deploy_k8s/deploy_k8s_3.yaml root@127.0.0.1:/root/deploy/deploy_k8s_3.yaml",
+    "ssh -i ~/.ssh/id_rsa root@127.0.0.1 kubectl apply -f /root/deploy/deploy_k8s_3.yaml"
+  ],
+  "status": "completed",
+  "error": null
+}
