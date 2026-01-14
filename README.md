@@ -37,15 +37,107 @@ Shark Platform 的核心引擎，支持高可靠的数据传输。
 
 ---
 
-## 🏗 架构设计
+## 🏗 平台架构
 
 平台采用 **前后端分离** 架构：
+
+```mermaid
+graph TB
+  UI["Web 控制台 (Vue3)"] --> API["Django API"]
+  
+  subgraph Backend["Shark Backend"]
+    API --> TaskMgr["任务管理器"]
+    API --> Monitor["监控引擎"]
+    API --> Inspect["巡检服务"]
+    API --> Deploy["部署引擎"]
+    
+    TaskMgr --> SyncWorker["同步 Worker"]
+    SyncWorker --> MySQL[(MySQL 源)]
+    SyncWorker --> Mongo[(MongoDB 目标)]
+    
+    Monitor --> ES[(Elasticsearch)]
+    Monitor --> Slack["Slack Webhook"]
+    
+    Inspect --> Prom[(Prometheus)]
+    Inspect --> LLM["LLM (可选)"]
+    
+    Deploy --> SSH["SSH / K8s"]
+  end
+  
+  subgraph Storage["持久化存储"]
+    SQLite[(SQLite DB)]
+    Logs["日志文件"]
+  end
+  
+  Backend --> SQLite
+  Backend --> Logs
+```
 
 *   **前端**: Vue 3 + Element Plus，提供响应式、现代化的用户界面。
 *   **后端**: Django REST Framework (DRF)，提供稳健的 API 服务。
 *   **数据层**: 
     *   **SQLite**: 存储平台自身的配置、任务状态与用户信息 (无需额外部署 MySQL)。
     *   **MySQL & MongoDB**: 业务数据源与目标。
+
+---
+
+## 🔌 接口文档与路由说明
+
+Shark Platform 提供了一套完整的 RESTful API，用于管理平台的所有资源。以下是主要的路由结构说明。
+
+### 1. 核心路由 (`shark_platform/urls.py`)
+
+| 路径前缀 | 说明 |
+| :--- | :--- |
+| `/` | 任务管理与连接管理 (根路由) |
+| `/monitor/` | 监控模块路由 |
+| `/inspection/` | 巡检模块路由 |
+| `/deploy/` | 部署模块路由 |
+| `/accounts/` | 用户认证 (登录/登出) |
+| `/admin/` | Django 后台管理 |
+
+### 2. 任务与连接 (`tasks/urls.py`)
+
+| 方法 | 路由 | 说明 |
+| :--- | :--- | :--- |
+| **Connections** | | |
+| `GET/POST` | `/connections` | 获取连接列表 / 创建连接 |
+| `GET/DELETE` | `/connections/<id>` | 获取连接详情 / 删除连接 |
+| `POST` | `/connections/test` | 测试连接可用性 |
+| **Tasks** | | |
+| `GET` | `/tasks/list` | 获取所有任务列表 |
+| `GET` | `/tasks/status` | 获取所有任务运行状态 |
+| `POST` | `/tasks/start` | 启动任务 |
+| `POST` | `/tasks/stop/<id>` | 停止任务 |
+| `POST` | `/tasks/delete/<id>` | 删除任务 |
+| `GET` | `/tasks/logs/<id>` | 查看任务日志 |
+
+### 3. 监控模块 (`monitor/urls.py`)
+
+| 方法 | 路由 | 说明 |
+| :--- | :--- | :--- |
+| `GET/POST` | `/monitor/config` | 获取 / 更新全局监控配置 |
+| `GET` | `/monitor/status` | 获取监控引擎运行状态 |
+| `POST` | `/monitor/start` | 启动监控服务 |
+| `POST` | `/monitor/stop` | 停止监控服务 |
+
+### 4. 巡检模块 (`inspection/urls.py`)
+
+| 方法 | 路由 | 说明 |
+| :--- | :--- | :--- |
+| `GET/POST` | `/inspection/config` | 获取 / 更新巡检配置 |
+| `POST` | `/inspection/run` | 手动触发一次巡检 |
+| `GET` | `/inspection/history` | 获取历史巡检报告列表 |
+| `GET` | `/inspection/report/<id>` | 获取指定报告详情 |
+
+### 5. 部署模块 (`deploy/urls.py`)
+
+| 方法 | 路由 | 说明 |
+| :--- | :--- | :--- |
+| `GET` | `/deploy/servers` | 获取服务器列表 |
+| `POST` | `/deploy/run` | 创建并开始一个部署流程 |
+| `GET` | `/deploy/plans/<id>` | 获取部署计划详情 |
+| `POST` | `/deploy/execute/<id>` | 执行部署计划 |
 
 ---
 
