@@ -50,34 +50,34 @@
 ## 🏗 系统架构
 
 ```mermaid
-graph TD
-    User[User (Browser / Vue 3)] -->|HTTP / REST API| Web[Django Web Server]
+flowchart TD
+    User[User Browser Vue3] -->|HTTP REST API| Web[Django Web]
     
-    subgraph "Shark Platform Backend"
+    subgraph Backend
         Web -->|Manage| TM[Task Manager]
-        Web -->|Query/Save| DB[(SQLite State DB)]
+        Web -->|Query Save| DB[(SQLite State DB)]
         
-        subgraph "Data Sync Engine"
+        subgraph DataSync
             TM -->|Spawn Thread| Worker[Sync Worker]
             Worker -->|Read Binlog| MySQL[(MySQL Source)]
             Worker -->|Write Docs| Mongo[(MongoDB Target)]
         end
         
-        subgraph "Log Monitor"
+        subgraph LogMonitor
             Web -->|Config| MonEngine[Monitor Engine]
             MonEngine -->|Tail Logs| K8s[K8s Cluster]
             MonEngine -->|Archive| S3[S3 Storage]
             MonEngine -->|Alert| Slack[Slack Webhook]
         end
         
-        subgraph "Inspection & AI"
+        subgraph InspectionAI
             Web -->|Trigger| InspEngine[Inspection Engine]
             InspEngine -->|Query Metrics| Prom[Prometheus]
             InspEngine -->|Analyze| AI[Ark AI Model]
             InspEngine -->|Generate| Report[Inspection Report]
         end
         
-        subgraph "Server Deploy"
+        subgraph ServerDeploy
             Web -->|SSH| Servers[Target Servers]
         end
     end
