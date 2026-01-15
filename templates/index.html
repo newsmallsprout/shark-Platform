@@ -689,174 +689,215 @@
                 </el-table>
             </div>
 
-        <!-- MONITOR VIEW -->
-            <div v-if="currentView === 'monitor'" class="monitor-container">
-                <div class="page-header">
-                    <h2>Log Monitoring</h2>
-                    <div>
-                        <el-tag :type="monitorStatus.status === 'running' ? 'success' : 'info'" effect="dark" style="margin-right: 12px; font-weight: bold;">
-                            {{ monitorStatus.status ? monitorStatus.status.toUpperCase() : 'UNKNOWN' }}
-                        </el-tag>
-                        <el-button v-if="monitorStatus.status === 'running'" type="danger" plain @click="stopMonitor" :loading="monitorActionLoading" icon="SwitchButton">Stop Monitor</el-button>
-                        <el-button v-else type="primary" @click="startMonitor" :loading="monitorActionLoading" icon="VideoPlay">Start Monitor</el-button>
+            <!-- MONITOR VIEW (Task List) -->
+            <div v-if="currentView === 'monitor'">
+                <div v-if="!currentMonitorTask">
+                    <div class="page-header">
+                        <h2>Monitor Tasks</h2>
+                        <el-button type="primary" @click="showCreateMonitorDialog">
+                            <el-icon style="margin-right: 5px"><Plus /></el-icon> Add Monitor
+                        </el-button>
                     </div>
+
+                    <el-table :data="logMonitorList" style="width: 100%" border v-loading="logMonitorLoading">
+                        <el-table-column prop="name" label="Task Name"></el-table-column>
+                        <el-table-column prop="k8s_namespace" label="Namespace" width="150"></el-table-column>
+                        <el-table-column prop="enabled" label="Status" width="120">
+                            <template #default="scope">
+                                <el-tag :type="scope.row.enabled ? 'success' : 'info'">{{ scope.row.enabled ? 'Running' : 'Stopped' }}</el-tag>
+                            </template>
+                        </el-table-column>
+                        <el-table-column prop="last_run" label="Last Run" width="200">
+                            <template #default="scope">{{ formatTime(scope.row.last_run) || 'Never' }}</template>
+                        </el-table-column>
+                        <el-table-column label="Actions" width="180">
+                            <template #default="scope">
+                                <el-button type="primary" size="small" @click="openMonitorTask(scope.row)">View</el-button>
+                                <el-button type="danger" size="small" @click="deleteMonitorTask(scope.row)">Delete</el-button>
+                            </template>
+                        </el-table-column>
+                    </el-table>
                 </div>
 
-                <!-- Status Cards (Compact Row) -->
-                <el-row :gutter="20" style="margin-bottom: 20px;">
-                    <el-col :xs="24" :sm="12" :md="6">
-                        <div class="stat-card-compact">
-                            <div class="stat-icon icon-blue"><el-icon><Monitor /></el-icon></div>
-                            <div class="stat-content">
-                                <div class="stat-label">Current Status</div>
-                                <div class="stat-number" :style="{color: monitorStatus.status === 'running' ? '#67C23A' : '#909399'}">
-                                    {{ monitorStatus.status }}
+                <!-- Monitor Task Detail -->
+                <div v-else>
+                    <div class="page-header">
+                        <div style="display:flex; align-items:center; gap:10px;">
+                            <el-button @click="currentMonitorTask = null" icon="ArrowLeft" circle></el-button>
+                            <h2>{{ currentMonitorTask.name }}</h2>
+                            <el-tag :type="currentMonitorTask.enabled ? 'success' : 'info'">
+                                {{ currentMonitorTask.enabled ? 'Running' : 'Stopped' }}
+                            </el-tag>
+                        </div>
+                        <div style="display:flex; gap:10px;">
+                            <el-button type="primary" @click="saveCurrentMonitorTask" :loading="monitorSaving">Save Config</el-button>
+                        </div>
+                    </div>
+
+                    <el-tabs type="border-card">
+                        <el-tab-pane label="Status & Logs">
+                            <div style="margin-bottom: 20px;">
+                                <el-descriptions :column="3" border>
+                                    <el-descriptions-item label="Namespace">{{ currentMonitorTask.k8s_namespace }}</el-descriptions-item>
+                                    <el-descriptions-item label="Last Run">{{ formatTime(currentMonitorTask.last_run) || 'Never' }}</el-descriptions-item>
+                                    <el-descriptions-item label="Alerts Sent">{{ currentMonitorTask.alerts_sent_count }}</el-descriptions-item>
+                                    <el-descriptions-item label="Last Error" :span="3" v-if="currentMonitorTask.last_error">
+                                        <span style="color: red;">{{ currentMonitorTask.last_error }}</span>
+                                    </el-descriptions-item>
+                                </el-descriptions>
+                            </div>
+
+                            <div class="card-header" style="margin-bottom: 10px; justify-content: space-between; display: flex;">
+                                <span style="font-weight: bold;">Archived Logs (Local)</span>
+                                <div style="display: flex; gap: 10px;">
+                                    <el-input v-model="logSearch" placeholder="Search logs..." style="width: 200px;" clearable>
+                                        <template #prefix><el-icon><Search /></el-icon></template>
+                                    </el-input>
+                                    <el-button @click="fetchLogFiles" :loading="logsLoading" icon="Refresh">Refresh</el-button>
                                 </div>
                             </div>
-                        </div>
-                    </el-col>
-                    <el-col :xs="24" :sm="12" :md="6">
-                        <div class="stat-card-compact">
-                            <div class="stat-icon icon-green"><el-icon><Clock /></el-icon></div>
-                            <div class="stat-content">
-                                <div class="stat-label">Last Run</div>
-                                <div class="stat-number" style="font-size: 16px;">{{ monitorStatus.last_run || '-' }}</div>
-                            </div>
-                        </div>
-                    </el-col>
-                    <el-col :xs="24" :sm="12" :md="6">
-                        <div class="stat-card-compact">
-                            <div class="stat-icon icon-orange"><el-icon><Bell /></el-icon></div>
-                            <div class="stat-content">
-                                <div class="stat-label">Alerts Sent</div>
-                                <div class="stat-number">{{ monitorStatus.alerts_sent }}</div>
-                            </div>
-                        </div>
-                    </el-col>
-                    <el-col :xs="24" :sm="12" :md="6">
-                        <div class="stat-card-compact">
-                            <div class="stat-icon icon-red"><el-icon><Warning /></el-icon></div>
-                            <div class="stat-content">
-                                <div class="stat-label">Last Error</div>
-                                <el-tooltip v-if="monitorStatus.last_error" :content="monitorStatus.last_error" placement="top">
-                                    <div class="stat-number" style="font-size: 14px; color: #F56C6C; cursor: pointer;">{{ monitorStatus.last_error }}</div>
-                                </el-tooltip>
-                                <div class="stat-number" v-else>-</div>
-                            </div>
-                        </div>
-                    </el-col>
-                </el-row>
+                            
+                            <el-table :data="filteredLogFiles" style="width: 100%" height="500" border>
+                                <el-table-column prop="name" label="Filename" sortable></el-table-column>
+                                <el-table-column prop="size" label="Size" sortable width="150">
+                                    <template #default="scope">{{ (scope.row.size / 1024).toFixed(2) }} KB</template>
+                                </el-table-column>
+                                <el-table-column prop="mtime" label="Modified Time" sortable width="200">
+                                    <template #default="scope">{{ formatTime(scope.row.mtime) }}</template>
+                                </el-table-column>
+                                <el-table-column label="Actions" width="120" align="center">
+                                    <template #default="scope">
+                                        <el-button link type="primary" @click="downloadLog(scope.row.name)">
+                                            <el-icon><Download /></el-icon> Download
+                                        </el-button>
+                                    </template>
+                                </el-table-column>
+                            </el-table>
+                        </el-tab-pane>
 
-                <!-- Configuration Panel -->
-                <el-card shadow="never" class="config-card">
-                    <template #header>
-                        <div class="card-header">
-                            <span style="font-weight: bold;">Configuration</span>
-                            <el-button type="primary" link @click="saveMonitorConfig" :loading="monitorSaving">
-                                <el-icon><Check /></el-icon> Save
-                            </el-button>
-                        </div>
-                    </template>
-
-                    <el-form :model="monitorConfig" label-width="140px" label-position="left">
-                        <el-row :gutter="40">
-                            <!-- Left Column -->
-                            <el-col :xs="24" :lg="12">
-                                <div class="config-section-title">General Settings</div>
-                                <el-form-item label="Enable Monitor">
-                                    <el-switch v-model="monitorConfig.enabled" active-text="Enabled" inactive-text="Disabled"></el-switch>
-                                </el-form-item>
-                                <el-form-item label="Poll Interval (s)">
-                                    <el-input-number v-model="monitorConfig.poll_interval_seconds" :min="10" controls-position="right" style="width: 100%;"></el-input-number>
-                                </el-form-item>
-
-                                <div class="config-section-title" style="margin-top: 30px;">Elasticsearch Connection</div>
-                                <el-form-item label="ES Hosts">
-                                    <el-input v-model="monitorConfig.es_hosts" placeholder="https://localhost:9200"></el-input>
-                                </el-form-item>
-                                <el-form-item label="Index Pattern">
-                                    <el-input v-model="monitorConfig.index_pattern" placeholder="trace_log-*"></el-input>
-                                </el-form-item>
-                                <el-row :gutter="10">
-                                    <el-col :span="12">
-                                        <el-form-item label="Username" label-width="80px">
-                                            <el-input v-model="monitorConfig.es_username"></el-input>
+                        <el-tab-pane label="Configuration">
+                             <el-form :model="currentMonitorTask" label-width="140px" label-position="left">
+                                <el-row :gutter="40">
+                                    <el-col :xs="24" :lg="12">
+                                        <div class="config-section-title">General Settings</div>
+                                        <el-form-item label="Task Name">
+                                            <el-input v-model="currentMonitorTask.name"></el-input>
                                         </el-form-item>
+                                        <el-form-item label="Enable Monitor">
+                                            <el-switch v-model="currentMonitorTask.enabled" active-text="Enabled" inactive-text="Disabled"></el-switch>
+                                        </el-form-item>
+                                        <el-form-item label="Poll Interval (s)">
+                                            <el-input-number v-model="currentMonitorTask.poll_interval_seconds" :min="10" controls-position="right" style="width: 100%;"></el-input-number>
+                                        </el-form-item>
+
+                                        <div class="config-section-title" style="margin-top: 30px;">Kubernetes Settings</div>
+                                        <el-form-item label="Namespace">
+                                            <el-input v-model="currentMonitorTask.k8s_namespace" placeholder="default"></el-input>
+                                        </el-form-item>
+                                        <el-form-item label="Kubeconfig">
+                                            <el-input 
+                                                v-model="currentMonitorTask.k8s_kubeconfig" 
+                                                type="textarea" 
+                                                :rows="3" 
+                                                placeholder="Paste kubeconfig content here. Leave empty to use in-cluster config.">
+                                            </el-input>
+                                        </el-form-item>
+
+                                        <div class="config-section-title" style="margin-top: 30px;">S3 Archive Settings</div>
+                                        <el-form-item label="Enable Archive">
+                                            <el-switch v-model="currentMonitorTask.s3_archive_enabled" active-text="Enabled" inactive-text="Disabled"></el-switch>
+                                        </el-form-item>
+                                        <template v-if="currentMonitorTask.s3_archive_enabled">
+                                            <el-form-item label="Bucket Name">
+                                                <el-input v-model="currentMonitorTask.s3_bucket"></el-input>
+                                            </el-form-item>
+                                            <el-form-item label="Region">
+                                                <el-input v-model="currentMonitorTask.s3_region" placeholder="us-east-1"></el-input>
+                                            </el-form-item>
+                                            <el-form-item label="Endpoint URL">
+                                                <el-input v-model="currentMonitorTask.s3_endpoint" placeholder="Optional (e.g. MinIO)"></el-input>
+                                            </el-form-item>
+                                            <el-row :gutter="10">
+                                                <el-col :span="12">
+                                                    <el-form-item label="Access Key" label-width="90px">
+                                                        <el-input v-model="currentMonitorTask.s3_access_key"></el-input>
+                                                    </el-form-item>
+                                                </el-col>
+                                                <el-col :span="12">
+                                                    <el-form-item label="Secret Key" label-width="90px">
+                                                        <el-input v-model="currentMonitorTask.s3_secret_key" type="password" show-password></el-input>
+                                                    </el-form-item>
+                                                </el-col>
+                                            </el-row>
+                                            <el-form-item label="Retention (Days)">
+                                                <el-input-number v-model="currentMonitorTask.retention_days" :min="1" controls-position="right"></el-input-number>
+                                            </el-form-item>
+                                        </template>
                                     </el-col>
-                                    <el-col :span="12">
-                                        <el-form-item label="Password" label-width="80px">
-                                            <el-input v-model="monitorConfig.es_password" type="password" show-password></el-input>
+
+                                    <el-col :xs="24" :lg="12">
+                                        <div class="config-section-title">Alerting Rules</div>
+                                        <el-form-item label="Slack Webhook">
+                                            <el-input v-model="currentMonitorTask.slack_webhook_url" placeholder="https://hooks.slack.com/services/..."></el-input>
+                                        </el-form-item>
+                                        
+                                        <el-form-item label="Alert Keywords">
+                                            <el-select 
+                                                v-model="currentMonitorTask.alert_keywords" 
+                                                multiple 
+                                                filterable 
+                                                allow-create 
+                                                default-first-option 
+                                                placeholder="Type and hit enter" 
+                                                style="width: 100%">
+                                            </el-select>
+                                        </el-form-item>
+
+                                        <el-form-item label="Record Only">
+                                            <el-select 
+                                                v-model="currentMonitorTask.record_only_keywords" 
+                                                multiple 
+                                                filterable 
+                                                allow-create 
+                                                default-first-option 
+                                                placeholder="Type and hit enter" 
+                                                style="width: 100%">
+                                            </el-select>
+                                        </el-form-item>
+                                        
+                                        <el-form-item label="Ignore Keywords">
+                                            <el-select 
+                                                v-model="currentMonitorTask.ignore_keywords" 
+                                                multiple 
+                                                filterable 
+                                                allow-create 
+                                                default-first-option 
+                                                placeholder="Type and hit enter" 
+                                                style="width: 100%">
+                                            </el-select>
                                         </el-form-item>
                                     </el-col>
                                 </el-row>
-                            </el-col>
+                            </el-form>
+                        </el-tab-pane>
+                    </el-tabs>
+                </div>
 
-                            <!-- Right Column -->
-                            <el-col :xs="24" :lg="12">
-                                <div class="config-section-title">Alerting Rules</div>
-                                <el-form-item label="Slack Webhook">
-                                    <el-input v-model="monitorConfig.slack_webhook_url" placeholder="https://hooks.slack.com/services/..."></el-input>
-                                </el-form-item>
-                                
-                                <el-form-item label="Alert Keywords">
-                                    <el-select 
-                                        v-model="monitorConfig.alert_keywords" 
-                                        multiple 
-                                        filterable 
-                                        allow-create 
-                                        default-first-option 
-                                        placeholder="Type and hit enter" 
-                                        style="width: 100%">
-                                    </el-select>
-                                    <div style="font-size: 12px; color: #909399; line-height: 1.2; margin-top: 4px;">Log messages matching these phrases will trigger alerts (OR logic).</div>
-                                </el-form-item>
-
-                                <el-form-item label="Record Only">
-                                    <el-select 
-                                        v-model="monitorConfig.record_only_keywords" 
-                                        multiple 
-                                        filterable 
-                                        allow-create 
-                                        default-first-option 
-                                        placeholder="Type and hit enter" 
-                                        style="width: 100%">
-                                    </el-select>
-                                    <div style="font-size: 12px; color: #909399; line-height: 1.2; margin-top: 4px;">Logs matching these phrases will be recorded locally but NOT sent to Slack.</div>
-                                </el-form-item>
-                                
-                                <el-form-item label="Ignore Keywords">
-                                    <el-select 
-                                        v-model="monitorConfig.ignore_keywords" 
-                                        multiple 
-                                        filterable 
-                                        allow-create 
-                                        default-first-option 
-                                        placeholder="Type and hit enter" 
-                                        style="width: 100%">
-                                    </el-select>
-                                    <div style="font-size: 12px; color: #909399; line-height: 1.2; margin-top: 4px;">Logs matching these phrases will be ignored.</div>
-                                </el-form-item>
-                                
-                                <el-alert
-                                    title="Monitor Info"
-                                    type="info"
-                                    description="The monitor runs in the background and checks Elasticsearch for errors periodically."
-                                    show-icon
-                                    :closable="false"
-                                    style="margin-top: 20px"
-                                />
-                            </el-col>
-                        </el-row>
-
-                        <!-- Bottom Save Action -->
-                        <el-divider></el-divider>
-                        <div style="text-align: right;">
-                             <el-button @click="fetchMonitorStatus">Refresh Status</el-button>
-                             <el-button type="primary" size="large" @click="saveMonitorConfig" :loading="monitorSaving" icon="Check" style="width: 180px;">Save & Restart</el-button>
-                        </div>
-
+                <!-- Add Monitor Dialog -->
+                <el-dialog v-model="monitorConfigVisible" title="Add Monitor Task" width="500px">
+                    <el-form :model="newMonitorForm" label-width="120px">
+                        <el-form-item label="Task Name" required>
+                            <el-input v-model="newMonitorForm.name" placeholder="e.g. Production Logs"></el-input>
+                        </el-form-item>
+                        <el-form-item label="Namespace">
+                            <el-input v-model="newMonitorForm.k8s_namespace" placeholder="default"></el-input>
+                        </el-form-item>
                     </el-form>
-                </el-card>
+                    <template #footer>
+                        <el-button @click="monitorConfigVisible = false">Cancel</el-button>
+                        <el-button type="primary" @click="createMonitorTask" :loading="monitorSaving">Create</el-button>
+                    </template>
+                </el-dialog>
             </div>
 
             <!-- INSPECTION VIEW -->
@@ -887,6 +928,14 @@
                 </div>
 
                 <div v-if="inspectionReport">
+                    <!-- Report Header -->
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                        <div style="font-size: 24px; font-weight: bold;">System Inspection Report</div>
+                        <div style="text-align: right; color: #606266;">
+                            <div>报告生成时间：{{ new Date().toLocaleDateString('zh-CN', {year: 'numeric', month: '2-digit', day: '2-digit'}) }}</div>
+                        </div>
+                    </div>
+
                     <!-- Charts Row -->
                     <el-row :gutter="20" style="margin-bottom: 20px;">
                         <el-col :span="12">
@@ -959,6 +1008,37 @@
                             </div>
                         </div>
                         <div v-else style="color:#909399;">暂无历史数据，预测将从累积日报后生效</div>
+                    </el-card>
+
+                    <!-- Vulnerability Report -->
+                    <el-card style="margin-bottom: 20px;">
+                        <template #header>
+                            <div class="card-header">
+                                <span style="font-weight: bold; color:#F56C6C">
+                                    <el-icon style="margin-right:8px"><WarnTriangleFilled /></el-icon>
+                                    Vulnerability Report
+                                </span>
+                            </div>
+                        </template>
+                        <el-table :data="inspectionReport.vulnerabilities || []" style="width: 100%">
+                            <el-table-column prop="cve_id" label="CVE ID" width="180">
+                                <template #default="scope">
+                                    <span style="font-weight:bold; color:#409EFF">{{ scope.row.cve_id }}</span>
+                                </template>
+                            </el-table-column>
+                            <el-table-column prop="component" label="Component" width="150"></el-table-column>
+                            <el-table-column prop="severity" label="Severity" width="120">
+                                <template #default="scope">
+                                    <el-tag :type="scope.row.severity === 'High' || scope.row.severity === 'Critical' ? 'danger' : 'warning'">{{ scope.row.severity }}</el-tag>
+                                </template>
+                            </el-table-column>
+                            <el-table-column prop="description" label="Description"></el-table-column>
+                            <el-table-column prop="status" label="Status" width="150">
+                                <template #default="scope">
+                                    <el-tag :type="scope.row.status === 'Patched' ? 'success' : 'danger'" effect="plain">{{ scope.row.status }}</el-tag>
+                                </template>
+                            </el-table-column>
+                        </el-table>
                     </el-card>
 
                     <!-- AI Analysis -->
@@ -1144,7 +1224,7 @@
                             </el-select>
                         </el-form-item>
                         <el-form-item label="Database">
-                            <el-select v-model="selectedDatabase" placeholder="Select Database" style="width: 100%" @visible-change="v => v && loadMysqlDatabasesSaved()">
+                            <el-select v-model="selectedDatabase" placeholder="Select Database" style="width: 100%" @visible-change="v => v && loadMysqlDatabasesSaved()" @click="loadMysqlDatabasesSaved">
                                 <el-option v-for="d in mysqlDbList" :key="d" :label="d" :value="d"></el-option>
                             </el-select>
                         </el-form-item>
@@ -1211,6 +1291,12 @@
                         </el-radio-group>
                     </el-form-item>
 
+                    <el-form-item>
+                         <el-checkbox v-model="dropTargetBeforeSync" border>
+                            Drop Target Collection Before Full Sync (Start Clean)
+                         </el-checkbox>
+                    </el-form-item>
+
                     <div v-if="syncScope === 'partial'">
                         <div class="section-title">Table Mappings</div>
                         <div v-for="(map, index) in form.mappings" :key="index" class="mapping-row">
@@ -1272,6 +1358,9 @@
                     <el-form-item label="User" required><el-input v-model="connForm.user"></el-input></el-form-item>
                     <el-form-item label="Password" required><el-input v-model="connForm.password" type="password" show-password></el-input></el-form-item>
                     <el-form-item label="Database"><el-input v-model="connForm.database"></el-input></el-form-item>
+                    <el-form-item label="Use SSL">
+                        <el-switch v-model="connForm.use_ssl"></el-switch>
+                    </el-form-item>
                 </template>
                 <template v-else>
                     <el-form-item label="Hosts">
@@ -1331,7 +1420,7 @@
                     </el-col>
                  </el-row>
             </div>
-            <div class="log-console" style="height: 500px;">
+            <div class="log-console" style="height: 500px; overflow-y: auto;">
                 <div v-if="logsLines.length === 0" style="color: #666; text-align: center; margin-top: 200px;">No logs available</div>
                 <div v-for="(line, idx) in logsLines" :key="idx" class="log-line">{{ line.trim() }}</div>
             </div>
@@ -1395,6 +1484,30 @@
     {% endverbatim %}
     </div>
     <script>
+        function getCookie(name) {
+            let cookieValue = null;
+            if (document.cookie && document.cookie !== '') {
+                const cookies = document.cookie.split(';');
+                for (let i = 0; i < cookies.length; i++) {
+                    const cookie = cookies[i].trim();
+                    if (cookie.substring(0, name.length + 1) === (name + '=')) {
+                        cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                        break;
+                    }
+                }
+            }
+            return cookieValue;
+        }
+
+        async function fetchWithCSRF(url, options = {}) {
+            const method = options.method ? options.method.toUpperCase() : 'GET';
+            if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(method)) {
+                if (!options.headers) options.headers = {};
+                options.headers['X-CSRFToken'] = getCookie('csrftoken');
+            }
+            return window.fetch(url, options);
+        }
+
         const { createApp, ref, reactive, onMounted, computed, watch, nextTick } = Vue;
         const { ElMessage, ElMessageBox } = ElementPlus;
         const { Odometer, List, Connection, Plus, Delete, Right, Edit, Download, Setting, VideoPlay, Aim, Bell, ChatLineSquare, Histogram, Refresh, SwitchButton } = ElementPlusIconsVue;
@@ -1426,6 +1539,7 @@
                 const selectedTargetId = ref('');
                 const syncScope = ref('partial');
                 const syncMode = ref('history');
+                const dropTargetBeforeSync = ref(false);
                 const logsVisible = ref(false);
                 const logsTaskId = ref('');
                 const logsLineCount = ref(100);
@@ -1438,6 +1552,7 @@
 
                 // Monitor
                 const monitorStatus = ref({ status: 'unknown', last_run: '', alerts_sent: 0, last_error: '' });
+                const monitorConfigVisible = ref(false);
                 const inspectionReport = ref(null);
                 const inspectionLoading = ref(false);
                 const inspectionConfigVisible = ref(false);
@@ -1456,17 +1571,32 @@
                 const monthlyReportData = ref(null);
                 const monitorConfig = ref({ 
                     enabled: false, 
-                    es_hosts: '', 
-                    es_username: '', 
-                    es_password: '', 
-                    index_pattern: '', 
+                    k8s_namespace: 'default',
+                    k8s_kubeconfig: '',
+                    s3_archive_enabled: false,
+                    s3_bucket: '',
+                    s3_region: '',
+                    s3_access_key: '',
+                    s3_secret_key: '',
+                    s3_endpoint: '',
+                    retention_days: 7,
                     slack_webhook_url: '', 
                     poll_interval_seconds: 60,
                     alert_keywords: [],
-                    ignore_keywords: []
+                    ignore_keywords: [],
+                    record_only_keywords: []
                 });
                 const monitorActionLoading = ref(false);
                 const monitorSaving = ref(false);
+                const logFiles = ref([]);
+                const logsLoading = ref(false);
+                const logSearch = ref('');
+                
+                const filteredLogFiles = computed(() => {
+                    if (!logSearch.value) return logFiles.value;
+                    const k = logSearch.value.toLowerCase();
+                    return logFiles.value.filter(f => f.name.toLowerCase().includes(k));
+                });
 
                 const metricsVisible = ref(false);
                 const metricsTaskId = ref('');
@@ -1617,13 +1747,13 @@
                 };
 
                 const fetchTasks = async () => {
-                    const res = await fetch('/tasks/status');
+                    const res = await fetchWithCSRF('/tasks/status');
                     const data = await res.json();
                     tasks.value = data.tasks;
                 };
 
                 const fetchConnections = async () => {
-                    const res = await fetch('/connections');
+                    const res = await fetchWithCSRF('/connections');
                     const data = await res.json();
                     connections.value = data.connections;
                 };
@@ -1658,6 +1788,7 @@
                     connForm.auth_source = '';
                     connForm.mongo_hosts = '';
                     connForm.replica_set = '';
+                    connForm.use_ssl = false;
                     connVisible.value = true;
                     testPassed.value = false;
                     testMsg.value = '';
@@ -1688,15 +1819,26 @@
                 const loadMysqlDatabasesSaved = async () => {
                     try {
                         if (!selectedSourceId.value) return;
-                        const res = await fetch('/mysql/databases_by_id/' + selectedSourceId.value, { method: 'POST' });
+                        const res = await fetchWithCSRF('/mysql/databases_by_id/' + selectedSourceId.value, { method: 'POST' });
                         const data = await res.json();
+                        if (!res.ok) {
+                            throw new Error(data.detail || 'Failed to load databases');
+                        }
                         mysqlDbList.value = data.databases || [];
-                    } catch(e) { ElMessage.error(e.message); }
+                        if (mysqlDbList.value.length === 0) {
+                            ElMessage.warning('Connected, but no databases found.');
+                        } else {
+                            ElMessage.success('Databases loaded');
+                        }
+                    } catch(e) { 
+                        console.error(e);
+                        ElMessage.error('Load DB Error: ' + e.message); 
+                    }
                 };
                 const loadMysqlDatabasesManual = async () => {
                     try {
                         const conn = await _buildMysqlConnForQuery(true);
-                        const res = await fetch('/mysql/databases', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(conn) });
+                        const res = await fetchWithCSRF('/mysql/databases', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(conn) });
                         const data = await res.json();
                         mysqlDbList.value = data.databases || [];
                     } catch(e) { ElMessage.error(e.message); }
@@ -1706,11 +1848,11 @@
                         if (!selectedDatabase.value) return;
                         let res;
                         if (sourceSelectionMode.value === 'saved' && !fromManual) {
-                            res = await fetch('/mysql/tables_by_id/' + selectedSourceId.value, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ database: selectedDatabase.value }) });
+                            res = await fetchWithCSRF('/mysql/tables_by_id/' + selectedSourceId.value, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ database: selectedDatabase.value }) });
                         } else {
                             const conn = await _buildMysqlConnForQuery(true);
                             conn.database = selectedDatabase.value;
-                            res = await fetch('/mysql/tables', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(conn) });
+                            res = await fetchWithCSRF('/mysql/tables', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(conn) });
                         }
                         const data = await res.json();
                         mysqlTableList.value = data.tables || [];
@@ -1719,7 +1861,7 @@
 
                 const editConnection = async (id) => {
                     try {
-                        const res = await fetch('/connections/' + id);
+                        const res = await fetchWithCSRF('/connections/' + id);
                         if (!res.ok) throw new Error('加载连接失败');
                         const cfg = await res.json();
                         connForm.id = id;
@@ -1729,6 +1871,7 @@
                         connForm.password = '';
                         connForm.database = cfg.database || '';
                         connForm.auth_source = cfg.auth_source || 'admin';
+                        connForm.use_ssl = cfg.use_ssl || false;
                         if (connForm.type === 'mongo') {
                             if (cfg.hosts && Array.isArray(cfg.hosts) && cfg.hosts.length > 0) {
                                 connForm.mongo_hosts = cfg.hosts.join(',');
@@ -1765,7 +1908,7 @@
                     testPassed.value = false;
                     testMsg.value = '';
                     try {
-                        const res = await fetch('/connections/test', {
+                        const res = await fetchWithCSRF('/connections/test', {
                             method: 'POST',
                             headers: {'Content-Type': 'application/json'},
                             body: JSON.stringify(_buildConnectionPayload())
@@ -1799,7 +1942,7 @@
                         return;
                     }
                     try {
-                        const res = await fetch('/connections', {
+                        const res = await fetchWithCSRF('/connections', {
                             method: 'POST',
                             headers: {'Content-Type': 'application/json'},
                             body: JSON.stringify(_buildConnectionPayload())
@@ -1816,7 +1959,7 @@
                 };
 
                 const deleteConnection = async (id) => {
-                    await fetch('/connections/' + id, { method: 'DELETE' });
+                    await fetchWithCSRF('/connections/' + id, { method: 'DELETE' });
                     fetchConnections();
                     ElMessage.success('Deleted');
                 };
@@ -1827,7 +1970,7 @@
                         'Confirm Stop',
                         { confirmButtonText: 'Stop', cancelButtonText: 'Cancel', type: 'warning', center: true }
                     ).then(async () => {
-                        await fetch('/tasks/stop_soft/' + id, { method: 'POST' });
+                        await fetchWithCSRF('/tasks/stop_soft/' + id, { method: 'POST' });
                         ElMessage.success('Stop command sent');
                         fetchTasks();
                     }).catch(() => {});
@@ -1839,7 +1982,7 @@
                         'Confirm Reset',
                         { confirmButtonText: 'Reset', cancelButtonText: 'Cancel', type: 'info', center: true }
                     ).then(async () => {
-                        await fetch('/tasks/reset/' + id, { method: 'POST' });
+                        await fetchWithCSRF('/tasks/reset/' + id, { method: 'POST' });
                         ElMessage.success('Reset done');
                         fetchTasks();
                     }).catch(() => {});
@@ -1851,7 +1994,7 @@
                         'Confirm Delete',
                         { confirmButtonText: 'Delete', cancelButtonText: 'Cancel', type: 'danger', center: true }
                     ).then(async () => {
-                        await fetch('/tasks/delete/' + id, { method: 'POST' });
+                        await fetchWithCSRF('/tasks/delete/' + id, { method: 'POST' });
                         ElMessage.success('Deleted');
                         fetchTasks();
                     }).catch(() => {});
@@ -1864,7 +2007,7 @@
                         { confirmButtonText: 'Start', cancelButtonText: 'Cancel', type: 'success', center: true }
                     ).then(async () => {
                         try {
-                            const res = await fetch('/tasks/start_existing/' + id, { method: 'POST' });
+                            const res = await fetchWithCSRF('/tasks/start_existing/' + id, { method: 'POST' });
                             if (res.ok) {
                                 ElMessage.success('Start command sent');
                             } else {
@@ -1887,7 +2030,7 @@
                         { confirmButtonText: 'Reset & Start', cancelButtonText: 'Cancel', type: 'warning', center: true }
                     ).then(async () => {
                         try {
-                            const res = await fetch('/tasks/reset_and_start/' + id, { method: 'POST' });
+                            const res = await fetchWithCSRF('/tasks/reset_and_start/' + id, { method: 'POST' });
                             if (res.ok) {
                                 ElMessage.success('Reset and start sent');
                             } else {
@@ -1944,7 +2087,7 @@
                 const fetchLogs = async () => {
                     if (!logsTaskId.value) return;
                     try {
-                        const res = await fetch(`/tasks/logs/${logsTaskId.value}?page=${logsPage.value}&page_size=${logsLineCount.value}&_=${Date.now()}`);
+                        const res = await fetchWithCSRF(`/tasks/logs/${logsTaskId.value}?page=${logsPage.value}&page_size=${logsLineCount.value}&_=${Date.now()}`);
                         const data = await res.json();
                         logsLines.value = data.lines || [];
                         logsTotal.value = data.total || 0;
@@ -2003,7 +2146,7 @@
                 const _fetchMetricsOnce = async (id) => {
                     const headers = {};
                     if (lastMetricsETag) headers['If-None-Match'] = lastMetricsETag;
-                    const res = await fetch(`/tasks/status/${id}?_=${Date.now()}`, { headers });
+                    const res = await fetchWithCSRF(`/tasks/status/${id}?_=${Date.now()}`, { headers });
                     if (res.status === 304) return;
                     if (!res.ok) {
                         _hydrateMetricsFromList(id);
@@ -2317,60 +2460,17 @@
                     _drawMetricsChart();
                 };
 
-                const fetchMonitorStatus = async () => {
-                    try {
-                        const res = await fetch('/monitor/status');
-                        if (res.ok) {
-                            monitorStatus.value = await res.json();
-                        }
-                    } catch (e) { console.error(e); }
-                };
+                // Monitor Task Logic
 
-                const fetchMonitorConfig = async () => {
-                    try {
-                        const res = await fetch('/monitor/config');
-                        if (res.ok) {
-                            monitorConfig.value = await res.json();
-                        }
-                    } catch (e) { console.error(e); }
-                };
-
-                const startMonitor = async () => {
-                    monitorActionLoading.value = true;
-                    try {
-                        const res = await fetch('/monitor/start', { method: 'POST' });
-                        if (res.ok) {
-                            ElMessage.success('Monitor started');
-                            fetchMonitorStatus();
-                        } else {
-                            let err = {};
-                            try { err = await res.json(); } catch(_) {}
-                            ElMessage.error('Failed to start monitor: ' + (err.detail || res.statusText));
-                        }
-                    } catch (e) { ElMessage.error(e.message); }
-                    finally { monitorActionLoading.value = false; }
-                };
-
-                const stopMonitor = async () => {
-                    monitorActionLoading.value = true;
-                    try {
-                        const res = await fetch('/monitor/stop', { method: 'POST' });
-                        if (res.ok) {
-                            ElMessage.success('Monitor stopped');
-                            fetchMonitorStatus();
-                        } else {
-                            ElMessage.error('Failed to stop monitor');
-                        }
-                    } catch (e) { ElMessage.error(e.message); }
-                    finally { monitorActionLoading.value = false; }
-                };
 
                 const runInspection = async () => {
                     inspectionLoading.value = true;
                     try {
-                        const res = await fetch('/inspection/run', {
+                        const res = await fetchWithCSRF('/inspection/run', {
                             method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
+                            headers: { 
+                                'Content-Type': 'application/json'
+                            },
                             body: JSON.stringify(inspectionConfig.value)
                         });
                         if (res.ok) {
@@ -2391,7 +2491,7 @@
                 const fetchInspectionHistory = async () => {
                     inspectionHistoryLoading.value = true;
                     try {
-                        const res = await fetch('/inspection/reports?kind=daily&limit=30');
+                        const res = await fetchWithCSRF('/inspection/reports?kind=daily&limit=30');
                         if (!res.ok) throw new Error('获取历史列表失败');
                         const data = await res.json();
                         inspectionHistoryList.value = data.items || [];
@@ -2406,7 +2506,7 @@
                     if (!inspectionHistorySelected.value) return;
                     inspectionLoading.value = true;
                     try {
-                        const res = await fetch('/inspection/reports/' + encodeURIComponent(inspectionHistorySelected.value) + '?kind=daily');
+                        const res = await fetchWithCSRF('/inspection/reports/' + encodeURIComponent(inspectionHistorySelected.value) + '?kind=daily');
                         if (!res.ok) throw new Error('加载历史日报失败');
                         inspectionReport.value = await res.json();
                         await nextTick();
@@ -2421,7 +2521,7 @@
                 const openWeeklyReport = async () => {
                     if (!inspectionReport.value || !inspectionReport.value.weekly_report_id) return;
                     try {
-                        const res = await fetch('/inspection/reports/' + encodeURIComponent(inspectionReport.value.weekly_report_id) + '?kind=weekly');
+                        const res = await fetchWithCSRF('/inspection/reports/' + encodeURIComponent(inspectionReport.value.weekly_report_id) + '?kind=weekly');
                         if (!res.ok) throw new Error('加载周报失败');
                         weeklyReportData.value = await res.json();
                         weeklyReportVisible.value = true;
@@ -2433,7 +2533,7 @@
                 const openMonthlyReport = async () => {
                     if (!inspectionReport.value || !inspectionReport.value.monthly_report_id) return;
                     try {
-                        const res = await fetch('/inspection/reports/' + encodeURIComponent(inspectionReport.value.monthly_report_id) + '?kind=monthly');
+                        const res = await fetchWithCSRF('/inspection/reports/' + encodeURIComponent(inspectionReport.value.monthly_report_id) + '?kind=monthly');
                         if (!res.ok) throw new Error('加载月报失败');
                         monthlyReportData.value = await res.json();
                         monthlyReportVisible.value = true;
@@ -2626,14 +2726,14 @@
                         ElMessage.error('Slack Webhook URL 不能为空，请重新输入');
                         return;
                     }
-                    if (!monitorConfig.value.es_password) {
-                        ElMessage.error('Elasticsearch Password 不能为空，请重新输入');
+                    if (monitorConfig.value.s3_archive_enabled && !monitorConfig.value.s3_bucket) {
+                        ElMessage.error('启用 S3 归档时 Bucket Name 不能为空');
                         return;
                     }
 
                     monitorSaving.value = true;
                     try {
-                        const res = await fetch('/monitor/config', {
+                        const res = await fetchWithCSRF('/monitor/config', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify(monitorConfig.value)
@@ -2652,12 +2752,16 @@
 
                 const createTask = async () => {
                     // Prepare payload
+                    const isHistory = (syncMode.value === 'history');
                     const payload = {
                         task_id: form.task_id,
                         table_map: {},
                         pk_field: form.pk_field,
-                        update_insert_new_doc: syncMode.value === 'history',
-                        delete_append_new_doc: syncMode.value === 'history',
+                        update_insert_new_doc: isHistory,
+                        delete_append_new_doc: isHistory,
+                        drop_target_before_full_sync: dropTargetBeforeSync.value,
+                        // 如果是 Mirror 模式，update 就不是 insert new doc，而是 replace
+                        // 如果是 Mirror 模式，delete 也不是 append new doc，而是 mark base doc (或者 hard delete)
                         auto_discover_new_tables: (!selectedTables.value || selectedTables.value.length === 0)
                     };
 
@@ -2697,6 +2801,7 @@
                                 pk_field: payload.pk_field,
                                 update_insert_new_doc: payload.update_insert_new_doc,
                                 delete_append_new_doc: payload.delete_append_new_doc,
+                                drop_target_before_full_sync: payload.drop_target_before_full_sync,
                                 auto_discover_new_tables: payload.auto_discover_new_tables,
                                 source_conn_id: useSavedSource ? selectedSourceId.value : null,
                                 target_conn_id: useSavedTarget ? selectedTargetId.value : null,
@@ -2705,13 +2810,13 @@
                                 mysql_conf_override: useSavedSource ? undefined : payload.mysql_conf,
                                 mongo_conf_override: useSavedTarget ? undefined : payload.mongo_conf,
                             };
-                            res = await fetch('/tasks/start_with_conn_ids', {
+                            res = await fetchWithCSRF('/tasks/start_with_conn_ids', {
                                 method: 'POST',
                                 headers: {'Content-Type': 'application/json'},
                                 body: JSON.stringify(body)
                             });
                         } else {
-                            res = await fetch('/tasks/start', {
+                            res = await fetchWithCSRF('/tasks/start', {
                                 method: 'POST',
                                 headers: {'Content-Type': 'application/json'},
                                 body: JSON.stringify(payload)
@@ -2764,17 +2869,20 @@
                     mysqlTableList.value = [];
                 });
                 // Reset db list when source connection changes
-                watch(() => selectedSourceId.value, () => {
+                watch(() => selectedSourceId.value, (newVal) => {
                     selectedDatabase.value = '';
                     mysqlDbList.value = [];
                     selectedTables.value = [];
                     mysqlTableList.value = [];
+                    if (newVal && sourceSelectionMode.value === 'saved') {
+                        loadMysqlDatabasesSaved();
+                    }
                 });
 
                 const deployServers = ref([]);
                 const fetchDeployServers = async () => {
                     try {
-                        const res = await fetch('/deploy/servers');
+                        const res = await fetchWithCSRF('/deploy/servers');
                         const data = await res.json();
                         deployServers.value = data.servers || [];
                     } catch(e) { ElMessage.error(e.message); }
@@ -2810,7 +2918,7 @@
                 const saveServer = async () => {
                     try {
                         savingServer.value = true;
-                        const res = await fetch('/deploy/servers', {
+                        const res = await fetchWithCSRF('/deploy/servers', {
                             method: 'POST',
                             headers: {'Content-Type': 'application/json'},
                             body: JSON.stringify({
@@ -2928,7 +3036,7 @@
                             execute: false // Generate only
                         };
                         deployRunning.value = true;
-                        const res = await fetch('/deploy/run', {
+                        const res = await fetchWithCSRF('/deploy/run', {
                             method: 'POST',
                             headers: {'Content-Type':'application/json'},
                             body: JSON.stringify(payload)
@@ -2948,7 +3056,7 @@
                 const executePlan = async () => {
                     deployRunning.value = true;
                     try {
-                        const res = await fetch('/deploy/execute/' + currentPlan.id, { method: 'POST' });
+                        const res = await fetchWithCSRF('/deploy/execute/' + currentPlan.id, { method: 'POST' });
                         if (res.ok) {
                             deployStep.value = 'execute';
                             pollPlanStatus();
@@ -2967,7 +3075,7 @@
                     if (deployPollTimer) clearInterval(deployPollTimer);
                     deployPollTimer = setInterval(async () => {
                         try {
-                            const res = await fetch('/deploy/plans/' + currentPlan.id);
+                            const res = await fetchWithCSRF('/deploy/plans/' + currentPlan.id);
                             if (!res.ok) return;
                             const data = await res.json();
                             // Update reactive properties
@@ -2997,9 +3105,131 @@
                     deployForm.services = [];
                 };
 
+                // Monitor Task Logic (Renamed to avoid collision)
+                const logMonitorList = ref([]);
+                const logMonitorLoading = ref(false);
+                const currentMonitorTask = ref(null);
+                const newMonitorForm = reactive({ name: '', k8s_namespace: 'default' });
+
+                const fetchLogMonitorTasks = async () => {
+                    logMonitorLoading.value = true;
+                    try {
+                        const res = await fetchWithCSRF('/monitor/tasks');
+                        if (res.ok) {
+                            logMonitorList.value = await res.json();
+                        }
+                    } catch(e) { ElMessage.error(e.message); }
+                    finally { logMonitorLoading.value = false; }
+                };
+
+                const showCreateMonitorDialog = () => {
+                    newMonitorForm.name = '';
+                    newMonitorForm.k8s_namespace = 'default';
+                    monitorConfigVisible.value = true;
+                };
+
+                const createMonitorTask = async () => {
+                    monitorSaving.value = true;
+                    try {
+                        const res = await fetchWithCSRF('/monitor/tasks', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify(newMonitorForm)
+                        });
+                        if (res.ok) {
+                            ElMessage.success('Monitor Task Created');
+                            monitorConfigVisible.value = false;
+                            fetchLogMonitorTasks();
+                        } else {
+                            ElMessage.error('Failed to create monitor');
+                        }
+                    } catch(e) { ElMessage.error(e.message); }
+                    finally { monitorSaving.value = false; }
+                };
+
+                const deleteMonitorTask = async (row) => {
+                    try {
+                        await ElMessageBox.confirm('Are you sure to delete this monitor?', 'Warning', { type: 'warning' });
+                        const res = await fetchWithCSRF('/monitor/tasks/' + row.id, { 
+                            method: 'DELETE'
+                        });
+                        if (res.ok) {
+                            ElMessage.success('Deleted');
+                            fetchLogMonitorTasks();
+                            if (currentMonitorTask.value && currentMonitorTask.value.id === row.id) {
+                                currentMonitorTask.value = null;
+                            }
+                        }
+                    } catch(e) { 
+                        if (e !== 'cancel') ElMessage.error(e.message || 'Delete failed');
+                    }
+                };
+
+                const openMonitorTask = async (row) => {
+                    try {
+                        const res = await fetchWithCSRF('/monitor/tasks/' + row.id);
+                        if (res.ok) {
+                            currentMonitorTask.value = await res.json();
+                            fetchLogFiles(); 
+                        }
+                    } catch(e) { ElMessage.error(e.message); }
+                };
+
+                const saveCurrentMonitorTask = async () => {
+                    if (!currentMonitorTask.value) return;
+                    monitorSaving.value = true;
+                    try {
+                        const res = await fetchWithCSRF('/monitor/tasks/' + currentMonitorTask.value.id, {
+                            method: 'PUT',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify(currentMonitorTask.value)
+                        });
+                        if (res.ok) {
+                            currentMonitorTask.value = await res.json();
+                            ElMessage.success('Configuration Saved');
+                            fetchLogMonitorTasks(); 
+                        } else {
+                            ElMessage.error('Save failed');
+                        }
+                    } catch(e) { ElMessage.error(e.message); }
+                    finally { monitorSaving.value = false; }
+                };
+
+                const fetchLogFiles = async () => {
+                    if (!currentMonitorTask.value) return;
+                    logsLoading.value = true;
+                    try {
+                        const res = await fetchWithCSRF(`/monitor/logs?task_id=${currentMonitorTask.value.id}`);
+                        if (res.ok) {
+                            logFiles.value = await res.json();
+                        } else {
+                            ElMessage.error('Failed to fetch logs');
+                        }
+                    } catch (e) {
+                        ElMessage.error(e.message);
+                    } finally {
+                        logsLoading.value = false;
+                    }
+                };
+
+                const downloadLog = (filename) => {
+                    if (!currentMonitorTask.value) return;
+                    window.location.href = `/monitor/logs/download?task_id=${currentMonitorTask.value.id}&filename=${encodeURIComponent(filename)}`;
+                };
+
                 const handleLogout = () => {
                     window.location.href = '/accounts/logout/';
                 };
+
+                watch(currentView, (newVal) => {
+                    if (newVal === 'monitor') {
+                        fetchLogMonitorTasks();
+                    }
+                });
 
                 return {
                     currentView, tasks, connections, syncTasks, monitorTasks, overview, collapseSync, collapseMonitor,
@@ -3023,7 +3253,9 @@
                     createTask, getStatusType, formatTime,
                     // monitor
                     monitorStatus, monitorConfig, monitorActionLoading, monitorSaving,
-                    startMonitor, stopMonitor, saveMonitorConfig,
+                    monitorConfigVisible, showCreateMonitorDialog,
+                    logFiles, logsLoading, logSearch, filteredLogFiles, fetchLogFiles, downloadLog,
+                    logMonitorList, logMonitorLoading, currentMonitorTask, newMonitorForm, createMonitorTask, deleteMonitorTask, openMonitorTask, saveCurrentMonitorTask,
                     inspectionReport, inspectionLoading, runInspection, inspectionConfigVisible, inspectionConfig,
                     inspectionHistoryList, inspectionHistorySelected, inspectionHistoryLoading,
                     fetchInspectionHistory, loadInspectionReport,

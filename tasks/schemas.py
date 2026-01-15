@@ -115,6 +115,7 @@ class SyncTaskRequest(BaseModel):
     debug_binlog_events: bool = False
     # 性能优化
     full_sync_fast_insert_if_empty: bool = True
+    drop_target_before_full_sync: bool = False
     prefetch_queue_size: int = 2
     rate_limit_enabled: bool = True
     max_load_avg_ratio: float = 0.8

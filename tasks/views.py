@@ -8,6 +8,7 @@ import os
 import time
 import json
 import hashlib
+import pymysql
 
 # --- Connections ---
 
@@ -100,6 +101,13 @@ def task_list(request):
 def task_status_list(request):
     return Response({"tasks": task_manager.get_all_tasks_status()})
 
+@api_view(['GET'])
+def task_status_detail(request, task_id):
+    status = task_manager.get_task_status(task_id)
+    if status:
+        return Response(status)
+    return Response({"detail": "Task not found"}, status=404)
+
 @api_view(['POST'])
 def start_task(request):
     try:
@@ -110,9 +118,90 @@ def start_task(request):
         return Response({"detail": str(e)}, status=400)
 
 @api_view(['POST'])
+def start_with_conn_ids(request):
+    try:
+        data = request.data
+        task_id = data.get('task_id')
+        source_id = data.get('source_conn_id')
+        target_id = data.get('target_conn_id')
+        
+        mysql_conf = {}
+        if source_id:
+            c = Connection.objects.get(id=source_id)
+            mysql_conf = {
+                "host": c.host,
+                "port": c.port,
+                "user": c.user,
+                "password": c.password,
+                "database": data.get('mysql_database'),
+                "use_ssl": c.use_ssl
+            }
+        else:
+            mysql_conf = data.get('mysql_conf_override', {})
+            
+        mongo_conf = {}
+        if target_id:
+            c = Connection.objects.get(id=target_id)
+            mongo_conf = {
+                "host": c.host,
+                "port": c.port,
+                "user": c.user,
+                "password": c.password,
+                "database": data.get('mongo_database'),
+                "auth_source": c.auth_source,
+                "replica_set": c.replica_set,
+                "hosts": c.mongo_hosts.split(",") if c.mongo_hosts else None
+            }
+        else:
+            mongo_conf = data.get('mongo_conf_override', {})
+            
+        # Construct full request
+        # Map frontend fields to SyncTaskRequest fields
+        req_data = {
+            "task_id": task_id,
+            "mysql_conf": mysql_conf,
+            "mongo_conf": mongo_conf,
+            "table_map": data.get('table_map', {}),
+            "pk_field": data.get('pk_field', 'id'),
+            "update_insert_new_doc": data.get('update_insert_new_doc', True),
+            "delete_append_new_doc": data.get('delete_append_new_doc', True),
+            "drop_target_before_full_sync": data.get('drop_target_before_full_sync', False),
+            "auto_discover_new_tables": data.get('auto_discover_new_tables', True),
+        }
+        
+        cfg = SyncTaskRequest(**req_data)
+        task_manager.start(cfg)
+        return Response({"msg": "started", "task_id": cfg.task_id})
+    except Exception as e:
+        return Response({"detail": str(e)}, status=400)
+
+@api_view(['POST'])
+def start_existing(request, task_id):
+    try:
+        task_manager.start_by_id(task_id)
+        return Response({"msg": "started", "task_id": task_id})
+    except Exception as e:
+        return Response({"detail": str(e)}, status=400)
+
+@api_view(['POST'])
+def reset_and_start(request, task_id):
+    try:
+        task_manager.stop(task_id)
+        task_manager.reset(task_id)
+        task_manager.start_by_id(task_id)
+        return Response({"msg": "reset and started", "task_id": task_id})
+    except Exception as e:
+        return Response({"detail": str(e)}, status=400)
+
+@api_view(['POST'])
 def stop_task(request, task_id):
     task_manager.stop(task_id)
     return Response({"msg": "stopped", "task_id": task_id})
+
+@api_view(['POST'])
+def stop_task_soft(request, task_id):
+    task_manager.stop_soft(task_id)
+    return Response({"msg": "stopped (soft)", "task_id": task_id})
 
 @api_view(['POST'])
 def delete_task(request, task_id):
@@ -152,3 +241,105 @@ def task_logs(request, task_id):
         })
     except Exception as e:
         return Response({"detail": str(e)}, status=500)
+
+# --- MySQL Introspection ---
+
+def _get_mysql_conn(cfg):
+    return pymysql.connect(
+        host=cfg.get('host', 'localhost'),
+        port=int(cfg.get('port', 3306)),
+        user=cfg.get('user', 'root'),
+        password=cfg.get('password', ''),
+        database=cfg.get('database', None),
+        connect_timeout=5,
+        ssl={'ssl': {}} if cfg.get('use_ssl', False) else None
+    )
+
+@api_view(['POST'])
+def mysql_databases(request):
+    try:
+        conn = _get_mysql_conn(request.data)
+        try:
+            with conn.cursor() as c:
+                c.execute("SHOW DATABASES")
+                rows = c.fetchall()
+                dbs = [r[0] for r in rows if r[0] not in ('information_schema', 'mysql', 'performance_schema', 'sys')]
+            return Response({"databases": dbs})
+        finally:
+            conn.close()
+    except Exception as e:
+        return Response({"detail": str(e)}, status=400)
+
+@api_view(['POST'])
+def mysql_databases_by_id(request, conn_id):
+    try:
+        c = Connection.objects.get(id=conn_id)
+        cfg = {
+            "host": c.host,
+            "port": c.port,
+            "user": c.user,
+            "password": c.password,
+            "use_ssl": c.use_ssl
+        }
+        conn = _get_mysql_conn(cfg)
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("SHOW DATABASES")
+                rows = cursor.fetchall()
+                dbs = [r[0] for r in rows if r[0] not in ('information_schema', 'mysql', 'performance_schema', 'sys')]
+            return Response({"databases": dbs})
+        finally:
+            conn.close()
+    except Connection.DoesNotExist:
+        return Response({"detail": "Connection not found"}, status=404)
+    except Exception as e:
+        return Response({"detail": str(e)}, status=400)
+
+@api_view(['POST'])
+def mysql_tables(request):
+    try:
+        cfg = request.data.copy()
+        if not cfg.get('database'):
+            return Response({"detail": "Database is required"}, status=400)
+            
+        conn = _get_mysql_conn(cfg)
+        try:
+            with conn.cursor() as c:
+                c.execute("SHOW TABLES")
+                rows = c.fetchall()
+                tables = [r[0] for r in rows]
+            return Response({"tables": tables})
+        finally:
+            conn.close()
+    except Exception as e:
+        return Response({"detail": str(e)}, status=400)
+
+@api_view(['POST'])
+def mysql_tables_by_id(request, conn_id):
+    try:
+        db = request.data.get('database')
+        if not db:
+            return Response({"detail": "Database is required"}, status=400)
+            
+        c = Connection.objects.get(id=conn_id)
+        cfg = {
+            "host": c.host,
+            "port": c.port,
+            "user": c.user,
+            "password": c.password,
+            "database": db,
+            "use_ssl": c.use_ssl
+        }
+        conn = _get_mysql_conn(cfg)
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("SHOW TABLES")
+                rows = cursor.fetchall()
+                tables = [r[0] for r in rows]
+            return Response({"tables": tables})
+        finally:
+            conn.close()
+    except Connection.DoesNotExist:
+        return Response({"detail": "Connection not found"}, status=404)
+    except Exception as e:
+        return Response({"detail": str(e)}, status=400)

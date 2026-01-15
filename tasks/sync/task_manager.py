@@ -126,6 +126,25 @@ class TaskManager:
                 })
         return res
 
+    def get_task_status(self, task_id: str) -> Dict:
+        # Check running tasks first
+        with self._lock:
+            w = self._tasks.get(task_id)
+            if w:
+                return w.get_status()
+        
+        # Check DB
+        try:
+            t = SyncTask.objects.get(task_id=task_id)
+            return {
+                "task_id": t.task_id,
+                "status": "stopped",
+                "metrics": t.state.get("metrics", {}),
+                "config": {} 
+            }
+        except SyncTask.DoesNotExist:
+            return None
+
     def restore_from_disk(self):
         # Restore from DB
         tasks = SyncTask.objects.filter(status="running")

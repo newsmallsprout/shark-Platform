@@ -244,6 +244,14 @@ class SyncWorker:
                         break
 
                     coll = self.mongo_db.get_collection(coll_name, write_concern=write_concern)
+                    
+                    if self.cfg.drop_target_before_full_sync:
+                        try:
+                            log(self.cfg.task_id, f"Dropping collection {coll_name} before full sync...")
+                            coll.drop()
+                        except Exception as e:
+                            log(self.cfg.task_id, f"Drop collection {coll_name} failed: {e}")
+
                     processed = 0
                     last_id = None
                     ops: List = []
@@ -251,15 +259,27 @@ class SyncWorker:
                     log(self.cfg.task_id, f"FullSync table={table} -> collection={coll_name}")
                     
                     self._metrics["current_table"] = table
+                    
+                    # --- Auto Detect PK for this table ---
+                    real_pk = self.cfg.pk_field
+                    try:
+                        detected_pk = self.mysql_introspector.get_primary_key(table)
+                        if detected_pk:
+                            real_pk = detected_pk
+                    except Exception as e:
+                        log(self.cfg.task_id, f"Auto detect PK failed for {table}: {e}")
+
+                    log(self.cfg.task_id, f"FullSync table={table} pk={real_pk} -> collection={coll_name}")
+
                     q = Queue(maxsize=max(1, int(self.cfg.prefetch_queue_size or 2)))
                     def _producer():
                         nonlocal last_id
                         while not self.stop_event.is_set():
                             if last_id is None:
-                                c.execute(f"SELECT * FROM `{table}` ORDER BY `{pk}` LIMIT %s", (mysql_batch,))
+                                c.execute(f"SELECT * FROM `{table}` ORDER BY `{real_pk}` LIMIT %s", (mysql_batch,))
                             else:
                                 c.execute(
-                                    f"SELECT * FROM `{table}` WHERE `{pk}` > %s ORDER BY `{pk}` LIMIT %s",
+                                    f"SELECT * FROM `{table}` WHERE `{real_pk}` > %s ORDER BY `{real_pk}` LIMIT %s",
                                     (last_id, mysql_batch),
                                 )
                             rs = c.fetchall()
@@ -268,8 +288,8 @@ class SyncWorker:
                             q.put(rs)
                             last_id_local = last_id
                             for r in rs:
-                                if pk in r:
-                                    last_id_local = r[pk]
+                                if real_pk in r:
+                                    last_id_local = r[real_pk]
                             last_id = last_id_local
                         q.put(None)
                     t = threading.Thread(target=_producer, daemon=True)
@@ -302,8 +322,8 @@ class SyncWorker:
                                         ops.append(InsertOne(d))
                         else:
                             for r in rows:
-                                if pk in r:
-                                    last_id = r[pk]
+                                if real_pk in r:
+                                    last_id = r[real_pk]
 
                                 doc = self.converter.row_to_base_doc(r)
                                 if self.cfg.use_pk_as_mongo_id and "_id" in doc:
@@ -350,15 +370,26 @@ class SyncWorker:
                 self.do_inc_sync_once(cur_log_file, cur_log_pos)
                 break
             except MySQLOperationalError as e:
+                # Treat operational errors (connection lost) as retriable
                 retry += 1
                 state = load_state(self.cfg.task_id) or {}
                 cur_log_file = state.get("log_file", cur_log_file)
                 cur_log_pos = state.get("log_pos", cur_log_pos)
                 log(self.cfg.task_id, f"MySQL OpErr. retry={retry} err={str(e)[:200]}")
             except Exception as e:
-                if self.stop_event.is_set() or "Already closed" in str(e) or "closed" in str(e).lower():
+                # For critical errors (e.g. invalid config, permission denied), STOP immediately
+                s = str(e).lower()
+                if self.stop_event.is_set() or "already closed" in s or "closed" in s:
                     log(self.cfg.task_id, "IncSync stopped by user or stream closed")
                     break
+                
+                # Check for non-recoverable SSL/Auth errors
+                if ("access denied" in s) or ("password" in s) or ("ssl" in s and "handshake" in s):
+                    log(self.cfg.task_id, f"CRITICAL ERROR: {str(e)} - Stopping task to avoid infinite loop.")
+                    self._status = "error"
+                    self._metrics["error"] = f"Critical error: {str(e)}"
+                    break
+                
                 retry += 1
                 state = load_state(self.cfg.task_id) or {}
                 cur_log_file = state.get("log_file", cur_log_file)
@@ -368,6 +399,7 @@ class SyncWorker:
             max_retry = int(self.cfg.inc_reconnect_max_retry or 0)
             if max_retry > 0 and retry >= max_retry:
                 log(self.cfg.task_id, "IncSync stopped after max retries")
+                self._status = "error"
                 break
 
             sleep_sec = min(backoff_max, backoff) + random.random() * 0.2

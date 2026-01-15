@@ -21,5 +21,7 @@ if not User.objects.filter(username='admin').exists():
 "
 
 # Start Gunicorn
-# 3 workers is a good default for small-medium instances
-exec gunicorn shark_platform.wsgi:application --bind 0.0.0.0:8000 --workers 3
+# 1 worker is REQUIRED because TaskManager uses in-memory state (threads).
+# Multiple workers would cause split-brain issues where tasks started in one worker
+# cannot be controlled/monitored by requests hitting other workers.
+exec gunicorn shark_platform.wsgi:application --bind 0.0.0.0:8000 --workers 1 --timeout 600 --threads 4

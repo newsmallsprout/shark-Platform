@@ -50,6 +50,29 @@ class MySQLIntrospector:
         finally:
             conn.close()
 
+    def get_primary_key(self, table: str) -> str:
+        """
+        Detects the primary key column name for the given table.
+        If no primary key, returns None.
+        If composite key, returns the first column (limitation).
+        """
+        conn = self._connect()
+        try:
+            with conn.cursor() as c:
+                c.execute(f"SHOW KEYS FROM `{table}` WHERE Key_name = 'PRIMARY'")
+                rows = c.fetchall()
+                if rows:
+                    # Column_name is usually the 5th column (index 4) in SHOW KEYS output
+                    # But it's safer to map by description if possible.
+                    # Standard SHOW KEYS returns: Table, Non_unique, Key_name, Seq_in_index, Column_name, ...
+                    # Let's rely on index 4 for Column_name
+                    return rows[0][4]
+        except Exception:
+            pass
+        finally:
+            conn.close()
+        return None
+
     def get_table_columns(self, table: str) -> Optional[List[str]]:
         now = time.time()
         cache_sec = max(1, int(self.unknown_col_schema_cache_sec or 30))

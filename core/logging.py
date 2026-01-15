@@ -1,6 +1,9 @@
 # app/core/logging.py
 import os
+import threading
 from datetime import datetime
+
+_lock = threading.Lock()
 
 def log(task_id: str, msg: str):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -9,9 +12,10 @@ def log(task_id: str, msg: str):
     
     # Try to write to logs/{task_id}.log
     try:
-        if not os.path.exists("logs"):
-            os.makedirs("logs", exist_ok=True)
-        with open(os.path.join("logs", f"{task_id}.log"), "a", encoding="utf-8") as f:
-            f.write(line + "\n")
+        with _lock:
+            if not os.path.exists("logs"):
+                os.makedirs("logs", exist_ok=True)
+            with open(os.path.join("logs", f"{task_id}.log"), "a", encoding="utf-8") as f:
+                f.write(line + "\n")
     except Exception:
         pass
