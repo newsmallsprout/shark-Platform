@@ -6,6 +6,7 @@
 import { ref, watch, onUnmounted, nextTick, computed } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Loading, CircleCheck, WarningFilled, Connection } from '@element-plus/icons-vue'
+import { setAiAssistantThinking } from '@/stores/aiAssistant'
 
 /** SSE 单条信封（与后端 redis_stream / sse_server 一致） */
 interface StreamEnvelope {
@@ -79,6 +80,8 @@ let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 const isStreaming = computed(
   () => connectionState.value === 'connecting' || connectionState.value === 'open',
 )
+
+watch(isStreaming, (v) => setAiAssistantThinking(v), { immediate: true })
 
 function genStepId(seq: number) {
   return `step-${seq}-${Date.now()}`
@@ -371,6 +374,7 @@ watch(
 
 onUnmounted(() => {
   closeStream()
+  setAiAssistantThinking(false)
 })
 
 /** 节点展示标题 */
@@ -522,7 +526,7 @@ defineExpose({
 
 <style scoped>
 .mono {
-  font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+  font-family: var(--l5-font-mono);
   font-size: 12px;
 }
 
@@ -637,7 +641,7 @@ defineExpose({
 
 .thought-timeline :deep(.el-timeline-item__timestamp) {
   color: #64748b;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: var(--l5-font-mono);
   font-size: 11px;
 }
 

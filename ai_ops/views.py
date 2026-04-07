@@ -15,7 +15,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
-from .models import AIConfig, Incident, Ticket
+from .models import AIConfig, Incident, KnowledgeEntry, Ticket, TopologySnapshot
 from .brain.ticket_manager import TicketManager
 from .services.analyzer import FaultAnalyzer
 from .tasks import run_incident_langgraph
@@ -335,7 +335,76 @@ def _ticket_payload(t: Ticket) -> dict:
         "approval_comment": t.approval_comment,
         "approved_at": t.approved_at.isoformat() if t.approved_at else None,
         "executed_at": t.executed_at.isoformat() if t.executed_at else None,
+        "ticket_class": getattr(t, "ticket_class", "reactive"),
+        "impact_scope": getattr(t, "impact_scope", None) or {},
+        "ai_confidence": float(getattr(t, "ai_confidence", 0) or 0),
+        "routing": getattr(t, "routing", "") or "",
+        "auto_heal_dispatched": bool(getattr(t, "auto_heal_dispatched", False)),
     }
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def dashboard_summary(request):
+    """Bento 大屏：健康分、拓扑、AI 状态、待办工单、近期自愈。"""
+    topo = TopologySnapshot.objects.filter(scope="global").first()
+    open_n = Incident.objects.exclude(status="resolved").count()
+    analyzing = Incident.objects.filter(status="analyzing").exists()
+    critical_open = Incident.objects.filter(
+        severity="critical", status__in=["open", "analyzing", "awaiting_evidence"]
+    ).exists()
+
+    if topo:
+        health = float(topo.health_score)
+    else:
+        health = max(20.0, 100.0 - open_n * 6.0)
+
+    if critical_open:
+        health = min(health, 55.0)
+
+    def _tmini(x: Ticket):
+        return {
+            "ticket_id": str(x.ticket_id),
+            "summary": (x.summary or "")[:120],
+            "status": x.status,
+            "routing": getattr(x, "routing", "") or "",
+            "ai_confidence": float(getattr(x, "ai_confidence", 0) or 0),
+        }
+
+    pending = Ticket.objects.filter(status=Ticket.STATUS_PENDING_APPROVAL).order_by(
+        "-updated_at"
+    )[:10]
+    heals = (
+        Ticket.objects.filter(status=Ticket.STATUS_EXECUTED)
+        .select_related("incident")
+        .order_by("-executed_at")[:10]
+    )
+
+    return Response(
+        {
+            "health_score": round(health, 1),
+            "topology": {
+                "nodes": topo.nodes if topo else [],
+                "edges": topo.edges if topo else [],
+            },
+            "ai_status": "analyzing" if analyzing else ("degraded" if critical_open else "idle"),
+            "open_incidents": open_n,
+            "pending_tickets": [_tmini(t) for t in pending],
+            "recent_heals": [
+                {
+                    "ticket_id": str(t.ticket_id),
+                    "summary": (t.summary or "")[:100],
+                    "executed_at": t.executed_at.isoformat() if t.executed_at else None,
+                    "routing": getattr(t, "routing", "") or "",
+                }
+                for t in heals
+            ],
+            "knowledge_entries": KnowledgeEntry.objects.count(),
+            "auto_heal_threshold": float(
+                getattr(settings, "AIOPS_AUTO_HEAL_CONFIDENCE_THRESHOLD", 0.95)
+            ),
+        }
+    )
 
 
 @api_view(["GET"])

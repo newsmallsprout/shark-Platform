@@ -2,9 +2,10 @@
   <div class="ai-ops-container l5-aiops">
     <div class="page-header">
       <div class="header-info">
-        <h2 class="page-title">智能故障分析</h2>
+        <h2 class="page-title">运维台 · 诊断与工单</h2>
         <p class="page-subtitle">
-          左侧选择告警 → 启动 <strong>LangGraph</strong> 白盒诊断（SSE 实时）→ 完成后<strong>内联审批</strong>智能工单。Webhook：<code>/api/ai_ops/webhook/prometheus</code>。
+          告警 → <strong>LangGraph</strong>（SSE 思维流）→ 内联审批；高置信命中经验库时中心可下发边缘 Playbook。
+          <router-link class="back-dash" to="/">返回概览</router-link>
         </p>
       </div>
       <div class="header-actions">
@@ -131,6 +132,13 @@
                   <el-descriptions-item label="根因">{{ ticketDetail.root_cause || '—' }}</el-descriptions-item>
                   <el-descriptions-item label="拟执行方案">
                     <pre class="ticket-pre">{{ ticketDetail.proposed_action || '—' }}</pre>
+                  </el-descriptions-item>
+                  <el-descriptions-item v-if="ticketDetail.routing" label="路由">
+                    {{ ticketDetail.routing }}
+                    <span v-if="ticketDetail.auto_heal_dispatched" class="occ-badge">auto</span>
+                  </el-descriptions-item>
+                  <el-descriptions-item v-if="ticketDetail.ai_confidence != null" label="AI 置信度">
+                    {{ Number(ticketDetail.ai_confidence).toFixed(3) }}
                   </el-descriptions-item>
                   <el-descriptions-item v-if="userNote.trim()" label="排障指引（发起诊断时）">
                     <pre class="ticket-pre note">{{ userNote }}</pre>
@@ -305,6 +313,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, nextTick, watch, onUnmounted, reactive } from 'vue'
+import { useRoute } from 'vue-router'
 import { aiOpsApi, type TicketPayload } from '@/api/ai_ops'
 import AgentThoughtStream from '@/components/AgentThoughtStream.vue'
 import {
@@ -321,6 +330,7 @@ import {
 import * as echarts from 'echarts'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
+const route = useRoute()
 const loading = ref(false)
 const detailLoading = ref(false)
 const incidents = ref<any[]>([])
@@ -652,6 +662,10 @@ watch(
 )
 
 onMounted(() => {
+  const q = route.query.q
+  if (typeof q === 'string' && q.trim()) {
+    userNote.value = q.trim()
+  }
   fetchIncidents()
   window.addEventListener('resize', () => chartInstance?.resize())
 })
@@ -664,7 +678,7 @@ onUnmounted(() => {
 
 <style scoped>
 .mono {
-  font-family: 'JetBrains Mono', 'Menlo', 'Monaco', 'Consolas', monospace;
+  font-family: var(--l5-font-mono);
   font-size: 12px;
 }
 
@@ -700,6 +714,16 @@ onUnmounted(() => {
   color: #a3a3a3;
   margin: 4px 0 0;
   line-height: 1.5;
+}
+
+.back-dash {
+  margin-left: 8px;
+  font-size: 13px;
+  color: #737373;
+  text-decoration: none;
+}
+.back-dash:hover {
+  color: #fafafa;
 }
 
 .list-card,

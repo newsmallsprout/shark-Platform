@@ -113,7 +113,7 @@ const handleLogin = async () => {
   width: 48px;
   height: 48px;
   border-radius: 12px;
-  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-family: var(--l5-font-mono);
   font-weight: 800;
   font-size: 18px;
   color: #0ea5e9;

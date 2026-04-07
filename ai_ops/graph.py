@@ -1,12 +1,17 @@
 """
-Phase 1 极简 LangGraph：investigate -> diagnose -> draft_ticket。
+AIOps Platform — LangGraph 闭环（感知 → 拓扑推断 → 经验库匹配 → 因果诊断 → 工单/自愈路由）。
 
-Checkpointer 使用官方 RedisSaver（需 Redis 支持 RedisJSON + RediSearch，或 Redis 8+）。
+置信度 ≥ AIOPS_AUTO_HEAL_CONFIDENCE_THRESHOLD 且命中经验库时：生成已批准工单并下发 PlaybookJob 至边缘 go-agent。
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from typing import Any, Dict, Optional, TypedDict
+
+from django.conf import settings
+from django.db.models import F
 
 logger = logging.getLogger(__name__)
 
@@ -17,15 +22,21 @@ class IncidentGraphState(TypedDict, total=False):
     operator_context: str
     human_feedback: str
     investigation_notes: str
+    topology_json: str
+    kb_signature: str
+    kb_confidence: float
+    kb_playbook_snippet: str
     diagnosis: str
     summary: str
     root_cause: str
     proposed_action: str
+    impact_scope: Dict[str, Any]
     ticket_id: str
+    routing: str
 
 
-def _node_investigate(state: IncidentGraphState) -> Dict[str, Any]:
-    """调用带 Redis 事件包装的 Prom 工具，收集只读指标证据。"""
+def _node_sense_metrics(state: IncidentGraphState) -> Dict[str, Any]:
+    """感知：Prometheus 等只读指标（OS 级细粒度由边缘 Prometheus 承担）。"""
     from ai_ops.tools_adapter import make_streaming_sre_tools
 
     run_id = state["run_id"]
@@ -44,70 +55,199 @@ def _node_investigate(state: IncidentGraphState) -> Dict[str, Any]:
     return {"investigation_notes": (raw or "")[:12000]}
 
 
-def _node_diagnose(state: IncidentGraphState) -> Dict[str, Any]:
-    """Phase 1 占位：后续可换 LLM；此处将调查笔记与人工上下文折叠为工单字段草稿。"""
-    notes = state.get("investigation_notes") or ""
-    op = (state.get("operator_context") or "").strip()
-    hf = (state.get("human_feedback") or "").strip()
-    snippet = notes[:4000]
+def _node_infer_topology(state: IncidentGraphState) -> Dict[str, Any]:
+    """动态拓扑：由告警标签推导简化 Service Map（可后续接真实 trace/metrics 图）。"""
+    from ai_ops.models import Incident, TopologySnapshot
 
-    if hf:
-        summary = (
-            "Phase1：已接收审批打回反馈，将结合 human_feedback 与调查笔记重拟工单（待 LLM 增强）。"
+    inc = Incident.objects.get(pk=state["incident_id"])
+    labels = {}
+    if isinstance(inc.raw_alert_data, dict):
+        labels = inc.raw_alert_data.get("labels") or {}
+    ns = labels.get("namespace") or "default"
+    svc = labels.get("service") or labels.get("job") or "unknown-service"
+    pod = labels.get("pod") or ""
+    alert = inc.alert_name or "alert"
+
+    unhealthy = inc.severity in ("critical", "warning")
+    nodes = [
+        {"id": "cluster", "label": "Cluster", "healthy": True},
+        {"id": f"ns:{ns}", "label": f"NS/{ns}", "healthy": not unhealthy},
+        {"id": f"svc:{svc}", "label": svc, "healthy": not unhealthy},
+    ]
+    if pod:
+        nodes.append({"id": f"pod:{pod[:48]}", "label": pod[:32], "healthy": not unhealthy})
+    edges = [
+        {"from": "cluster", "to": f"ns:{ns}"},
+        {"from": f"ns:{ns}", "to": f"svc:{svc}"},
+    ]
+    if pod:
+        edges.append({"from": f"svc:{svc}", "to": f"pod:{pod[:48]}"})
+
+    penalty = 15.0 if inc.severity == "critical" else (8.0 if inc.severity == "warning" else 3.0)
+    health_score = max(35.0, 100.0 - penalty - (0 if not unhealthy else 12.0))
+
+    TopologySnapshot.objects.update_or_create(
+        scope="global",
+        defaults={
+            "nodes": nodes,
+            "edges": edges,
+            "health_score": health_score,
+        },
+    )
+    topo_payload = {
+        "alert": alert,
+        "nodes": nodes,
+        "edges": edges,
+        "health_score": health_score,
+    }
+    return {"topology_json": json.dumps(topo_payload, ensure_ascii=False)}
+
+
+def _node_match_knowledge(state: IncidentGraphState) -> Dict[str, Any]:
+    """经验库匹配：签名命中则抬升置信度（简化 Davis 式「已知故障」路径）。"""
+    from ai_ops.models import Incident, KnowledgeEntry
+
+    inc = Incident.objects.get(pk=state["incident_id"])
+    sig = hashlib.sha256(
+        f"{inc.alert_name}|{inc.fingerprint}".encode("utf-8")
+    ).hexdigest()[:32]
+    entry = KnowledgeEntry.objects.filter(signature_hash=sig).first()
+    conf = 0.0
+    snippet = ""
+    if entry:
+        snippet = (entry.playbook_body or "")[:8000]
+        conf = min(
+            0.99,
+            0.40
+            + 0.06 * min(entry.hit_count, 10)
+            + 0.14 * min(entry.success_after_apply, 5),
         )
-        root = f"人工反馈（须优先响应）：{hf[:1200]}"
-    elif op:
-        summary = "Phase1：已结合运维排障指引与 Prometheus 上下文生成草稿（待 LLM 增强）。"
-        root = f"运维指引：{op[:800]}\n（以下为自动占位根因，请复核）\nPhase1 占位：请结合 investigation_notes 人工复核或接入模型推理。"
-    else:
-        summary = "Phase1：基于 Prometheus `up` 探针与告警上下文的自动草稿（待 LLM 增强）。"
-        root = "Phase1 占位：请结合 investigation_notes 人工复核或接入模型推理。"
-
-    proposed = "# Phase1 示例（未批准不得执行）\n# kubectl -n <ns> get pods\n# 或回滚至上一稳定版本\n"
-    if hf:
-        proposed = (
-            f"# 针对审批反馈的调整方向（占位）\n# 反馈摘要：{hf[:400]}\n"
-            + proposed
-        )
-    elif op:
-        proposed = f"# 运维指引摘要：{op[:400]}\n" + proposed
-
+        KnowledgeEntry.objects.filter(pk=entry.pk).update(hit_count=F("hit_count") + 1)
     return {
-        "diagnosis": snippet,
-        "summary": summary,
-        "root_cause": root,
-        "proposed_action": proposed,
+        "kb_signature": sig,
+        "kb_confidence": conf,
+        "kb_playbook_snippet": snippet,
     }
 
 
-def _node_draft_ticket(state: IncidentGraphState) -> Dict[str, Any]:
-    """持久化 Ticket（Draft），供审批台拉取。"""
-    from ai_ops.models import Incident, Ticket
+def _node_causal_analyze(state: IncidentGraphState) -> Dict[str, Any]:
+    """因果诊断：融合指标摘要、拓扑上下文与人工反馈（占位实现，可换 LLM）。"""
+    notes = state.get("investigation_notes") or ""
+    op = (state.get("operator_context") or "").strip()
+    hf = (state.get("human_feedback") or "").strip()
+    topo = state.get("topology_json") or "{}"
+    kb_snip = (state.get("kb_playbook_snippet") or "").strip()
+    kb_conf = float(state.get("kb_confidence") or 0.0)
+
+    try:
+        topo_obj = json.loads(topo)
+    except json.JSONDecodeError:
+        topo_obj = {}
+
+    if hf:
+        summary = "【被动诊断·反思】已合并审批打回意见，沿拓扑重排假设。"
+        root = f"人工反馈（高优）：{hf[:900]}\n关联拓扑片段：{json.dumps(topo_obj, ensure_ascii=False)[:600]}"
+    elif op:
+        summary = "【被动诊断】结合运维先验与 Service Map 上下文。"
+        root = f"运维先验：{op[:500]}\n指标摘录：{notes[:1200]}\n拓扑：{len(topo_obj.get('nodes', []))} 节点"
+    else:
+        summary = "【被动诊断】基于 Prometheus 与动态拓扑的因果草稿（待模型增强）。"
+        root = f"告警链路推断：{topo_obj.get('alert', '?')}\n指标：{notes[:1500]}"
+
+    if kb_snip:
+        root += f"\n\n【经验库命中】置信度≈{kb_conf:.2f}；历史 Playbook 摘要：{kb_snip[:400]}…"
+
+    proposed = (
+        kb_snip
+        if kb_snip
+        else "# 标准化处置（示例，未批准不得执行）\n# kubectl -n <ns> describe pod <pod>\n# kubectl rollout restart deploy/<svc>\n"
+    )
+    if hf:
+        proposed = f"# 针对打回的调整\n{proposed[:4000]}"
+
+    impact = {
+        "topology": topo_obj,
+        "evidence_chars": len(notes),
+        "kb_confidence": kb_conf,
+    }
+    return {
+        "diagnosis": notes[:4000],
+        "summary": summary,
+        "root_cause": root[:8000],
+        "proposed_action": proposed[:20000],
+        "impact_scope": impact,
+    }
+
+
+def _node_commit_ticket(state: IncidentGraphState) -> Dict[str, Any]:
+    """决策与落库：高置信走 auto_heal + PlaybookJob；否则 draft 人工审批。"""
+    from ai_ops.models import Incident, PlaybookJob, Ticket
+
+    threshold = float(getattr(settings, "AIOPS_AUTO_HEAL_CONFIDENCE_THRESHOLD", 0.95))
+    node_id = getattr(settings, "AIOPS_DEFAULT_PLAYBOOK_NODE", "default")
+
+    conf = float(state.get("kb_confidence") or 0.0)
+    routing = "auto_heal" if conf >= threshold else "human_approval"
+    script = (state.get("kb_playbook_snippet") or "").strip() or (
+        state.get("proposed_action") or ""
+    )
+    script = script[:50000]
 
     inc = Incident.objects.get(pk=state["incident_id"])
-    ticket = Ticket.objects.create(
-        incident=inc,
-        run_id=state.get("run_id") or "",
-        status=Ticket.STATUS_DRAFT,
-        summary=state.get("summary") or "",
-        root_cause=state.get("root_cause") or "",
-        proposed_action=state.get("proposed_action") or "",
-    )
-    return {"ticket_id": str(ticket.ticket_id)}
+    impact = state.get("impact_scope") or {}
+
+    if routing == "auto_heal" and script.strip():
+        ticket = Ticket.objects.create(
+            incident=inc,
+            run_id=state.get("run_id") or "",
+            status=Ticket.STATUS_APPROVED,
+            summary=state.get("summary") or "",
+            root_cause=state.get("root_cause") or "",
+            proposed_action=state.get("proposed_action") or script,
+            ticket_class=Ticket.TICKET_CLASS_REACTIVE,
+            impact_scope=impact if isinstance(impact, dict) else {},
+            ai_confidence=conf,
+            routing="auto_heal",
+            auto_heal_dispatched=True,
+        )
+        PlaybookJob.objects.create(
+            target_node_id=node_id,
+            ticket=ticket,
+            script=script,
+            status=PlaybookJob.STATUS_PENDING,
+        )
+    else:
+        ticket = Ticket.objects.create(
+            incident=inc,
+            run_id=state.get("run_id") or "",
+            status=Ticket.STATUS_DRAFT,
+            summary=state.get("summary") or "",
+            root_cause=state.get("root_cause") or "",
+            proposed_action=state.get("proposed_action") or "",
+            ticket_class=Ticket.TICKET_CLASS_REACTIVE,
+            impact_scope=impact if isinstance(impact, dict) else {},
+            ai_confidence=conf,
+            routing="knowledge_matched" if conf > 0 else "human_approval",
+            auto_heal_dispatched=False,
+        )
+    return {"ticket_id": str(ticket.ticket_id), "routing": routing}
 
 
 def build_compiled_graph(checkpointer: Any):
-    """在给定 checkpointer 上编译状态机。"""
     from langgraph.graph import END, START, StateGraph
 
     g = StateGraph(IncidentGraphState)
-    g.add_node("investigate", _node_investigate)
-    g.add_node("diagnose", _node_diagnose)
-    g.add_node("draft_ticket", _node_draft_ticket)
-    g.add_edge(START, "investigate")
-    g.add_edge("investigate", "diagnose")
-    g.add_edge("diagnose", "draft_ticket")
-    g.add_edge("draft_ticket", END)
+    g.add_node("sense_metrics", _node_sense_metrics)
+    g.add_node("infer_topology", _node_infer_topology)
+    g.add_node("match_knowledge", _node_match_knowledge)
+    g.add_node("causal_analyze", _node_causal_analyze)
+    g.add_node("commit_ticket", _node_commit_ticket)
+    g.add_edge(START, "sense_metrics")
+    g.add_edge("sense_metrics", "infer_topology")
+    g.add_edge("infer_topology", "match_knowledge")
+    g.add_edge("match_knowledge", "causal_analyze")
+    g.add_edge("causal_analyze", "commit_ticket")
+    g.add_edge("commit_ticket", END)
     return g.compile(checkpointer=checkpointer)
 
 
@@ -118,11 +258,7 @@ def run_pipeline_for_incident(
     operator_context: Optional[str] = None,
     human_feedback: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """
-    同步执行完整图（供 Celery task 调用）。
-    返回 run_id、ticket_id；过程中通过 Redis Pub/Sub 推送 graph_node / tool_* 事件。
-    """
-    from ai_ops.redis_stream import publish_agent_event, redis_url
+    from ai_ops.redis_stream import publish_agent_event
 
     oc = (operator_context or "").strip()
     hf = (human_feedback or "").strip()
@@ -134,6 +270,7 @@ def run_pipeline_for_incident(
             "incident_id": incident_id,
             "has_operator_context": bool(oc),
             "has_human_feedback": bool(hf),
+            "pipeline": "sense→topology→knowledge→causal→commit",
         },
         incident_id=incident_id,
     )
@@ -159,7 +296,7 @@ def run_pipeline_for_incident(
             "缺少 langgraph-checkpoint-redis，或 Python 版本过低；请安装兼容包并保证 Redis 含 JSON/Search 模块。"
         ) from e
 
-    url = redis_url()
+    url = __import__("ai_ops.redis_stream", fromlist=["redis_url"]).redis_url()
     with RedisSaver.from_conn_string(url) as checkpointer:
         checkpointer.setup()
         graph = build_compiled_graph(checkpointer)

@@ -10,7 +10,9 @@ from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.utils import timezone
 
-from ai_ops.models import Ticket
+import hashlib
+
+from ai_ops.models import KnowledgeEntry, Ticket
 
 User = get_user_model()
 
@@ -94,4 +96,32 @@ class TicketManager:
                 "updated_at",
             ]
         )
+        if not (error or "").strip():
+            TicketManager._ingest_knowledge_from_ticket(t)
         return t
+
+    @staticmethod
+    def _ingest_knowledge_from_ticket(t: Ticket) -> None:
+        """执行成功后将特征与 Playbook 沉淀至经验库。"""
+        inc = t.incident
+        sig = hashlib.sha256(
+            f"{inc.alert_name}|{inc.fingerprint}".encode("utf-8")
+        ).hexdigest()[:32]
+        body = (t.proposed_action or "").strip()
+        if not body:
+            return
+        entry, created = KnowledgeEntry.objects.get_or_create(
+            signature_hash=sig,
+            defaults={
+                "title": (inc.alert_name or "")[:255],
+                "playbook_body": body[:20000],
+                "success_after_apply": 1,
+            },
+        )
+        if not created:
+            entry.title = entry.title or (inc.alert_name or "")[:255]
+            entry.playbook_body = body[:20000]
+            entry.success_after_apply += 1
+            entry.save(
+                update_fields=["title", "playbook_body", "success_after_apply", "updated_at"]
+            )

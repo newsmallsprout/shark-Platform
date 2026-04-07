@@ -217,6 +217,36 @@ class Ticket(models.Model):
     execution_error = models.TextField(blank=True, default="")
     executed_at = models.DateTimeField(null=True, blank=True)
 
+    TICKET_CLASS_REACTIVE = "reactive"
+    TICKET_CLASS_PREVENTIVE = "preventive"
+    TICKET_CLASS_CHOICES = [
+        (TICKET_CLASS_REACTIVE, "Reactive (incident-driven)"),
+        (TICKET_CLASS_PREVENTIVE, "Preventive (prediction)"),
+    ]
+    ticket_class = models.CharField(
+        max_length=32,
+        choices=TICKET_CLASS_CHOICES,
+        default=TICKET_CLASS_REACTIVE,
+        db_index=True,
+    )
+    impact_scope = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Blast radius: services, namespaces, SLO impact (AI-filled).",
+    )
+    ai_confidence = models.FloatField(
+        default=0.0,
+        help_text="0..1 confidence for routing / auto-heal eligibility.",
+    )
+    routing = models.CharField(
+        max_length=48,
+        blank=True,
+        default="",
+        db_index=True,
+        help_text="human_approval | auto_heal | knowledge_matched",
+    )
+    auto_heal_dispatched = models.BooleanField(default=False)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -225,4 +255,73 @@ class Ticket(models.Model):
 
     def __str__(self):
         return f"Ticket {self.ticket_id} ({self.status})"
+
+
+class KnowledgeEntry(models.Model):
+    """经验库：成功处置后的 Playbook 签名，供因果匹配置信度提升。"""
+
+    signature_hash = models.CharField(max_length=64, unique=True, db_index=True)
+    title = models.CharField(max_length=255, default="")
+    playbook_body = models.TextField(help_text="可执行脚本或标准化处置步骤")
+    hit_count = models.PositiveIntegerField(default=0)
+    success_after_apply = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-updated_at"]
+
+    def __str__(self):
+        return f"KB {self.signature_hash[:8]}…"
+
+
+class TopologySnapshot(models.Model):
+    """动态拓扑快照（Service Map 抽象）：由指标/日志/告警标签推导。"""
+
+    scope = models.CharField(max_length=64, default="global", unique=True, db_index=True)
+    nodes = models.JSONField(default=list, help_text='[{"id","label","healthy"}]')
+    edges = models.JSONField(default=list, help_text='[{"from","to"}]')
+    health_score = models.FloatField(default=100.0)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Topology({self.scope}) @{self.health_score}"
+
+
+class PlaybookJob(models.Model):
+    """下发给边缘 go-agent 执行的 Playbook 任务。"""
+
+    STATUS_PENDING = "pending"
+    STATUS_DISPATCHED = "dispatched"
+    STATUS_COMPLETED = "completed"
+    STATUS_FAILED = "failed"
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "Pending"),
+        (STATUS_DISPATCHED, "Dispatched"),
+        (STATUS_COMPLETED, "Completed"),
+        (STATUS_FAILED, "Failed"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    target_node_id = models.CharField(max_length=128, db_index=True)
+    ticket = models.ForeignKey(
+        Ticket,
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="playbook_jobs",
+    )
+    script = models.TextField(help_text="Shell script body for edge execution")
+    status = models.CharField(
+        max_length=16, choices=STATUS_CHOICES, default=STATUS_PENDING, db_index=True
+    )
+    result = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"PlaybookJob {self.id} -> {self.target_node_id}"
 

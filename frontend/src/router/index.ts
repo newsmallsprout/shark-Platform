@@ -18,9 +18,15 @@ const routes: Array<RouteRecordRaw> = [
   },
   {
     path: '/',
-    name: 'AIOps',
+    name: 'Home',
+    component: () => import('@/views/DashboardHome.vue'),
+    meta: { title: 'AIOps Platform' },
+  },
+  {
+    path: '/console',
+    name: 'Console',
     component: () => import('@/views/AIOps/Index.vue'),
-    meta: { title: 'L5 AIOps' },
+    meta: { title: '运维台' },
   },
 ]
 

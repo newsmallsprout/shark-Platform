@@ -17,6 +17,44 @@ export interface TicketPayload {
   approval_comment?: string
   approved_at?: string | null
   executed_at?: string | null
+  ticket_class?: string
+  impact_scope?: Record<string, unknown>
+  ai_confidence?: number
+  routing?: string
+  auto_heal_dispatched?: boolean
+}
+
+export interface DashboardSummary {
+  health_score: number
+  topology: { nodes: TopoNode[]; edges: TopoEdge[] }
+  ai_status: 'idle' | 'analyzing' | 'degraded'
+  open_incidents: number
+  pending_tickets: Array<{
+    ticket_id: string
+    summary: string
+    status: string
+    routing: string
+    ai_confidence: number
+  }>
+  recent_heals: Array<{
+    ticket_id: string
+    summary: string
+    executed_at: string | null
+    routing: string
+  }>
+  knowledge_entries: number
+  auto_heal_threshold: number
+}
+
+export interface TopoNode {
+  id: string
+  label: string
+  healthy?: boolean
+}
+
+export interface TopoEdge {
+  from: string
+  to: string
 }
 
 /** POST tickets/:id/reject/ — 打回并触发新一轮 LangGraph */
@@ -28,6 +66,7 @@ export interface RejectRetryResponse {
 }
 
 export const aiOpsApi = {
+  getDashboard: () => request.get<DashboardSummary>('/ai_ops/dashboard/'),
   getIncidents: () => request.get('/ai_ops/incidents'),
   getIncidentDetail: (id: number) => request.get(`/ai_ops/incidents/${id}`),
   getConfig: () => request.get('/ai_ops/config'),

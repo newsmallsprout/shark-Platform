@@ -1,187 +1,110 @@
-# shark-aiops
+# AIOps Platform
 
-面向云原生的 **大规模智能运维枢纽**：**中心控制面**（Django + Celery + LangGraph + SSE + Vue3）编排 **分布式 Go 边缘探针**（系统指标与日志批次上报），形成「中心大脑 + 边缘感知」拓扑。
+**AI 驱动的 L4 级云原生运维系统——让大模型接管监控与排障。**
+
+中心控制面以 **Django + Celery + LangGraph + Redis SSE** 编排闭环；边缘以 **纯 Go 探针** 执行心跳、日志脱敏上报与 **Playbook 自愈脚本**。目标形态是「AI 即运维（AI as the Operator）」：感知、诊断、决策、执行与学习在同一套数据面内贯通。
 
 ---
 
-## 平台定位
+## 架构解析
 
-| 维度 | 说明 |
+### Center（本仓库）
+
+| 能力 | 说明 |
 |------|------|
-| **中心（Center）** | 告警与工单模型、LangGraph 诊断流水线、Redis 事件总线、独立 **SSE** 服务向浏览器推送「思维流」 |
-| **边缘（Edge）** | **go-agent** 周期性上报主机指标；**go-log-collector** 批量推送日志行，供后续大盘/检索管道消费 |
-| **人机闭环** | 审批 **打回** 携带理由触发 **Reflect & Retry**：新 `run_id` + 新 SSE 地址，前端无刷新切换流式时间线 |
+| **API / ORM** | 告警、工单、经验库、拓扑快照、Playbook 任务模型 |
+| **Celery** | 异步触发 LangGraph 流水线 |
+| **LangGraph** | `感知指标 → 推断拓扑 → 经验库匹配 → 因果诊断 → 落库工单/自愈`；置信度 ≥ `AIOPS_AUTO_HEAL_CONFIDENCE_THRESHOLD`（默认 0.95）且存在可执行 Playbook 时，生成**已批准**工单并创建 **PlaybookJob** 下发边缘 |
+| **SSE** | 独立 `sse_server` 通过 Redis 向浏览器推送图节点与工具事件 |
+| **边缘入口** | `POST /api/edge/*`（需 `X-Shark-Edge-Token` = 中心 `SHARK_EDGE_TOKEN`） |
 
----
+### Edge（`go-agent` / `go-log-collector`）
 
-## 架构总览
+| 探针 | 职责 |
+|------|------|
+| **go-agent** | 周期 **心跳**（主机摘要）；轮询 **`GET /api/edge/playbooks?node_id=`** 领取任务，**本地 `/bin/sh -c` 执行**脚本后 **`POST .../complete`** 回传；成功时中心将工单置为已执行并**沉淀经验库** |
+| **go-log-collector** | stdin 或单文件 tail；**边缘正则脱敏**（邮箱、卡号、Bearer 等，可扩展 `SHARK_AIOPS_REDACT_REGEX`）；按 `SHARK_AIOPS_LOG_SEVERITY` 过滤关键行后批量上报 |
 
-### 逻辑拓扑（ASCII）
-
-```
-                         ┌──────────────────────────────────────────┐
-                         │            中心控制面（本仓库）           │
-                         │  Vue3 SPA ──► Nginx ──► Django /api/*   │
-                         │       ▲                    │             │
-                         │       │ SSE 订阅            │ Celery      │
-                         │       │                    ▼             │
-                         │       └──────── Redis Pub/Sub ◄─────────┤
-                         │                    ▲                     │
-                         │            sse_server (FastAPI)         │
-                         └────────────────────┼─────────────────────┘
-                                              │
-     ┌────────────────────────────────────────┼────────────────────────────────┐
-     │                    │                   │                                │
-┌────▼────┐        ┌─────▼─────┐      ┌──────▼──────┐                 ┌───────▼───────┐
-│go-agent │        │go-log-     │      │  Prometheus │                 │  Alertmanager │
-│指标心跳  │        │collector  │      │  / K8s API  │                 │  Webhook 等   │
-└─────────┘        └───────────┘      └─────────────┘                 └───────────────┘
-   边缘节点            边缘节点            只读外部依赖                      事件入口（可选）
-```
-
-### 数据与控制流（Mermaid）
+### 业务闭环（拓扑感知 → 工单 → 审批 → 经验库 → 自愈）
 
 ```mermaid
-flowchart TB
-  subgraph Center["中心控制面"]
-    UI[Vue3 控制台]
-    DJ[Django API]
-    CE[Celery Worker]
-    LG[LangGraph 流水线]
-    RD[(Redis)]
-    SSE[sse_server FastAPI]
-  end
-  subgraph Edge["边缘节点"]
+flowchart LR
+  subgraph Edge
     GA[go-agent]
     GL[go-log-collector]
   end
-  UI -->|HTTP /api| DJ
-  UI -->|EventSource| SSE
-  DJ -->|enqueue| CE
-  CE --> LG
-  LG -->|agent:run:*| RD
-  SSE -->|订阅| RD
-  GA -->|POST /api/edge/heartbeat| DJ
-  GL -->|POST /api/edge/logs| DJ
-```
-
-### 诊断与 SSE 时序（简图）
-
-```mermaid
-sequenceDiagram
-  participant U as 运维浏览器
-  participant D as Django
-  participant C as Celery/LangGraph
-  participant R as Redis
-  participant S as sse_server
-  U->>D: POST /api/ai_ops/diagnose/{id}/
-  D->>C: delay(run_id)
-  D-->>U: run_id + sse_stream_url
-  U->>S: EventSource 连接 stream
-  C->>R: publish 图节点/工具事件
-  S->>U: SSE agent 事件帧
-  C->>R: publish done(ticket_id)
-  U->>U: 内联审批 / 打回重试
+  subgraph Center
+    DJ[Django API]
+    LG[LangGraph]
+    KB[(KnowledgeEntry)]
+    PB[(PlaybookJob)]
+    UI[Vue 控制台]
+  end
+  GL -->|logs batch| DJ
+  GA -->|heartbeat| DJ
+  DJ --> LG
+  LG -->|TopologySnapshot| DJ
+  LG -->|match| KB
+  LG -->|Ticket draft / approved| DJ
+  LG -->|high confidence| PB
+  PB -->|poll| GA
+  GA -->|complete| DJ
+  DJ -->|success| KB
+  UI -->|审批 / SSE| DJ
 ```
 
 ---
 
-## 版本与依赖关系
-
-> **原则**：运行时以 **Dockerfile / docker-compose** 与 **requirements.txt、package.json、go.mod** 为准；下表便于评审与升级规划。
-
-### 运行时与容器基镜像
-
-| 组件 | 版本要求 | 说明 |
-|------|-----------|------|
-| **Python** | **3.9+** | `Dockerfile` 使用 `python:3.9-slim`；LangGraph 等依赖不建议低于 3.9 |
-| **Node.js** | **18** | 前端构建阶段 `node:18-slim` |
-| **Go** | **≥ 1.22** | `go-agent`、`go-log-collector` 的 `go.mod` |
-| **Redis** | **7.x**（推荐） | Compose 默认 `redis:7-alpine`；Celery Broker + Agent 事件共用 |
-| **Docker Compose** | **V2** | `docker compose` 子命令 |
-
-### Python 核心栈（节选）
-
-| 依赖 | 约束 | 角色 |
-|------|------|------|
-| Django | 4.2.11 | Web 框架、ORM、Admin |
-| djangorestframework | 3.14.0 | REST API |
-| celery | 5.3.6 | 异步任务、LangGraph 触发 |
-| redis | ≥5.2,&lt;6 | 客户端；与 Celery broker 协议匹配 |
-| langgraph | ≥0.2,&lt;0.3 | 诊断图编排 |
-| langchain-core | ≥0.3,&lt;0.4 | LangGraph 配套 |
-| langgraph-checkpoint-redis | ≥0.1,&lt;0.2 | 图 Checkpointer（需 **RedisJSON/Search** 或兼容 Redis） |
-| fastapi / uvicorn | 见 requirements | **sse_server** 独立进程 |
-| sse-starlette | ≥2 | SSE 响应 |
-
-完整列表见根目录 **`requirements.txt`**。
-
-### 前端栈（节选）
-
-| 依赖 | 约束 | 角色 |
-|------|------|------|
-| vue | ^3.2 | 主框架 |
-| vite | ^3.0 | 构建 |
-| element-plus | ^2.13 | 组件库（深色主题 + L5 壳层） |
-| pinia | ^3.0 | 状态 |
-| axios | ^1.13 | HTTP（封装于 `frontend/src/utils/request.ts`） |
-| echarts | ~5.5.1 | 指标图（AIOps 页） |
-
-完整列表见 **`frontend/package.json`**。
-
-### 边缘探针
-
-| 模块 | Go 版本 | 主要依赖 |
-|------|---------|----------|
-| go-agent | 1.22 | gopsutil/v4（主机指标） |
-| go-log-collector | 1.22 | 标准库 + HTTP 客户端 |
-
----
-
-## 仓库结构（摘）
-
-```
-shark-Platform/
-├── shark_platform/       # Django 工程（settings、urls、celery）
-├── api/                  # 健康检查、认证、用户角色、边缘 ingest
-├── ai_ops/               # 告警、工单、LangGraph、任务、SSE 事件发布
-├── core/                 # 工单闸门等横切能力
-├── frontend/             # Vue3 控制台（L5 深色 UI）
-├── go-agent/             # 边缘系统探针
-├── go-log-collector/     # 边缘日志采集
-├── sse_server.py         # 独立 SSE 服务入口
-├── docker-compose.yml    # 中心一键编排
-├── Dockerfile            # 多阶段：前端构建 + Python 运行镜像
-├── requirements.txt
-├── .env.example
-└── docs/
-    └── DEPLOYMENT.md     # 【部署文档】详见该文件
-```
-
----
-
-## 快速开始（中心）
+## 一键部署（Docker Compose）
 
 ```bash
-cp .env.example .env   # 按需修改
+cp .env.example .env   # 设置 SHARK_EDGE_TOKEN、数据库、Redis、AGENT_SSE_PUBLIC_BASE 等
 docker compose up -d --build
 ```
 
-- 控制台：**http://localhost:8000**
-- SSE：**http://localhost:8010**（浏览器访问时请将 **`AGENT_SSE_PUBLIC_BASE`** 设为宿主机可达地址，例如 `http://localhost:8010`）
-- 默认管理员：**admin / admin**（务必修改）
+- **控制台**：`http://localhost:8000`（首页为 Bento 概览，`/console` 为运维台）
+- **SSE**：默认 `http://localhost:8010`（浏览器可访问时请将 **`AGENT_SSE_PUBLIC_BASE`** 设为宿主机可达地址）
+- **默认管理员**：`admin / admin`（生产环境务必修改）
 
-**更完整的步骤、环境变量、边缘部署与排障** → 请阅读 **[docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md)**。
+### 中心关键环境变量（摘）
+
+| 变量 | 含义 |
+|------|------|
+| `SHARK_EDGE_TOKEN` | 边缘探针共享密钥（请求头 `X-Shark-Edge-Token`） |
+| `AIOPS_AUTO_HEAL_CONFIDENCE` | 自动批准并下发 Playbook 的置信度阈值（默认 `0.95`） |
+| `AIOPS_DEFAULT_PLAYBOOK_NODE` | 与边缘 `SHARK_AIOPS_NODE_ID` 对齐的节点 ID（默认 `default`） |
+| `AGENT_SSE_PUBLIC_BASE` | 返回给前端的 SSE 根 URL |
 
 ---
 
-## 核心机制摘要
+## 边缘探针：编译与运行
 
-1. **L5 流式思维树（SSE）**  
-   诊断接口返回 `sse_stream_url` 后，前端通过 **EventSource** 消费 `agent` 事件：`graph_node`、`tool_start` / `tool_end`、`operator_context`、`human_feedback`、`done` 等，用于白盒展示智能体执行过程。
+### go-agent
 
-2. **人工干预：Reflect & Retry**  
-   待审工单 **打回** 时提交理由；后端将工单置为拒绝并 **再起一轮 LangGraph**，响应中带 **`new_run_id`** 与 **`new_sse_stream_url`**，前端递增 key 重新挂载流组件，实现「反馈即重跑」。
+```bash
+cd go-agent && go mod tidy && go build -o aiops-agent .
+```
+
+| 变量 | 说明 |
+|------|------|
+| `SHARK_AIOPS_CENTER_URL` | 中心根 URL，无尾部斜杠 |
+| `SHARK_AIOPS_EDGE_TOKEN` | 与中心 `SHARK_EDGE_TOKEN` 一致 |
+| `SHARK_AIOPS_NODE_ID` | 与 `AIOPS_DEFAULT_PLAYBOOK_NODE` 对齐，用于拉取 Playbook |
+| `SHARK_AIOPS_INTERVAL` | 心跳周期，默认 `30s` |
+| `SHARK_AIOPS_PLAYBOOK_POLL` | Playbook 轮询周期，默认 `5s` |
+
+### go-log-collector
+
+```bash
+cd go-log-collector && go build -o aiops-log-collector .
+```
+
+| 变量 | 说明 |
+|------|------|
+| `SHARK_AIOPS_LOG_SEVERITY` | `error`（默认）/ `warn` / `all` |
+| `SHARK_AIOPS_REDACT_REGEX` | 可选：`pattern@@@replacement` 多条用 `\|\|` 分隔 |
+
+示例：`tail -F /var/log/app.log | SHARK_AIOPS_EDGE_TOKEN=secret ./aiops-log-collector`
 
 ---
 
@@ -189,12 +112,28 @@ docker compose up -d --build
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/api/system/health` | 存活探测 |
-| POST | `/api/auth/login` | 登录（Session） |
-| GET | `/api/me` | 当前用户与权限 |
-| POST | `/api/ai_ops/diagnose/<incident_id>/` | 触发 LangGraph |
-| POST | `/api/edge/heartbeat` | 边缘探针心跳（需 Token） |
-| POST | `/api/edge/logs` | 边缘日志批次（需 Token） |
+| GET | `/api/ai_ops/dashboard/` | Bento 大屏聚合（需登录） |
+| POST | `/api/ai_ops/diagnose/<id>/` | 触发 LangGraph |
+| GET | `/api/edge/playbooks` | 边缘领取 Playbook（Token） |
+| POST | `/api/edge/playbooks/<uuid>/complete` | 边缘回传执行结果 |
+| POST | `/api/edge/heartbeat` | 心跳 |
+| POST | `/api/edge/logs` | 日志批次 |
+
+---
+
+## 仓库结构（摘）
+
+```
+├── shark_platform/     # Django 工程
+├── api/                  # 认证、边缘 ingest、Playbook 轮询
+├── ai_ops/               # 模型、LangGraph、工单、大屏 API
+├── frontend/             # Vue3（概览 + 运维台 + Cmd/Ctrl+K）
+├── go-agent/
+├── go-log-collector/
+├── sse_server.py
+├── docker-compose.yml
+└── Dockerfile
+```
 
 ---
 

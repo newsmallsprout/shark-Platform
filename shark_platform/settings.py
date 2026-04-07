@@ -1,5 +1,5 @@
 """
-Django settings — shark-aiops control plane (Django + DRF + ai_ops + Celery hooks).
+Django settings — AIOps Platform 中心控制面（Django + DRF + LangGraph + Celery + SSE）。
 """
 
 from pathlib import Path
@@ -165,6 +165,12 @@ LOGGING = {
 CACHES = {
     "default": {
         "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
-        "LOCATION": "shark-aiops",
+        "LOCATION": "aiops-platform",
     }
 }
+
+# L4 自愈：经验库匹配置信度 ≥ 此阈值时自动批准工单并下发 PlaybookJob
+AIOPS_AUTO_HEAL_CONFIDENCE_THRESHOLD = float(
+    os.environ.get("AIOPS_AUTO_HEAL_CONFIDENCE", "0.95")
+)
+AIOPS_DEFAULT_PLAYBOOK_NODE = os.environ.get("AIOPS_DEFAULT_PLAYBOOK_NODE", "default")

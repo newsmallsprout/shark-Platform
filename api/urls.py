@@ -14,4 +14,11 @@ urlpatterns = [
     path("auth/logout", views.logout_view, name="api_logout"),
     path("edge/heartbeat", views.edge_heartbeat, name="edge_heartbeat"),
     path("edge/logs", views.edge_logs, name="edge_logs"),
+    path("edge/playbooks", views.edge_playbooks_poll, name="edge_playbooks_poll"),
+    path(
+        "edge/playbooks/<uuid:job_id>/complete",
+        views.edge_playbook_complete,
+        name="edge_playbook_complete",
+    ),
+    path("edge/metrics", views.edge_custom_metrics, name="edge_custom_metrics"),
 ]

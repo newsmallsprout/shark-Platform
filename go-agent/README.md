@@ -1,22 +1,23 @@
 # go-agent
 
-Edge **system probe** for **shark-aiops**. Periodically POSTs a JSON snapshot to the control plane.
+**AIOps Platform** 边缘探针：主机心跳 + **Playbook 轮询执行**（中心下发的 shell 脚本）。
 
 ## Environment
 
 | Variable | Description |
 |----------|-------------|
-| `SHARK_AIOPS_CENTER_URL` | Base URL (no trailing slash), e.g. `https://ops.example.com` |
-| `SHARK_AIOPS_EDGE_TOKEN` | Must match center `SHARK_EDGE_TOKEN` |
-| `SHARK_AIOPS_NODE_ID` | Optional stable node id (default: host id) |
-| `SHARK_AIOPS_INTERVAL` | Go duration, default `30s` |
+| `SHARK_AIOPS_CENTER_URL` | Base URL (no trailing slash) |
+| `SHARK_AIOPS_EDGE_TOKEN` | Must match center `SHARK_EDGE_TOKEN` (header `X-Shark-Edge-Token`) |
+| `SHARK_AIOPS_NODE_ID` | Stable node id; must align with center `AIOPS_DEFAULT_PLAYBOOK_NODE` |
+| `SHARK_AIOPS_INTERVAL` | Heartbeat interval, default `30s` |
+| `SHARK_AIOPS_PLAYBOOK_POLL` | Playbook poll interval, default `5s` |
 
 ## Build
 
 ```bash
 cd go-agent
 go mod tidy
-go build -o shark-agent .
+go build -o aiops-agent .
 ```
 
 ## Run
@@ -24,7 +25,8 @@ go build -o shark-agent .
 ```bash
 export SHARK_AIOPS_CENTER_URL=https://your-center
 export SHARK_AIOPS_EDGE_TOKEN=your-shared-secret
-./shark-agent
+export SHARK_AIOPS_NODE_ID=prod-edge-1
+./aiops-agent
 ```
 
-Extend `collect()` in `main.go` to add custom metrics or pull lists from a future PML/config endpoint.
+Playbooks are executed as `/bin/sh -c <script>` with an 8-minute timeout; results are POSTed to `/api/edge/playbooks/<id>/complete`.

@@ -4,6 +4,7 @@ import logging
 
 import psutil
 from django.conf import settings
+from django.utils import timezone
 from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.models import Group, Permission, User
 from django.contrib.contenttypes.models import ContentType
@@ -76,6 +77,105 @@ def edge_logs(request):
         n,
     )
     return Response({"ok": True, "accepted": n})
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def edge_playbooks_poll(request):
+    """边缘 go-agent 轮询待执行 Playbook（认领后标记为 dispatched）。"""
+    if not _edge_token_ok(request):
+        return Response({"error": "unauthorized"}, status=401)
+    node_id = (request.GET.get("node_id") or "").strip() or getattr(
+        settings, "AIOPS_DEFAULT_PLAYBOOK_NODE", "default"
+    )
+    from ai_ops.models import PlaybookJob
+
+    out = []
+    qs = PlaybookJob.objects.filter(
+        target_node_id=node_id, status=PlaybookJob.STATUS_PENDING
+    ).order_by("created_at")[:5]
+    for job in qs:
+        n = PlaybookJob.objects.filter(
+            pk=job.pk, status=PlaybookJob.STATUS_PENDING
+        ).update(status=PlaybookJob.STATUS_DISPATCHED)
+        if n:
+            job.refresh_from_db()
+            out.append(
+                {
+                    "id": str(job.id),
+                    "script": job.script,
+                    "ticket_id": str(job.ticket_id) if job.ticket_id else None,
+                }
+            )
+    return Response({"jobs": out})
+
+
+@api_view(["POST"])
+@permission_classes([AllowAny])
+def edge_playbook_complete(request, job_id):
+    """边缘执行完成后回传结果；成功时标记工单已执行并沉淀经验库。"""
+    if not _edge_token_ok(request):
+        return Response({"error": "unauthorized"}, status=401)
+    from uuid import UUID
+
+    from ai_ops.brain.ticket_manager import TicketManager
+    from ai_ops.models import PlaybookJob
+
+    try:
+        jid = UUID(str(job_id))
+    except ValueError:
+        return Response({"error": "invalid job id"}, status=400)
+    try:
+        job = PlaybookJob.objects.get(pk=jid)
+    except PlaybookJob.DoesNotExist:
+        return Response({"error": "not found"}, status=404)
+
+    body = request.data if isinstance(request.data, dict) else {}
+    ok = bool(body.get("ok", True))
+    stderr = (body.get("stderr") or body.get("error") or "")[:8000]
+
+    job.status = (
+        PlaybookJob.STATUS_COMPLETED if ok else PlaybookJob.STATUS_FAILED
+    )
+    job.result = body
+    job.completed_at = timezone.now()
+    job.save(update_fields=["status", "result", "completed_at"])
+
+    if job.ticket_id and ok:
+        try:
+            TicketManager.mark_executed(
+                job.ticket_id,
+                result=body,
+                error=stderr,
+            )
+        except ValueError as e:
+            return Response({"error": str(e)}, status=400)
+    elif job.ticket_id and not ok:
+        t = job.ticket
+        t.execution_error = stderr or "playbook failed"
+        t.execution_result = body
+        t.save(update_fields=["execution_error", "execution_result", "updated_at"])
+
+    return Response({"ok": True})
+
+
+@api_view(["POST"])
+@permission_classes([AllowAny])
+def edge_custom_metrics(request):
+    """边缘自定义业务指标上报（写入缓存供大屏聚合）。"""
+    if not _edge_token_ok(request):
+        return Response({"error": "unauthorized"}, status=401)
+    from django.core.cache import cache
+
+    body = request.data if isinstance(request.data, dict) else {}
+    node_id = str(body.get("node_id") or "unknown")
+    key = f"edge:metrics:{node_id}"
+    prev = cache.get(key) or []
+    if not isinstance(prev, list):
+        prev = []
+    prev.append({"ts": timezone.now().isoformat(), "payload": body})
+    cache.set(key, prev[-200:], timeout=3600)
+    return Response({"ok": True})
 
 
 class HasRolePermission(BasePermission):
