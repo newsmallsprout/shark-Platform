@@ -2,7 +2,10 @@ import hashlib
 import json
 import logging
 import threading
+import uuid
+from uuid import UUID
 
+from django.conf import settings
 from django.db.models import DateTimeField
 from django.db.models.functions import Coalesce
 from django.core.exceptions import ObjectDoesNotExist
@@ -12,8 +15,10 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
-from .models import AIConfig, Incident
+from .models import AIConfig, Incident, Ticket
+from .brain.ticket_manager import TicketManager
 from .services.analyzer import FaultAnalyzer
+from .tasks import run_incident_langgraph
 
 logger = logging.getLogger(__name__)
 
@@ -271,10 +276,143 @@ def incident_detail(request, pk):
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
-def submit_incident_evidence(request, pk):
+def diagnose_incident(request, incident_id=None):
+    """
+    一键触发 LangGraph+Celery 诊断：立即返回 run_id，客户端用 sse_stream_url 订阅事件流。
+    - URL：POST ``/api/ai_ops/diagnose/<incident_id>/``，可选 JSON ``{"operator_context": "..."}``
+    - 兼容：POST ``/api/ai_ops/diagnose/``，body ``{"incident_id": n, "operator_context": "..."}``
+    """
+    if incident_id is not None:
+        try:
+            iid = int(incident_id)
+        except (TypeError, ValueError):
+            return Response({"error": "incident_id 无效"}, status=400)
+    else:
+        raw_id = request.data.get("incident_id")
+        if raw_id is None or raw_id == "":
+            return Response({"error": "incident_id 必填"}, status=400)
+        try:
+            iid = int(raw_id)
+        except (TypeError, ValueError):
+            return Response({"error": "incident_id 必须为整数"}, status=400)
+
+    if not Incident.objects.filter(pk=iid).exists():
+        return Response({"error": "Incident 不存在"}, status=404)
+
+    data = request.data if isinstance(request.data, dict) else {}
+    operator_context = (data.get("operator_context") or "").strip() or None
+
+    run_id = str(uuid.uuid4())
+    run_incident_langgraph.delay(
+        iid,
+        run_id,
+        operator_context=operator_context,
+        human_feedback=None,
+    )
+
+    base = getattr(settings, "AGENT_SSE_PUBLIC_BASE", "http://localhost:8010").rstrip("/")
+    sse_stream_url = f"{base}/api/agent/stream/{run_id}"
+
     return Response(
         {
-            "error": "人工粘贴证据流程已移除。告警由 SRE Agent（工具调用）自动分析；请查看 agent_trace 与报告。",
+            "status": "processing",
+            "run_id": run_id,
+            "sse_stream_url": sse_stream_url,
         },
-        status=410,
+        status=200,
+    )
+
+
+def _ticket_payload(t: Ticket) -> dict:
+    return {
+        "ticket_id": str(t.ticket_id),
+        "incident_id": t.incident_id,
+        "run_id": t.run_id,
+        "status": t.status,
+        "summary": t.summary,
+        "root_cause": t.root_cause,
+        "proposed_action": t.proposed_action,
+        "approval_comment": t.approval_comment,
+        "approved_at": t.approved_at.isoformat() if t.approved_at else None,
+        "executed_at": t.executed_at.isoformat() if t.executed_at else None,
+    }
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def ticket_detail(request, ticket_id):
+    try:
+        tid = UUID(str(ticket_id))
+    except ValueError:
+        return Response({"error": "invalid ticket_id"}, status=400)
+    try:
+        t = Ticket.objects.select_related("incident").get(pk=tid)
+    except Ticket.DoesNotExist:
+        return Response({"error": "Ticket 不存在"}, status=404)
+    return Response(_ticket_payload(t))
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def ticket_submit(request, ticket_id):
+    try:
+        tid = UUID(str(ticket_id))
+    except ValueError:
+        return Response({"error": "invalid ticket_id"}, status=400)
+    try:
+        t = TicketManager.submit_for_approval(tid)
+    except ValueError as e:
+        return Response({"error": str(e)}, status=400)
+    return Response(_ticket_payload(t))
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def ticket_approve(request, ticket_id):
+    try:
+        tid = UUID(str(ticket_id))
+    except ValueError:
+        return Response({"error": "invalid ticket_id"}, status=400)
+    comment = (request.data.get("comment") or "") if isinstance(request.data, dict) else ""
+    try:
+        t = TicketManager.approve(tid, request.user, comment=comment)
+    except ValueError as e:
+        return Response({"error": str(e)}, status=400)
+    return Response(_ticket_payload(t))
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def ticket_reject(request, ticket_id):
+    try:
+        tid = UUID(str(ticket_id))
+    except ValueError:
+        return Response({"error": "invalid ticket_id"}, status=400)
+    reason = (request.data.get("reason") or "") if isinstance(request.data, dict) else ""
+    reason = str(reason).strip()
+    if not reason:
+        return Response({"error": "驳回须填写 reason"}, status=400)
+    try:
+        t = TicketManager.reject(tid, request.user, reason=reason)
+    except ValueError as e:
+        return Response({"error": str(e)}, status=400)
+
+    new_run_id = str(uuid.uuid4())
+    run_incident_langgraph.delay(
+        t.incident_id,
+        new_run_id,
+        operator_context=None,
+        human_feedback=reason,
+    )
+    base = getattr(settings, "AGENT_SSE_PUBLIC_BASE", "http://localhost:8010").rstrip("/")
+    new_sse_stream_url = f"{base}/api/agent/stream/{new_run_id}"
+
+    return Response(
+        {
+            "status": "rejected",
+            "new_run_id": new_run_id,
+            "new_sse_stream_url": new_sse_stream_url,
+            "ticket": _ticket_payload(t),
+        },
+        status=200,
     )

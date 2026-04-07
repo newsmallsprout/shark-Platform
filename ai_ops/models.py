@@ -1,4 +1,8 @@
+import uuid
+
+from django.conf import settings
 from django.db import models
+
 
 class Incident(models.Model):
     STATUS_CHOICES = [
@@ -154,4 +158,71 @@ class AIConfig(models.Model):
     @classmethod
     def get_active_config(cls):
         return cls.objects.filter(is_active=True).first() or cls.objects.create()
+
+
+class Ticket(models.Model):
+    """
+    Phase 1 智能工单：承载 AI 诊断结论与拟执行脚本；写操作须经人工审批后由执行器消费。
+    业务主键为 ``ticket_id``（UUID），便于对外 API 与 SSE 载荷对齐。
+    """
+
+    STATUS_DRAFT = "draft"
+    STATUS_PENDING_APPROVAL = "pending_approval"
+    STATUS_APPROVED = "approved"
+    STATUS_EXECUTED = "executed"
+    STATUS_REJECTED = "rejected"
+
+    STATUS_CHOICES = [
+        (STATUS_DRAFT, "Draft"),
+        (STATUS_PENDING_APPROVAL, "Pending Approval"),
+        (STATUS_APPROVED, "Approved"),
+        (STATUS_EXECUTED, "Executed"),
+        (STATUS_REJECTED, "Rejected"),
+    ]
+
+    ticket_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    incident = models.ForeignKey(
+        Incident,
+        on_delete=models.CASCADE,
+        related_name="tickets",
+        db_index=True,
+    )
+    run_id = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        db_index=True,
+        help_text="LangGraph / Celery 运行实例，对应 SSE 频道 agent:run:{run_id}",
+    )
+    status = models.CharField(max_length=32, choices=STATUS_CHOICES, default=STATUS_DRAFT, db_index=True)
+
+    summary = models.TextField(help_text="故障总结（面向审批人）", default="")
+    root_cause = models.TextField(help_text="根因分析", default="")
+    proposed_action = models.TextField(
+        help_text="修复方案：可执行 shell / kubectl / API 调用说明等（仅建议，未经批准不得执行）",
+        default="",
+    )
+
+    approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="approved_tickets",
+    )
+    approved_at = models.DateTimeField(null=True, blank=True)
+    approval_comment = models.TextField(blank=True, default="")
+
+    execution_result = models.JSONField(default=dict, blank=True)
+    execution_error = models.TextField(blank=True, default="")
+    executed_at = models.DateTimeField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-updated_at", "-created_at"]
+
+    def __str__(self):
+        return f"Ticket {self.ticket_id} ({self.status})"
 

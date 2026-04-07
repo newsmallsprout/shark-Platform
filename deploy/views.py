@@ -1,7 +1,7 @@
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
 from api.views import HasRolePermission
+from core.work_order_gate import enforce_approved_work_order_or_response
 from django.http import JsonResponse
 from .models import Server, DeployPlan
 from .schemas import DeployRequestSchema, ServerConfigSchema
@@ -28,6 +28,9 @@ def server_list(request):
         return Response({"servers": data})
     
     elif request.method == 'POST':
+        blocked = enforce_approved_work_order_or_response(request)
+        if blocked is not None:
+            return blocked
         try:
             data = request.data
             # Basic validation using schema
@@ -52,6 +55,9 @@ def server_list(request):
 @api_view(['POST'])
 @permission_classes([HasRolePermission])
 def run_deploy(request):
+    blocked = enforce_approved_work_order_or_response(request)
+    if blocked is not None:
+        return blocked
     try:
         # Validate request
         req = DeployRequestSchema(**request.data)
@@ -78,6 +84,9 @@ def run_deploy(request):
 @api_view(['POST'])
 @permission_classes([HasRolePermission])
 def execute_plan(request, plan_id):
+    blocked = enforce_approved_work_order_or_response(request)
+    if blocked is not None:
+        return blocked
     deploy_engine.execute_async(plan_id)
     return Response({"status": "ok"})
 

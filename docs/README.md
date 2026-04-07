@@ -4,10 +4,7 @@
 
 | 文档 | 说明 |
 |------|------|
-| [deployment/README.md](./deployment/README.md) | **部署总索引**：Compose、K8s、Traffic 中间件、一键脚本入口 |
-| [deployment/docker-compose.md](./deployment/docker-compose.md) | 本地 Docker Compose 说明 |
-| [deployment/kubernetes.md](./deployment/kubernetes.md) | 生产 Kubernetes、RBAC、PVC、Ingress |
-| [deployment/traffic-middleware.md](./deployment/traffic-middleware.md) | GeoIP / Redis / ingest / ClickHouse（YAML 在 `infra/kubernetes/middleware-system/`） |
+| **[deployment/README.md](./deployment/README.md)** | **唯一部署指南**：Docker Compose、一键脚本、Kubernetes、Traffic 中间件、AIOps（Celery / SSE）、环境变量与上线运维 |
 
 ## 功能手册
 
@@ -19,6 +16,6 @@
 
 ## 迁移说明
 
-- 原 **`K8S_RBAC_GUIDE.md`** 已迁至 **`deployment/kubernetes.md`**；根目录 [K8S_RBAC_GUIDE.md](./K8S_RBAC_GUIDE.md) 仅作跳转。
+- 原 **`K8S_RBAC_GUIDE.md`** 与旧版多篇 `deployment/*.md` 已合并进 **[deployment/README.md](./deployment/README.md)**；[K8S_RBAC_GUIDE.md](./K8S_RBAC_GUIDE.md) 仅作跳转。
 
 项目总览与快速开始见仓库根目录 [README.md](../README.md)。基础设施清单目录见 [infra/README.md](../infra/README.md)。

@@ -299,43 +299,6 @@ def traffic_blackbox(request):
     return Response(fetch_blackbox_summary(cfg, inspection))
 
 
-@api_view(["GET"])
-@permission_classes([IsAuthenticated])
-def traffic_jaeger_traces_mock(request):
-    """Placeholder until Jaeger Query API is wired."""
-    return Response(
-        {
-            "note": "当前为模拟数据，后续接入 Jaeger Query API 替换。",
-            "traces": [
-                {
-                    "trace_id": "7a3f9c2e1d8b4a6f0e5c3d2b1a987654",
-                    "root_service": "shark-gateway",
-                    "span_count": 14,
-                    "duration_ms": 128,
-                    "started_at": "2026-03-30T06:15:00Z",
-                    "status": "ok",
-                },
-                {
-                    "trace_id": "8b4e0d3f2c9a5b7e1f6d4c3b2a098765",
-                    "root_service": "api-core",
-                    "span_count": 22,
-                    "duration_ms": 890,
-                    "started_at": "2026-03-30T06:14:42Z",
-                    "status": "error",
-                },
-                {
-                    "trace_id": "9c5f1e4a3d0b6c8f2e7d5c4b3a109876",
-                    "root_service": "sync-worker",
-                    "span_count": 6,
-                    "duration_ms": 45,
-                    "started_at": "2026-03-30T06:14:30Z",
-                    "status": "ok",
-                },
-            ],
-        }
-    )
-
-
 @api_view(["GET", "POST"])
 @permission_classes([IsAuthenticated])
 def traffic_dashboard_config(request):

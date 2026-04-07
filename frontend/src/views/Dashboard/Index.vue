@@ -1113,12 +1113,7 @@ function onCustomRangePicked() {
 }
 
 async function refreshJaegerTraces() {
-  try {
-    const tr = (await trafficApi.jaegerTraces()) as any
-    traceRows.value = tr.traces || []
-  } catch {
-    /* */
-  }
+  traceRows.value = []
 }
 
 async function loadAll(silent = false) {

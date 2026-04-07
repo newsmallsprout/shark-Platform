@@ -4,25 +4,22 @@
       <div class="header-info">
         <h2 class="page-title">智能故障分析</h2>
         <p class="page-subtitle">
-          基于大模型与工具调用的根因分析。列表数据来自 Alertmanager Webhook（<code>/api/ai_ops/webhook/prometheus</code>），与 Traffic 接入无关。
+          左侧选择告警 → 启动 <strong>LangGraph</strong> 白盒诊断（SSE 实时）→ 完成后<strong>内联审批</strong>智能工单。Webhook：<code>/api/ai_ops/webhook/prometheus</code>。
         </p>
       </div>
       <div class="header-actions">
-        <el-button @click="openConfig" :icon="Setting">配置</el-button>
-        <el-button @click="fetchIncidents" :icon="Refresh" circle />
+        <el-button :icon="Setting" @click="openConfig">配置</el-button>
+        <el-button :icon="Refresh" circle @click="fetchIncidents" />
       </div>
     </div>
 
     <el-row :gutter="24">
-      <!-- Incident List -->
       <el-col :span="8">
         <el-card shadow="never" class="list-card">
-          <div class="list-header">
-            <span>最近告警</span>
-          </div>
+          <div class="list-header">最近告警</div>
           <div v-loading="loading" class="incident-list">
-            <div 
-              v-for="inc in incidents" 
+            <div
+              v-for="inc in incidents"
               :key="inc.id"
               class="incident-item"
               :class="{ active: selectedId === inc.id }"
@@ -34,93 +31,204 @@
               <div class="inc-info">
                 <div class="inc-title">{{ inc.alert_name }}</div>
                 <div class="inc-meta">
-                  <span :class="['severity-dot', inc.severity]"></span>
-                  {{ inc.severity.toUpperCase() }} • {{ listTimeLabel(inc) }}
+                  <span :class="['severity-dot', inc.severity]" />
+                  {{ inc.severity.toUpperCase() }} · {{ listTimeLabel(inc) }}
                   <span v-if="(inc.occurrence_count || 0) > 1" class="occ-badge">×{{ inc.occurrence_count }}</span>
                 </div>
               </div>
               <el-icon class="arrow-icon"><ArrowRight /></el-icon>
             </div>
-            <el-empty v-if="incidents.length === 0" description="暂无告警" />
+            <el-empty v-if="!incidents.length" description="暂无告警" />
           </div>
         </el-card>
       </el-col>
 
-      <!-- Analysis Detail -->
       <el-col :span="16">
-        <el-card shadow="never" class="detail-card" v-if="selectedId">
+        <el-card v-if="selectedId" shadow="never" class="detail-card">
           <template #header>
             <div class="detail-header">
-              <span>分析报告 #{{ selectedId }}</span>
-              <el-tag v-if="detailLoading" type="info">加载中...</el-tag>
+              <span>Incident #{{ selectedId }}</span>
+              <el-tag v-if="detailLoading" type="info" size="small">刷新中…</el-tag>
             </div>
           </template>
-          
-          <div v-loading="detailLoading" class="detail-content">
-            <div v-if="currentDetail">
-              <!-- Alert Summary -->
+
+          <div v-loading="detailLoading" class="detail-scroll">
+            <!-- —— 1. LangGraph 触发 + SSE —— -->
+            <section class="section-langgraph">
+              <h3 class="section-title">
+                <el-icon><Cpu /></el-icon>
+                LangGraph 异步诊断
+              </h3>
+              <p class="section-hint">
+                填写排障指引后启动；思维流结束后在本页<strong>内联审批</strong>。审批<strong>打回</strong>将携带理由触发 AI 反思并重挂新一轮 SSE，无需刷新。
+              </p>
+              <div class="diagnose-trigger-area">
+                <el-input
+                  v-model="userNote"
+                  type="textarea"
+                  :rows="2"
+                  maxlength="2000"
+                  show-word-limit
+                  placeholder="补充排障方向（可选），例如：刚上了新版本，重点查 DB 慢查询…"
+                  class="context-input"
+                />
+                <el-button
+                  type="primary"
+                  class="btn-diagnose-full"
+                  :loading="diagnoseLoading"
+                  :disabled="!selectedId || diagnoseLoading"
+                  @click="startLangGraphDiagnose"
+                >
+                  <el-icon class="btn-diagnose-icon"><Cpu /></el-icon>
+                  启动 AI 智能诊断
+                </el-button>
+                <div v-if="streamRunId" class="mono stream-meta">run_id {{ streamRunId.slice(0, 8) }}…</div>
+              </div>
+            </section>
+
+            <div v-if="streamVisible && streamRunId && streamSseUrl" class="stream-wrap">
+              <AgentThoughtStream
+                :key="streamKey"
+                :run-id="streamRunId"
+                :sse-stream-url="streamSseUrl"
+                :hide-completion-result="true"
+                @done="onStreamDone"
+                @error="onStreamError"
+              />
+            </div>
+
+            <!-- —— 2. 内联审批（思维流完成后，上下文最全） —— -->
+            <el-card v-if="currentTicketId" shadow="never" class="inline-approval-card">
+              <template #header>
+                <div class="inline-approval-head">
+                  <span class="inline-approval-title">
+                    <el-icon><CircleCheck /></el-icon>
+                    智能工单审批
+                    <span class="mono inline-ticket-id">({{ currentTicketId }})</span>
+                  </span>
+                  <el-tag
+                    v-if="ticketDetail"
+                    :type="ticketStatusTag(ticketDetail.status)"
+                    effect="dark"
+                    size="small"
+                  >
+                    {{ ticketDetail.status }}
+                  </el-tag>
+                  <el-tag v-else type="info" size="small">加载中…</el-tag>
+                </div>
+              </template>
+
+              <el-skeleton v-if="ticketLoading" :rows="6" animated />
+              <template v-else-if="ticketDetail">
+                <el-descriptions :column="1" border size="small" class="ticket-desc">
+                  <el-descriptions-item label="ticket_id">
+                    <span class="mono">{{ ticketDetail.ticket_id }}</span>
+                  </el-descriptions-item>
+                  <el-descriptions-item label="状态">
+                    <el-tag :type="ticketStatusTag(ticketDetail.status)" effect="dark">{{ ticketDetail.status }}</el-tag>
+                  </el-descriptions-item>
+                  <el-descriptions-item label="摘要">{{ ticketDetail.summary || '—' }}</el-descriptions-item>
+                  <el-descriptions-item label="根因">{{ ticketDetail.root_cause || '—' }}</el-descriptions-item>
+                  <el-descriptions-item label="拟执行方案">
+                    <pre class="ticket-pre">{{ ticketDetail.proposed_action || '—' }}</pre>
+                  </el-descriptions-item>
+                  <el-descriptions-item v-if="userNote.trim()" label="排障指引（发起诊断时）">
+                    <pre class="ticket-pre note">{{ userNote }}</pre>
+                  </el-descriptions-item>
+                </el-descriptions>
+
+                <div v-if="ticketDetail.status === 'draft'" class="approval-row">
+                  <el-button type="primary" :loading="ticketActionLoading" @click="submitTicketForApproval">
+                    提交审批（进入待审队列）
+                  </el-button>
+                  <span class="approval-tip">提交后 Leader 可在独立工作台批复；有权限者也可在此继续操作。</span>
+                </div>
+
+                <div v-else-if="ticketDetail.status === 'pending_approval'" class="approval-row pending-body">
+                  <el-input
+                    v-model="approveComment"
+                    type="textarea"
+                    :rows="2"
+                    placeholder="批准意见（可选）"
+                    class="approval-comment"
+                  />
+                </div>
+
+                <el-result
+                  v-else-if="ticketDetail.status === 'approved'"
+                  icon="success"
+                  title="已批准"
+                  sub-title="写操作可携带 X-Shark-Work-Order-Id 头由执行器落库（见工单闸门配置）。"
+                />
+                <el-result
+                  v-else-if="ticketDetail.status === 'rejected'"
+                  icon="error"
+                  title="已驳回"
+                  :sub-title="ticketDetail.approval_comment || '—'"
+                />
+                <el-result
+                  v-else-if="ticketDetail.status === 'executed'"
+                  icon="success"
+                  title="已执行闭环"
+                />
+              </template>
+
+              <template v-if="ticketDetail?.status === 'pending_approval'" #footer>
+                <div class="inline-approval-footer">
+                  <el-button type="danger" plain :loading="ticketActionLoading" @click="promptRejectAndRetry">
+                    打回并让 AI 重试
+                  </el-button>
+                  <el-button type="success" :loading="ticketActionLoading" @click="approveTicket">
+                    批准执行
+                  </el-button>
+                </div>
+              </template>
+            </el-card>
+
+            <el-divider content-position="left">告警与历史报告</el-divider>
+
+            <div v-if="currentDetail" class="legacy-blocks">
               <div class="section-block">
                 <h3 class="section-title"><el-icon><Warning /></el-icon> 告警描述</h3>
                 <p class="text-content">{{ currentDetail.description }}</p>
                 <div class="json-box">
-                    <pre>{{ JSON.stringify(currentDetail.raw_alert_data, null, 2) }}</pre>
+                  <pre>{{ JSON.stringify(currentDetail.raw_alert_data, null, 2) }}</pre>
                 </div>
               </div>
 
-              <!-- Agent trace (ReAct + tools) -->
-              <div
-                v-if="(currentDetail.agent_trace?.length || 0) > 0"
-                class="trace-box"
-              >
-                <h3 class="section-title"><el-icon><Monitor /></el-icon> Agent 排查轨迹</h3>
-                <p class="trace-intro">
-                  模型多轮调用只读工具（日志 / Prometheus / K8s）的过程摘要；完整 Observation 见下方 JSON。
-                </p>
+              <div v-if="(currentDetail.agent_trace?.length || 0) > 0" class="trace-box">
+                <h3 class="section-title"><el-icon><Monitor /></el-icon> 历史 Agent 轨迹（旧链路）</h3>
                 <el-collapse>
-                  <el-collapse-item title="展开查看 agent_trace" name="trace">
+                  <el-collapse-item title="agent_trace" name="t">
                     <pre class="trace-json">{{ JSON.stringify(currentDetail.agent_trace, null, 2) }}</pre>
                   </el-collapse-item>
                 </el-collapse>
               </div>
 
-              <!-- AI Analysis -->
               <div v-if="currentDetail.report" class="ai-report-box">
                 <div class="report-header">
-                  <el-icon><Cpu /></el-icon> 故障原因分析
+                  <el-icon><Cpu /></el-icon> 分析报告（同步 / 历史）
                 </div>
                 <div class="report-body">
                   <div class="analysis-section">
                     <div class="label">故障现象</div>
                     <p>{{ currentDetail.report.phenomenon }}</p>
                   </div>
-
                   <div class="analysis-section">
-                    <div class="label">根本原因 (进程/Pod)</div>
+                    <div class="label">根本原因</div>
                     <p class="root-cause">{{ currentDetail.report.root_cause }}</p>
                   </div>
-                  
                   <div class="analysis-grid">
                     <div class="analysis-card mitigation">
-                        <div class="label">紧急处理 (Mitigation)</div>
-                        <p>{{ currentDetail.report.mitigation }}</p>
+                      <div class="label">紧急处理</div>
+                      <p>{{ currentDetail.report.mitigation }}</p>
                     </div>
                     <div class="analysis-card prevention">
-                        <div class="label">预防措施 (Prevention)</div>
-                        <p>{{ currentDetail.report.prevention }}</p>
+                      <div class="label">预防</div>
+                      <p>{{ currentDetail.report.prevention }}</p>
                     </div>
                   </div>
-
-                  <div class="analysis-section" v-if="currentDetail.report.refactoring">
-                    <div class="label">整改建议</div>
-                    <p>{{ currentDetail.report.refactoring }}</p>
-                  </div>
-
-                  <div class="analysis-section" v-if="currentDetail.report.platform_linkage">
-                    <div class="label">平台联动</div>
-                    <p>{{ currentDetail.report.platform_linkage }}</p>
-                  </div>
-
-                  <div class="solutions" v-if="currentDetail.report.solutions?.length">
+                  <div v-if="currentDetail.report.solutions?.length" class="solutions">
                     <div class="label">可执行命令</div>
                     <div class="cmd-list">
                       <div v-for="(sol, idx) in currentDetail.report.solutions" :key="idx" class="cmd-item">
@@ -134,39 +242,19 @@
                 <el-icon class="is-loading"><Loading /></el-icon>
                 <span>{{ analyzingMessage }}</span>
               </div>
-              <div v-else-if="currentDetail.status === 'awaiting_evidence'" class="no-report mild">
-                状态 awaiting_evidence 为旧数据；新告警由 Agent 自动分析，无需粘贴命令输出。
-              </div>
-              <div v-else class="no-report">
-                暂无分析报告
-              </div>
+              <div v-else class="no-report">暂无同步分析报告（可使用上方 LangGraph 生成工单）</div>
 
-              <!-- Metrics Chart -->
-              <div
-                v-if="chartDataKeys.length"
-                class="chart-section"
-              >
-                <h3 class="section-title"><el-icon><TrendCharts /></el-icon> 监控指标证据</h3>
-                <div ref="chartRef" class="metrics-chart"></div>
-              </div>
-
-              <!-- Diagnostic Logs -->
-              <div v-if="currentDetail.report && currentDetail.report.diagnosis_logs && currentDetail.report.diagnosis_logs.length" class="logs-section">
-                <h3 class="section-title"><el-icon><Monitor /></el-icon> 诊断日志证据</h3>
-                <div class="logs-container">
-                  <div v-for="(log, idx) in currentDetail.report.diagnosis_logs" :key="idx" class="log-block">
-                    <pre>{{ log }}</pre>
-                  </div>
-                </div>
+              <div v-if="chartDataKeys.length" class="chart-section">
+                <h3 class="section-title"><el-icon><TrendCharts /></el-icon> 监控指标</h3>
+                <div ref="chartRef" class="metrics-chart" />
               </div>
             </div>
           </div>
         </el-card>
-        <el-empty v-else description="请选择一个告警以查看分析" class="empty-detail" />
+        <el-empty v-else description="请选择一个告警" class="empty-detail" />
       </el-col>
     </el-row>
 
-    <!-- Configuration Dialog -->
     <el-dialog v-model="configVisible" title="AI 分析配置" width="600px">
       <el-form :model="configForm" label-width="120px">
         <el-form-item label="Provider">
@@ -183,7 +271,7 @@
           <el-input v-model="configForm.api_key" type="password" show-password />
         </el-form-item>
         <el-form-item label="Model Name">
-          <el-input v-model="configForm.model" placeholder="e.g. gpt-4, deepseek-chat" />
+          <el-input v-model="configForm.model" placeholder="e.g. gpt-4" />
         </el-form-item>
         <el-form-item label="Max Tokens">
           <el-input-number v-model="configForm.max_tokens" :min="100" :max="8000" />
@@ -197,22 +285,19 @@
         <el-form-item label="Agent 最大轮次">
           <el-input-number v-model="configForm.max_agent_iterations" :min="1" :max="24" />
         </el-form-item>
-        <el-form-item label="单事件工具上限">
+        <el-form-item label="工具调用上限">
           <el-input-number v-model="configForm.max_tool_calls_per_incident" :min="1" :max="80" />
         </el-form-item>
-        <el-form-item label="Prompt 模板（遗留）">
-          <el-input v-model="configForm.prompt_template" type="textarea" :rows="4" />
-          <span class="form-hint">SRE Agent 使用内置系统提示；此项仅兼容旧配置存储</span>
+        <el-form-item label="Prompt（遗留）">
+          <el-input v-model="configForm.prompt_template" type="textarea" :rows="3" />
         </el-form-item>
         <el-form-item label="最终 Prompt（遗留）">
-          <el-input v-model="configForm.final_prompt_template" type="textarea" :rows="4" />
+          <el-input v-model="configForm.final_prompt_template" type="textarea" :rows="3" />
         </el-form-item>
       </el-form>
       <template #footer>
-        <span class="dialog-footer">
-          <el-button @click="configVisible = false">取消</el-button>
-          <el-button type="primary" @click="saveConfig">保存</el-button>
-        </span>
+        <el-button @click="configVisible = false">取消</el-button>
+        <el-button type="primary" @click="saveConfig">保存</el-button>
       </template>
     </el-dialog>
   </div>
@@ -220,10 +305,21 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, nextTick, watch, onUnmounted, reactive } from 'vue'
-import { aiOpsApi } from '@/api/ai_ops'
-import { Refresh, ArrowRight, Warning, Cpu, Loading, TrendCharts, Setting, Monitor } from '@element-plus/icons-vue'
+import { aiOpsApi, type TicketPayload } from '@/api/ai_ops'
+import AgentThoughtStream from '@/components/AgentThoughtStream.vue'
+import {
+  Refresh,
+  ArrowRight,
+  Warning,
+  Cpu,
+  Loading,
+  TrendCharts,
+  Setting,
+  Monitor,
+  CircleCheck,
+} from '@element-plus/icons-vue'
 import * as echarts from 'echarts'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 
 const loading = ref(false)
 const detailLoading = ref(false)
@@ -233,15 +329,32 @@ const currentDetail = ref<any>(null)
 const chartRef = ref<HTMLElement>()
 let chartInstance: echarts.ECharts | null = null
 
+/** 排障方向 / 人工先验（随 diagnose 传给后端 operator_context） */
+const userNote = ref('')
+
+/** LangGraph / SSE */
+const diagnoseLoading = ref(false)
+const streamVisible = ref(false)
+const streamRunId = ref('')
+const streamSseUrl = ref('')
+const streamKey = ref(0)
+
+/** 工单内联审批 */
+const currentTicketId = ref<string | null>(null)
+const ticketDetail = ref<TicketPayload | null>(null)
+const ticketLoading = ref(false)
+const ticketActionLoading = ref(false)
+const approveComment = ref('')
+
 const chartDataKeys = computed(() => {
   const m =
-    currentDetail.value?.chart_metrics ||
-    currentDetail.value?.report?.related_metrics ||
-    {}
+    currentDetail.value?.chart_metrics || currentDetail.value?.report?.related_metrics || {}
   return Object.keys(m || {})
 })
 
-const analyzingMessage = computed(() => 'SRE Agent 正在调用工具（日志 / Prom / K8s）并生成结论，请稍候…')
+const analyzingMessage = computed(
+  () => '同步分析进行中；或使用上方 LangGraph 获取独立工单与 SSE 轨迹。',
+)
 
 function listTimeLabel(inc: { last_received_at?: string; started_at?: string }) {
   const raw = inc.last_received_at || inc.started_at
@@ -249,7 +362,13 @@ function listTimeLabel(inc: { last_received_at?: string; started_at?: string }) 
   return new Date(raw).toLocaleString()
 }
 
-// Config State
+function ticketStatusTag(s: string) {
+  if (s === 'approved' || s === 'executed') return 'success'
+  if (s === 'rejected') return 'danger'
+  if (s === 'pending_approval') return 'warning'
+  return 'info'
+}
+
 const configVisible = ref(false)
 const configForm = reactive({
   provider: 'openai',
@@ -265,42 +384,50 @@ const configForm = reactive({
   max_tool_calls_per_incident: 36,
 })
 
-const openConfig = async () => {
+async function openConfig() {
   try {
-    const res = await aiOpsApi.getConfig() as any
+    const res = (await aiOpsApi.getConfig()) as any
     Object.assign(configForm, res)
     configVisible.value = true
-  } catch (error) {
-    ElMessage.error('Failed to load config')
+  } catch {
+    ElMessage.error('加载配置失败')
   }
 }
 
-const saveConfig = async () => {
+async function saveConfig() {
   try {
     await aiOpsApi.updateConfig(configForm)
-    ElMessage.success('Configuration saved')
+    ElMessage.success('已保存')
     configVisible.value = false
-  } catch (error) {
-    ElMessage.error('Failed to save config')
+  } catch {
+    ElMessage.error('保存失败')
   }
 }
 
-const fetchIncidents = async () => {
+async function fetchIncidents() {
   loading.value = true
   try {
-    const res = await aiOpsApi.getIncidents() as any
-    incidents.value = res.incidents
+    const res = (await aiOpsApi.getIncidents()) as any
+    incidents.value = res.incidents || []
   } finally {
     loading.value = false
   }
 }
 
-const selectIncident = async (inc: any) => {
-  selectedId.value = inc.id
+function resetStreamState() {
+  streamVisible.value = false
+  streamRunId.value = ''
+  streamSseUrl.value = ''
+  currentTicketId.value = null
+  ticketDetail.value = null
+}
+
+/** 仅刷新右侧详情与图表，不清空 SSE / 工单（供诊断完成后刷新） */
+async function refreshIncidentDetail() {
+  if (!selectedId.value) return
   detailLoading.value = true
-  currentDetail.value = null
   try {
-    const res = await aiOpsApi.getIncidentDetail(inc.id) as any
+    const res = (await aiOpsApi.getIncidentDetail(selectedId.value)) as any
     currentDetail.value = res
     const metrics = res.chart_metrics || res.report?.related_metrics
     if (metrics && Object.keys(metrics).length) {
@@ -311,60 +438,198 @@ const selectIncident = async (inc: any) => {
   }
 }
 
+async function selectIncident(inc: any) {
+  resetStreamState()
+  selectedId.value = inc.id
+  detailLoading.value = true
+  currentDetail.value = null
+  try {
+    const res = (await aiOpsApi.getIncidentDetail(inc.id)) as any
+    currentDetail.value = res
+    const metrics = res.chart_metrics || res.report?.related_metrics
+    if (metrics && Object.keys(metrics).length) {
+      nextTick(() => renderChart(metrics))
+    }
+  } finally {
+    detailLoading.value = false
+  }
+}
+
+/** POST /api/ai_ops/diagnose/:id/，挂载 SSE */
+async function startLangGraphDiagnose() {
+  if (!selectedId.value) {
+    ElMessage.warning('请先选择告警')
+    return
+  }
+  diagnoseLoading.value = true
+  try {
+    const payload = userNote.value.trim() ? { operator_context: userNote.value.trim() } : {}
+    const res = await aiOpsApi.diagnose(selectedId.value, payload)
+    streamRunId.value = res.run_id
+    streamSseUrl.value = res.sse_stream_url
+    streamKey.value += 1
+    streamVisible.value = true
+    currentTicketId.value = null
+    ticketDetail.value = null
+    ElMessage.success('诊断任务已投递，Agent 将结合你的指引进行调查…')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.error || e?.message || '触发诊断失败')
+  } finally {
+    diagnoseLoading.value = false
+  }
+}
+
+async function loadTicketDetail() {
+  if (!currentTicketId.value) return
+  ticketLoading.value = true
+  try {
+    ticketDetail.value = await aiOpsApi.getTicket(currentTicketId.value)
+  } catch {
+    ElMessage.error('加载工单失败')
+    ticketDetail.value = null
+  } finally {
+    ticketLoading.value = false
+  }
+}
+
+async function onStreamDone(payload: Record<string, unknown> | undefined) {
+  const tid = payload?.ticket_id != null ? String(payload.ticket_id) : ''
+  if (tid) {
+    currentTicketId.value = tid
+    await loadTicketDetail()
+    await refreshIncidentDetail()
+    ElMessage.success('分析完成，请在下方完成内联审批')
+  } else {
+    ElMessage.warning('流程结束但未返回 ticket_id，请检查 Celery / 图节点 draft_ticket')
+  }
+}
+
+function onStreamError() {
+  /* AgentThoughtStream 已 Message；此处可扩展埋点 */
+}
+
+async function submitTicketForApproval() {
+  if (!currentTicketId.value) return
+  ticketActionLoading.value = true
+  try {
+    ticketDetail.value = await aiOpsApi.submitTicket(currentTicketId.value)
+    ElMessage.success('已提交审批')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.error || e?.message || '提交失败')
+  } finally {
+    ticketActionLoading.value = false
+  }
+}
+
+async function approveTicket() {
+  if (!currentTicketId.value) return
+  ticketActionLoading.value = true
+  try {
+    ticketDetail.value = await aiOpsApi.approveTicket(currentTicketId.value, approveComment.value)
+    approveComment.value = ''
+    ElMessage.success('已批准')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.error || e?.message || '操作失败')
+  } finally {
+    ticketActionLoading.value = false
+  }
+}
+
+/** 打回待审工单并触发新一轮 LangGraph（SSE 无缝切换） */
+async function promptRejectAndRetry() {
+  if (!currentTicketId.value) return
+  try {
+    const { value: reason } = await ElMessageBox.prompt(
+      '说明问题或正确排障方向，AI 将结合反馈重新诊断并生成工单。',
+      '打回工单',
+      {
+        confirmButtonText: '打回并重试',
+        cancelButtonText: '取消',
+        inputPattern: /\S+/,
+        inputErrorMessage: '打回理由不能为空',
+        inputType: 'textarea',
+        inputPlaceholder: '例如：不要回滚代码，先查 Nginx 错误日志…',
+      },
+    )
+
+    ticketActionLoading.value = true
+    const res = await aiOpsApi.rejectTicket(currentTicketId.value, {
+      reason: reason.trim(),
+    })
+
+    ElMessage.success('已打回，AI 正在反思并重试…')
+
+    if (res.new_run_id && res.new_sse_stream_url) {
+      streamRunId.value = res.new_run_id
+      streamSseUrl.value = res.new_sse_stream_url
+      streamKey.value += 1
+      streamVisible.value = true
+      currentTicketId.value = null
+      ticketDetail.value = null
+    } else {
+      await refreshIncidentDetail()
+    }
+  } catch (err: unknown) {
+    if (err !== 'cancel') {
+      const e = err as { response?: { data?: { error?: string } }; message?: string }
+      ElMessage.error(e?.response?.data?.error || e?.message || '操作失败')
+    }
+  } finally {
+    ticketActionLoading.value = false
+  }
+}
+
 const getStatusType = (status: string) => {
   if (status === 'analyzed') return 'success'
   if (status === 'analyzing') return 'warning'
-  if (status === 'awaiting_evidence') return 'info' // legacy rows only
+  if (status === 'awaiting_evidence') return 'info'
   if (status === 'resolved') return 'info'
   return 'danger'
 }
 
-const renderChart = (metrics: any) => {
+function renderChart(metrics: any) {
   if (!chartRef.value) return
-  if (chartInstance) chartInstance.dispose()
-  
+  chartInstance?.dispose()
+
   chartInstance = echarts.init(chartRef.value)
-  
-  // Example: render first metric found
+
   const series: any[] = []
   const legendData: string[] = []
   let xAxisData: string[] = []
 
   for (const [key, data] of Object.entries(metrics)) {
-      // Assuming prometheus result format
-      // data = [{ metric: {}, values: [[ts, val], ...] }]
-      if (Array.isArray(data)) {
-          data.forEach((seriesData: any, idx) => {
-              const name = `${key}-${idx}`
-              legendData.push(name)
-              const values = seriesData.values || []
-              if (idx === 0) {
-                  xAxisData = values.map((v: any[]) => new Date(v[0] * 1000).toLocaleTimeString())
-              }
-              series.push({
-                  name: name,
-                  type: 'line',
-                  data: values.map((v: any[]) => parseFloat(v[1])),
-                  smooth: true
-              })
-          })
-      }
+    if (Array.isArray(data)) {
+      ;(data as any[]).forEach((seriesData: any, idx: number) => {
+        const name = `${key}-${idx}`
+        legendData.push(name)
+        const values = seriesData.values || []
+        if (idx === 0) {
+          xAxisData = values.map((v: any[]) => new Date(v[0] * 1000).toLocaleTimeString())
+        }
+        series.push({
+          name,
+          type: 'line',
+          data: values.map((v: any[]) => parseFloat(v[1])),
+          smooth: true,
+        })
+      })
+    }
   }
 
   if (series.length === 0) {
-      chartInstance.setOption({ 
-          title: { text: 'No metric data available', left: 'center', top: 'center' }
-      })
-      return
+    chartInstance.setOption({
+      title: { text: 'No metric data', left: 'center', top: 'center' },
+    })
+    return
   }
 
   chartInstance.setOption({
-      tooltip: { trigger: 'axis' },
-      legend: { data: legendData, bottom: 0 },
-      grid: { left: '3%', right: '4%', bottom: '10%', containLabel: true },
-      xAxis: { type: 'category', data: xAxisData },
-      yAxis: { type: 'value' },
-      series: series
+    tooltip: { trigger: 'axis' },
+    legend: { data: legendData, bottom: 0 },
+    grid: { left: '3%', right: '4%', bottom: '10%', containLabel: true },
+    xAxis: { type: 'category', data: xAxisData },
+    yAxis: { type: 'value' },
+    series,
   })
 }
 
@@ -375,7 +640,7 @@ function scheduleDetailPoll() {
   if (!id || currentDetail.value?.status !== 'analyzing') return
   pollTimer = setTimeout(async () => {
     if (selectedId.value === id) {
-      await selectIncident({ id })
+      await refreshIncidentDetail()
       scheduleDetailPoll()
     }
   }, 5000)
@@ -383,7 +648,7 @@ function scheduleDetailPoll() {
 
 watch(
   () => [selectedId.value, currentDetail.value?.status],
-  () => scheduleDetailPoll()
+  () => scheduleDetailPoll(),
 )
 
 onMounted(() => {
@@ -398,6 +663,11 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.mono {
+  font-family: 'Menlo', 'Monaco', 'Consolas', monospace;
+  font-size: 12px;
+}
+
 .ai-ops-container {
   display: flex;
   flex-direction: column;
@@ -421,16 +691,19 @@ onUnmounted(() => {
 .page-subtitle {
   font-size: 14px;
   color: #64748b;
-  margin: 0;
+  margin: 4px 0 0;
+  line-height: 1.5;
 }
 
-.list-card, .detail-card {
+.list-card,
+.detail-card {
   height: calc(100vh - 180px);
   display: flex;
   flex-direction: column;
 }
 
-.list-card :deep(.el-card__body), .detail-card :deep(.el-card__body) {
+.list-card :deep(.el-card__body),
+.detail-card :deep(.el-card__body) {
   flex: 1;
   overflow: hidden;
   display: flex;
@@ -457,21 +730,54 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 12px;
-  transition: all 0.2s;
+  transition: background 0.2s;
+}
+.incident-item:hover {
+  background: #f8fafc;
+}
+.incident-item.active {
+  background: #f0f9ff;
+  border-left: 3px solid #3b82f6;
 }
 
-.incident-item:hover { background: #f8fafc; }
-.incident-item.active { background: #f0f9ff; border-left: 3px solid #3b82f6; }
+.inc-info {
+  flex: 1;
+}
+.inc-title {
+  font-weight: 600;
+  color: #334155;
+  margin-bottom: 4px;
+}
+.inc-meta {
+  font-size: 12px;
+  color: #94a3b8;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.occ-badge {
+  font-size: 10px;
+  color: #64748b;
+  margin-left: 4px;
+}
 
-.inc-info { flex: 1; }
-.inc-title { font-weight: 600; color: #334155; margin-bottom: 4px; }
-.inc-meta { font-size: 12px; color: #94a3b8; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.occ-badge { font-size: 10px; color: #64748b; margin-left: 4px; }
-
-.severity-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
-.severity-dot.critical { background: #ef4444; box-shadow: 0 0 4px #ef4444; }
-.severity-dot.warning { background: #f59e0b; }
-.severity-dot.info { background: #3b82f6; }
+.severity-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.severity-dot.critical {
+  background: #ef4444;
+  box-shadow: 0 0 4px #ef4444;
+}
+.severity-dot.warning {
+  background: #f59e0b;
+}
+.severity-dot.info {
+  background: #3b82f6;
+}
 
 .detail-header {
   font-weight: 600;
@@ -480,15 +786,166 @@ onUnmounted(() => {
   align-items: center;
 }
 
-.detail-content {
+.detail-scroll {
   flex: 1;
   overflow-y: auto;
-  padding: 24px;
+  padding: 20px 24px 32px;
 }
 
-.section-block { margin-bottom: 24px; }
-.section-title { font-size: 16px; font-weight: 600; color: #1e293b; display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
-.text-content { font-size: 14px; color: #475569; line-height: 1.6; }
+.section-langgraph {
+  margin-bottom: 20px;
+  padding: 16px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+  border: 1px solid #e2e8f0;
+}
+
+.section-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: #1e293b;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+}
+
+.section-hint {
+  font-size: 13px;
+  color: #64748b;
+  margin: 0 0 12px;
+  line-height: 1.5;
+}
+
+.context-input {
+  margin-bottom: 12px;
+}
+
+.diagnose-trigger-area {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.btn-diagnose-full {
+  width: 100%;
+}
+
+.btn-diagnose-icon {
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+.stream-meta {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.stream-wrap {
+  margin-bottom: 24px;
+  min-height: 420px;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.inline-approval-card {
+  margin-bottom: 28px;
+  border-radius: 12px;
+  border: 1px solid #99f6e4;
+  background: linear-gradient(to bottom, #ecfdf5 0%, #f0fdfa 100%);
+}
+
+.inline-approval-card :deep(.el-card__header) {
+  background: rgba(255, 255, 255, 0.65);
+  border-bottom: 1px solid #99f6e4;
+}
+
+.inline-approval-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  width: 100%;
+}
+
+.inline-approval-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  color: #0f766e;
+  flex: 1;
+  min-width: 0;
+}
+
+.inline-ticket-id {
+  font-weight: 400;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.inline-approval-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.pending-body {
+  margin-top: 8px;
+}
+
+.ticket-desc {
+  margin-bottom: 16px;
+  background: #fff;
+}
+
+.ticket-pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.45;
+  max-height: 200px;
+  overflow: auto;
+}
+.ticket-pre.note {
+  color: #0369a1;
+  background: #f0f9ff;
+  padding: 8px;
+  border-radius: 6px;
+}
+
+.approval-row {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.approval-tip {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.approval-comment {
+  max-width: 560px;
+}
+
+.approval-btns {
+  display: flex;
+  gap: 12px;
+}
+
+.legacy-blocks .section-block {
+  margin-bottom: 20px;
+}
+
+.text-content {
+  font-size: 14px;
+  color: #475569;
+  line-height: 1.6;
+}
 
 .json-box {
   background: #1e293b;
@@ -500,104 +957,12 @@ onUnmounted(() => {
   overflow: auto;
 }
 
-.ai-report-box {
-  background: linear-gradient(to bottom right, #f0f9ff, #e0f2fe);
-  border: 1px solid #bae6fd;
-  border-radius: 12px;
-  padding: 20px;
-  margin-bottom: 24px;
-}
-
-.report-header {
-  font-size: 16px;
-  font-weight: 700;
-  color: #0369a1;
-  margin-bottom: 20px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  border-bottom: 1px solid #bae6fd;
-  padding-bottom: 12px;
-}
-
-.analysis-section { margin-bottom: 20px; }
-.analysis-section .label { 
-    font-size: 12px; 
-    font-weight: 700; 
-    color: #0284c7; 
-    text-transform: uppercase; 
-    margin-bottom: 6px; 
-}
-.analysis-section p { margin: 0; color: #334155; line-height: 1.6; }
-
-.root-cause { font-weight: 600; color: #be185d !important; font-size: 15px; }
-
-.analysis-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 16px;
-    margin-bottom: 20px;
-}
-
-.analysis-card {
-    background: rgba(255,255,255,0.6);
-    padding: 12px;
-    border-radius: 8px;
-}
-.analysis-card .label { font-size: 11px; font-weight: 700; margin-bottom: 4px; text-transform: uppercase; }
-.analysis-card.mitigation .label { color: #d97706; }
-.analysis-card.prevention .label { color: #059669; }
-
-.solutions .label { 
-    font-size: 12px; 
-    font-weight: 700; 
-    color: #475569; 
-    text-transform: uppercase; 
-    margin-bottom: 8px; 
-}
-.cmd-list { background: #0f172a; border-radius: 8px; overflow: hidden; }
-.cmd-item { 
-    padding: 10px 16px; 
-    border-bottom: 1px solid #1e293b; 
-    font-family: 'Menlo', 'Monaco', monospace; 
-    font-size: 13px; 
-    color: #a5f3fc;
-}
-.cmd-item:last-child { border-bottom: none; }
-
-.metrics-chart {
-  height: 300px;
-  width: 100%;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  padding: 12px;
-}
-
-.analyzing-state {
-  text-align: center;
-  padding: 40px;
-  color: #64748b;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 16px;
-}
-.analyzing-state .el-icon { font-size: 32px; color: #3b82f6; }
-
-.empty-detail { height: 100%; }
-
 .trace-box {
-  margin-bottom: 24px;
-  padding: 20px;
+  margin-bottom: 20px;
+  padding: 16px;
   background: #f8fafc;
   border: 1px solid #e2e8f0;
   border-radius: 12px;
-}
-.trace-intro {
-  font-size: 14px;
-  color: #475569;
-  line-height: 1.6;
-  margin: 0 0 12px;
 }
 .trace-json {
   margin: 0;
@@ -606,20 +971,131 @@ onUnmounted(() => {
   color: #e2e8f0;
   border-radius: 8px;
   font-size: 11px;
-  max-height: 420px;
+  max-height: 320px;
   overflow: auto;
   white-space: pre-wrap;
-  word-break: break-word;
 }
-.no-report.mild {
+
+.ai-report-box {
+  background: linear-gradient(to bottom right, #f0f9ff, #e0f2fe);
+  border: 1px solid #bae6fd;
+  border-radius: 12px;
+  padding: 20px;
+  margin-bottom: 20px;
+}
+
+.report-header {
+  font-size: 16px;
+  font-weight: 700;
+  color: #0369a1;
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid #bae6fd;
+  padding-bottom: 12px;
+}
+
+.analysis-section {
+  margin-bottom: 16px;
+}
+.analysis-section .label {
+  font-size: 12px;
+  font-weight: 700;
+  color: #0284c7;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+.analysis-section p {
+  margin: 0;
+  color: #334155;
+  line-height: 1.6;
+}
+
+.root-cause {
+  font-weight: 600;
+  color: #be185d !important;
+}
+
+.analysis-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.analysis-card {
+  background: rgba(255, 255, 255, 0.6);
+  padding: 12px;
+  border-radius: 8px;
+}
+.analysis-card .label {
+  font-size: 11px;
+  font-weight: 700;
+  margin-bottom: 4px;
+  text-transform: uppercase;
+}
+.analysis-card.mitigation .label {
+  color: #d97706;
+}
+.analysis-card.prevention .label {
+  color: #059669;
+}
+
+.solutions .label {
+  font-size: 12px;
+  font-weight: 700;
+  color: #475569;
+  margin-bottom: 8px;
+  text-transform: uppercase;
+}
+
+.cmd-list {
+  background: #0f172a;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.cmd-item {
+  padding: 10px 16px;
+  border-bottom: 1px solid #1e293b;
+  font-family: Menlo, Monaco, monospace;
+  font-size: 13px;
+  color: #a5f3fc;
+}
+.cmd-item:last-child {
+  border-bottom: none;
+}
+
+.metrics-chart {
+  height: 280px;
+  width: 100%;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 8px;
+}
+
+.analyzing-state {
+  text-align: center;
+  padding: 32px;
+  color: #64748b;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+.analyzing-state .el-icon {
+  font-size: 28px;
+  color: #3b82f6;
+}
+
+.no-report {
   color: #64748b;
   font-size: 14px;
   padding: 16px;
   text-align: center;
 }
-.form-hint {
-  margin-left: 8px;
-  font-size: 12px;
-  color: #94a3b8;
+
+.empty-detail {
+  height: 360px;
 }
 </style>

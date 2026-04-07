@@ -9,6 +9,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from api.views import HasRolePermission
+from core.work_order_gate import enforce_approved_work_order_or_response
 from .engines import DBEngineFactory
 from .models import BackupPlan, BackupRecord, DBAccessRule, DBInstance, DatabaseConnection, RestoreJob, RollbackJob, SQLAIReview, SQLApprovalOrder, SQLApprovalPolicy, SQLAuditLog, SQLExecutionJob, SQLExecutionPolicy
 from .serializers import BackupPlanSerializer, BackupRecordSerializer, DBInstanceSerializer, RestoreJobSerializer, RollbackJobSerializer, SQLApprovalPolicySerializer, SQLExecuteRequestSerializer, SQLExecutionJobSerializer, SQLExecutionPolicySerializer, SQLFormatRequestSerializer, SQLReviewRequestSerializer
@@ -319,6 +320,9 @@ def sql_ai_review(request):
 @api_view(['POST'])
 @permission_classes([HasRolePermission])
 def sql_job_create(request):
+    blocked = enforce_approved_work_order_or_response(request)
+    if blocked is not None:
+        return blocked
     serializer = SQLExecuteRequestSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     instance = get_object_or_404(filter_accessible_instances(request.user, DBInstance.objects.all(), action="query"), pk=serializer.validated_data["instance_id"])
@@ -406,6 +410,9 @@ def sql_job_result(request, pk):
 @api_view(['POST'])
 @permission_classes([HasRolePermission])
 def sql_job_cancel(request, pk):
+    blocked = enforce_approved_work_order_or_response(request)
+    if blocked is not None:
+        return blocked
     job = get_object_or_404(SQLExecutionJob.objects.filter(instance__in=filter_accessible_instances(request.user, DBInstance.objects.all(), action="view")), pk=pk)
     cancel_job(job)
     return Response({"msg": "cancelled", "job": SQLExecutionJobSerializer(job).data})
@@ -414,6 +421,9 @@ def sql_job_cancel(request, pk):
 @api_view(['POST'])
 @permission_classes([HasRolePermission])
 def sql_job_pause(request, pk):
+    blocked = enforce_approved_work_order_or_response(request)
+    if blocked is not None:
+        return blocked
     job = get_object_or_404(SQLExecutionJob.objects.filter(instance__in=filter_accessible_instances(request.user, DBInstance.objects.all(), action="view")), pk=pk)
     pause_job(job)
     return Response({"msg": "pause requested", "job": SQLExecutionJobSerializer(job).data})
@@ -422,6 +432,9 @@ def sql_job_pause(request, pk):
 @api_view(['POST'])
 @permission_classes([HasRolePermission])
 def sql_job_resume(request, pk):
+    blocked = enforce_approved_work_order_or_response(request)
+    if blocked is not None:
+        return blocked
     job = get_object_or_404(SQLExecutionJob.objects.filter(instance__in=filter_accessible_instances(request.user, DBInstance.objects.all(), action="view")), pk=pk)
     resume_job(job, request_meta=_request_meta(request))
     return Response({"msg": "resumed", "job": SQLExecutionJobSerializer(job).data})
@@ -610,6 +623,9 @@ def backup_plan_list(request):
     if request.method == 'GET':
         plans = BackupPlan.objects.select_related('instance').filter(instance__in=filter_accessible_instances(request.user, DBInstance.objects.all(), action="backup")).order_by('-updated_at', '-created_at')
         return Response([serialize_backup_plan(plan) for plan in plans])
+    blocked = enforce_approved_work_order_or_response(request)
+    if blocked is not None:
+        return blocked
     serializer = BackupPlanSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     instance = get_object_or_404(filter_accessible_instances(request.user, DBInstance.objects.all(), action="backup"), pk=serializer.validated_data["instance"].id if isinstance(serializer.validated_data["instance"], DBInstance) else serializer.validated_data["instance"])
@@ -625,6 +641,9 @@ def backup_plan_detail(request, pk):
     plan = get_object_or_404(BackupPlan.objects.select_related('instance').filter(instance__in=filter_accessible_instances(request.user, DBInstance.objects.all(), action="backup")), pk=pk)
     if request.method == 'GET':
         return Response(serialize_backup_plan(plan))
+    blocked = enforce_approved_work_order_or_response(request)
+    if blocked is not None:
+        return blocked
     if request.method == 'DELETE':
         plan.delete()
         return Response({"msg": "deleted"})
@@ -639,6 +658,9 @@ def backup_plan_detail(request, pk):
 @api_view(['POST'])
 @permission_classes([HasRolePermission])
 def backup_plan_run(request, pk):
+    blocked = enforce_approved_work_order_or_response(request)
+    if blocked is not None:
+        return blocked
     plan = get_object_or_404(BackupPlan.objects.select_related('instance').filter(instance__in=filter_accessible_instances(request.user, DBInstance.objects.all(), action="backup")), pk=pk)
     record = run_backup_plan(plan)
     return Response(BackupRecordSerializer(record).data)
@@ -660,6 +682,9 @@ def restore_job_list(request):
     if request.method == 'GET':
         qs = RestoreJob.objects.select_related('instance', 'backup_record').filter(instance__in=filter_accessible_instances(request.user, DBInstance.objects.all(), action="backup")).order_by('-created_at')
         return Response(RestoreJobSerializer(qs[:200], many=True).data)
+    blocked = enforce_approved_work_order_or_response(request)
+    if blocked is not None:
+        return blocked
     instance = get_object_or_404(filter_accessible_instances(request.user, DBInstance.objects.all(), action="backup"), pk=request.data.get("instance"))
     job = create_restore_job(
         instance_id=instance.id,
@@ -680,6 +705,9 @@ def rollback_job_list(request):
             instance__in=filter_accessible_instances(request.user, DBInstance.objects.all(), action="backup")
         ).order_by('-created_at')
         return Response([serialize_rollback_job(item) for item in qs[:200]])
+    blocked = enforce_approved_work_order_or_response(request)
+    if blocked is not None:
+        return blocked
     audit_id = request.data.get("source_audit")
     audit = None
     instance = None
@@ -700,6 +728,9 @@ def rollback_job_list(request):
 @api_view(['POST'])
 @permission_classes([HasRolePermission])
 def rollback_job_execute(request, pk):
+    blocked = enforce_approved_work_order_or_response(request)
+    if blocked is not None:
+        return blocked
     job = get_object_or_404(RollbackJob.objects.select_related('instance').filter(
         instance__in=filter_accessible_instances(request.user, DBInstance.objects.all(), action="backup")
     ), pk=pk)

@@ -18,11 +18,6 @@
         router
         @select="handleMenuSelect"
       >
-        <el-menu-item index="/dashboard" v-if="canViewDashboard">
-          <el-icon><DataLine /></el-icon>
-          <template #title>Traffic Dashboard</template>
-        </el-menu-item>
-        
         <div class="menu-group-title" v-if="!isCollapsed">Data Pipeline</div>
         <el-menu-item index="/tasks" v-if="canViewTasks">
           <el-icon><List /></el-icon>
@@ -52,17 +47,9 @@
         </el-menu-item>
         
         <div class="menu-group-title" v-if="!isCollapsed">System Maintenance</div>
-        <el-menu-item index="/logs" v-if="canViewLogs">
-          <el-icon><Monitor /></el-icon>
-          <template #title>Log Monitor</template>
-        </el-menu-item>
         <el-menu-item index="/system" v-if="canViewSystem">
           <el-icon><Setting /></el-icon>
           <template #title>System Inspection</template>
-        </el-menu-item>
-        <el-menu-item index="/deploy" v-if="canViewDeploy">
-          <el-icon><Upload /></el-icon>
-          <template #title>Deployment</template>
         </el-menu-item>
         <el-menu-item index="/permissions" v-if="isAdmin">
           <el-icon><Lock /></el-icon>
@@ -82,7 +69,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
-import { DataLine, List, Link, Monitor, Setting, Upload, Fold, Expand, Lock, Calendar, Cpu } from '@element-plus/icons-vue'
+import { List, Link, Setting, Fold, Expand, Lock, Calendar, Cpu } from '@element-plus/icons-vue'
 import { useSystemStore } from '@/stores/system'
 
 const route = useRoute()
@@ -90,11 +77,8 @@ const systemStore = useSystemStore()
 const isCollapsed = ref(false)
 
 const isAdmin = computed(() => systemStore.isAdmin)
-const canViewDashboard = computed(() => systemStore.isAdmin || systemStore.hasPermission('view_dashboard'))
 const canViewTasks = computed(() => systemStore.isAdmin || systemStore.hasPermission('view_tasks'))
-const canViewLogs = computed(() => systemStore.isAdmin || systemStore.hasPermission('view_logs'))
 const canViewSystem = computed(() => systemStore.isAdmin || systemStore.hasPermission('view_inspection'))
-const canViewDeploy = computed(() => systemStore.isAdmin || systemStore.hasPermission('view_deploy'))
 const canViewDatabaseManager = computed(() => systemStore.isAdmin || systemStore.hasPermission('view_db_manager'))
 const canManageDbPermissions = computed(() => systemStore.isAdmin || systemStore.hasPermission('manage_db_permissions') || systemStore.hasPermission('manage_db_instances'))
 

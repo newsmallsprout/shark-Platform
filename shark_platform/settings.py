@@ -159,6 +159,19 @@ CORS_ALLOW_ALL_ORIGINS = True
 # Public URL for Slack/Email links (configured via Env)
 PUBLIC_URL = os.environ.get('PUBLIC_URL', 'http://localhost:5173')
 
+# 返回给前端的 Agent SSE 根地址（无尾斜杠）；与独立 sse_server 对外域名/端口一致
+AGENT_SSE_PUBLIC_BASE = os.environ.get(
+    "AGENT_SSE_PUBLIC_BASE", "http://localhost:8010"
+).rstrip("/")
+
+# 智能工单写闸门：为 true 时，受保护的 deploy/db/tasks 写接口需 X-Shark-Work-Order-Id（已 approve 的 Ticket）
+WORK_ORDER_GATE_ENABLED = (
+    os.environ.get("SHARK_WORK_ORDER_GATE_ENABLED", "false").lower() in ("1", "true", "yes")
+)
+WORK_ORDER_GATE_ALLOW_SUPERUSER = (
+    os.environ.get("SHARK_WORK_ORDER_GATE_ALLOW_SUPERUSER", "true").lower() in ("1", "true", "yes")
+)
+
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework.authentication.SessionAuthentication',

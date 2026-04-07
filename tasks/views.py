@@ -2,6 +2,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from api.views import HasRolePermission
+from core.work_order_gate import enforce_approved_work_order_or_response
 from django.http import JsonResponse, StreamingHttpResponse
 from .models import Connection, SyncTask
 from .schemas import ConnectionConfig, SyncTaskRequest, DBConfig
@@ -157,6 +158,9 @@ def task_status_detail(request, task_id):
 @api_view(['POST'])
 @permission_classes([HasRolePermission])
 def start_task(request):
+    blocked = enforce_approved_work_order_or_response(request)
+    if blocked is not None:
+        return blocked
     try:
         cfg = SyncTaskRequest(**request.data)
         task_manager.start(cfg)
@@ -167,6 +171,9 @@ def start_task(request):
 @api_view(['POST'])
 @permission_classes([HasRolePermission])
 def start_with_conn_ids(request):
+    blocked = enforce_approved_work_order_or_response(request)
+    if blocked is not None:
+        return blocked
     try:
         data = request.data
         task_id = data.get('task_id')
@@ -283,6 +290,10 @@ def task_config(request, task_id: str):
     if task_manager.is_running(task_id):
         return Response({"detail": "Stop task before updating config"}, status=400)
 
+    blocked = enforce_approved_work_order_or_response(request)
+    if blocked is not None:
+        return blocked
+
     payload = request.data or {}
     perf = payload.get('perf') if isinstance(payload, dict) else None
     if not isinstance(perf, dict):
@@ -310,6 +321,9 @@ def task_config(request, task_id: str):
 @api_view(['POST'])
 @permission_classes([HasRolePermission])
 def start_existing(request, task_id):
+    blocked = enforce_approved_work_order_or_response(request)
+    if blocked is not None:
+        return blocked
     try:
         task_manager.start_by_id(task_id)
         return Response({"msg": "started", "task_id": task_id})
@@ -319,6 +333,9 @@ def start_existing(request, task_id):
 @api_view(['POST'])
 @permission_classes([HasRolePermission])
 def reset_and_start(request, task_id):
+    blocked = enforce_approved_work_order_or_response(request)
+    if blocked is not None:
+        return blocked
     try:
         task_manager.stop(task_id)
         task_manager.reset(task_id)
@@ -330,18 +347,27 @@ def reset_and_start(request, task_id):
 @api_view(['POST'])
 @permission_classes([HasRolePermission])
 def stop_task(request, task_id):
+    blocked = enforce_approved_work_order_or_response(request)
+    if blocked is not None:
+        return blocked
     task_manager.stop(task_id)
     return Response({"msg": "stopped", "task_id": task_id})
 
 @api_view(['POST'])
 @permission_classes([HasRolePermission])
 def stop_task_soft(request, task_id):
+    blocked = enforce_approved_work_order_or_response(request)
+    if blocked is not None:
+        return blocked
     task_manager.stop_soft(task_id)
     return Response({"msg": "stopped (soft)", "task_id": task_id})
 
 @api_view(['POST'])
 @permission_classes([HasRolePermission])
 def delete_task(request, task_id):
+    blocked = enforce_approved_work_order_or_response(request)
+    if blocked is not None:
+        return blocked
     task_manager.delete(task_id)
     return Response({"msg": "deleted", "task_id": task_id})
 

@@ -1,7 +1,7 @@
-# 文档已迁移
+# 文档已合并
 
-Kubernetes 生产部署、RBAC、PVC、Ingress 等内容已整合至：
+Kubernetes 生产部署、RBAC、PVC、Ingress、Traffic 中间件与上线运维等内容已统一写入：
 
-**[docs/deployment/kubernetes.md](./deployment/kubernetes.md)**
+**[docs/deployment/README.md](./deployment/README.md)**
 
-请直接打开该文件；旧书签指向本页时亦请更新。
+请更新书签并直接打开该文件。

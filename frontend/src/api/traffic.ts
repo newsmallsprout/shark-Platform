@@ -38,7 +38,6 @@ export const trafficApi = {
       params: { range, type, limit, ...(source ? { source } : {}) },
     }),
   blackbox: () => request.get('/traffic/blackbox'),
-  jaegerTraces: () => request.get('/traffic/jaeger/traces', { timeout: 20000 }),
   getConfig: () => request.get('/traffic/config'),
   saveConfig: (data: Record<string, unknown>) => request.post('/traffic/config', data),
 }

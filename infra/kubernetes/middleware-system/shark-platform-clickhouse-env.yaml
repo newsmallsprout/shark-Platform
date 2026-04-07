@@ -1,5 +1,5 @@
 # 合并进 shark-platform Deployment 的 env 片段（与 geoip-traffic-patch 同级参考）
-# 推荐按 docs/deployment/traffic-middleware.md（ClickHouse 章节）用 kubectl set env / patch，避免手工合并整份 Deployment。
+# 推荐按 docs/deployment/README.md「Traffic 中间件」中 ClickHouse 小节用 kubectl set env / patch，避免手工合并整份 Deployment。
 #
 # 以下为 strategic merge 参考：在 containers[0].env 末尾追加：
 ---

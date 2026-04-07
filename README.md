@@ -48,7 +48,7 @@
 | **Traffic** | Nginx 日志聚合、GeoIP、Blackbox、流量大盘 | Web：`/dashboard`；API：`/api/traffic/*`；手册：[docs/TRAFFIC_DASHBOARD.md](./docs/TRAFFIC_DASHBOARD.md) |
 | **Django Admin** | 后台管理（需超级用户） | `/admin/` |
 
-**部署与配置**已收敛到 **[docs/deployment/README.md](./docs/deployment/README.md)**（含 Docker Compose、Kubernetes、Traffic 中间件）；生产 K8s 细则见 **[docs/deployment/kubernetes.md](./docs/deployment/kubernetes.md)**。**清单目录**见 [infra/README.md](./infra/README.md)（与 Django 应用内 **`deploy/`** 批量部署引擎无关）。一键部署：**[scripts/oneclick-deploy.sh](./scripts/oneclick-deploy.sh)**（交互向导）、**[scripts/deploy-local.sh](./scripts/deploy-local.sh)**（轻量启动）。本文侧重**功能总览、API 索引、同步任务与常见运维**。
+**部署与配置**以 **[docs/deployment/README.md](./docs/deployment/README.md)** 为唯一说明（Compose、K8s、Traffic、AIOps/Celery/SSE、环境变量与运维）。**清单目录**见 [infra/README.md](./infra/README.md)（与 Django 应用内 **`deploy/`** 批量部署引擎无关）。一键部署：**[scripts/oneclick-deploy.sh](./scripts/oneclick-deploy.sh)**（交互向导）、**[scripts/deploy-local.sh](./scripts/deploy-local.sh)**（轻量启动）。本文侧重**功能总览、API 索引、同步任务与常见运维**。
 
 ---
 
@@ -170,10 +170,7 @@ flowchart TB
 
 | 资源 | 说明 |
 |------|------|
-| [docs/deployment/README.md](./docs/deployment/README.md) | 部署总索引 |
-| [docs/deployment/docker-compose.md](./docs/deployment/docker-compose.md) | 本地 Compose |
-| [docs/deployment/kubernetes.md](./docs/deployment/kubernetes.md) | 生产 K8s、RBAC、PVC |
-| [docs/deployment/traffic-middleware.md](./docs/deployment/traffic-middleware.md) | Traffic：Redis、GeoIP、ClickHouse |
+| [docs/deployment/README.md](./docs/deployment/README.md) | **唯一部署指南**（Compose、K8s、Traffic、AIOps、环境变量） |
 | [scripts/oneclick-deploy.sh](./scripts/oneclick-deploy.sh) | **交互式一键部署**（引导配置 + 生成 `.env.deploy` + 启动） |
 | [scripts/deploy-local.sh](./scripts/deploy-local.sh) | 轻量 `compose up` + 健康检查（可自动生成 `.env.deploy`） |
 
@@ -222,14 +219,14 @@ docker compose -f infra/docker/docker-compose.yml --profile sync up -d --build
 docker compose -f infra/docker/docker-compose.yml -f infra/docker/docker-compose.sync-depends.yml --profile sync up -d --build
 ```
 
-说明见 [docs/deployment/docker-compose.md](./docs/deployment/docker-compose.md)。也可在 `.env` 中设置 `COMPOSE_PROFILES=sync`。
+说明见 [docs/deployment/README.md](./docs/deployment/README.md) 中「Docker Compose」章节。也可在 `.env` 中设置 `COMPOSE_PROFILES=sync`。
 
 访问 Web：`http://localhost:8000`（默认 `admin` / `admin`，由 [entrypoint.sh](./entrypoint.sh) 创建，**务必修改密码**）。
 
 ### 方式三：Kubernetes（生产）
 
-- 按 [docs/deployment/kubernetes.md](./docs/deployment/kubernetes.md) 执行；示例清单在 `infra/kubernetes/`。
-- Traffic 中间件：`infra/kubernetes/middleware-system/` + [docs/deployment/traffic-middleware.md](./docs/deployment/traffic-middleware.md)。
+- 按 [docs/deployment/README.md](./docs/deployment/README.md) 中 Kubernetes 与 Traffic 章节执行；示例清单在 `infra/kubernetes/`。
+- Traffic 中间件：`infra/kubernetes/middleware-system/`。
 - 健康检查：`GET /api/system/health`（无鉴权）。
 
 ### 方式四：本地开发
@@ -501,7 +498,7 @@ mysql_to_mongo/
 |-------------|------|
 | [VERSION](./VERSION) | 发布版本号 |
 | [docs/README.md](./docs/README.md) | 文档总索引 |
-| [docs/deployment/README.md](./docs/deployment/README.md) | **部署总索引**（Compose / K8s / Traffic 中间件） |
+| [docs/deployment/README.md](./docs/deployment/README.md) | **唯一部署指南**（Compose / K8s / Traffic / AIOps） |
 | [docs/TRAFFIC_DASHBOARD.md](./docs/TRAFFIC_DASHBOARD.md) | Traffic Dashboard |
 | [docs/FILEBEAT_NGINX_TRAFFIC.md](./docs/FILEBEAT_NGINX_TRAFFIC.md) | Filebeat 推送 Nginx 日志 |
 | [scripts/oneclick-deploy.sh](./scripts/oneclick-deploy.sh) | 交互式一键部署 |
