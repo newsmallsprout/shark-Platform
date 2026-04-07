@@ -1,23 +1,58 @@
-/* AIOps Platform — 全局极简暗色（Linear / Vercel 向） */
-:root {
-  --aiops-bg: #000000;
-  --aiops-surface: rgba(10, 10, 10, 0.65);
-  --aiops-border: #333333;
-  --aiops-text: #e5e5e5;
-  --aiops-muted: #888888;
-  --aiops-font-sans: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
-    'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', sans-serif;
-  --aiops-font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Monaco, Consolas,
-    'Liberation Mono', 'Courier New', monospace;
+/*
+ * AIOps — 简洁科技风 / NOC 大屏参考（深蓝底、青蓝描边、金色 KPI、玻璃面板）
+ */
+@import '../node_modules/@fontsource/geist-sans/latin-400.css';
+@import '../node_modules/@fontsource/geist-sans/latin-500.css';
+@import '../node_modules/@fontsource/geist-sans/latin-600.css';
+@import '../node_modules/@fontsource/geist-mono/latin-400.css';
 
-  /* 兼容旧类名（子页 scoped 样式） */
+:root {
+  /* —— 科技主色 —— */
+  --tech-bg-deep: #030818;
+  --tech-bg-mid: #06122a;
+  --tech-panel: rgba(8, 22, 48, 0.52);
+  --tech-panel-solid: #0a1628;
+  --tech-cyan: #2dd4bf;
+  --tech-cyan-dim: rgba(45, 212, 191, 0.14);
+  --tech-cyan-border: rgba(45, 212, 191, 0.38);
+  --tech-cyan-glow: rgba(45, 212, 191, 0.22);
+  --tech-blue-glow: rgba(56, 189, 248, 0.12);
+  --tech-gold: #fcd34d;
+  --tech-gold-dim: rgba(252, 211, 77, 0.12);
+  --tech-text: #e8f4fc;
+  --tech-text-secondary: #94b8cc;
+  --tech-text-muted: #5a7a8f;
+  --tech-danger: #fb7185;
+
+  /* 兼容旧变量名 */
+  --aiops-bg: var(--tech-bg-deep);
+  --aiops-bg-elevated: var(--tech-bg-mid);
+  --aiops-surface: var(--tech-panel);
+  --aiops-surface-2: var(--tech-panel-solid);
+  --aiops-border: rgba(45, 212, 191, 0.12);
+  --aiops-border-strong: var(--tech-cyan-border);
+  --aiops-text: var(--tech-text);
+  --aiops-text-secondary: var(--tech-text-secondary);
+  --aiops-text-tertiary: var(--tech-text-muted);
+  --aiops-accent-live: var(--tech-cyan);
+  --aiops-accent-live-dim: var(--tech-cyan-dim);
+  --aiops-cta-bg: var(--tech-cyan);
+  --aiops-cta-text: #021018;
+  --aiops-cta-hover: #5eead4;
+  --aiops-danger: var(--tech-danger);
+  --aiops-kpi-gold: var(--tech-gold);
+  --aiops-font-sans: 'Geist Sans', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+    'Segoe UI', Roboto, 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', sans-serif;
+  --aiops-font-mono: 'Geist Mono', ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Monaco, Consolas,
+    monospace;
+
   --l5-bg: var(--aiops-bg);
   --l5-surface: var(--aiops-surface);
-  --l5-border: rgba(51, 51, 51, 0.9);
-  --l5-accent-green: #22c55e;
-  --l5-accent-blue: #38bdf8;
+  --l5-border: var(--aiops-border-strong);
+  --l5-accent-green: var(--tech-cyan);
+  --l5-accent-blue: var(--tech-cyan);
   --l5-text: var(--aiops-text);
-  --l5-muted: var(--aiops-muted);
+  --l5-muted: var(--aiops-text-secondary);
   --l5-font-sans: var(--aiops-font-sans);
   --l5-font-mono: var(--aiops-font-mono);
 }
@@ -28,42 +63,169 @@
   box-sizing: border-box;
 }
 
+html {
+  color-scheme: dark;
+}
+
+html.dark,
+html {
+  --el-color-primary: #2dd4bf;
+  --el-color-primary-light-3: #5eead4;
+  --el-color-primary-light-5: #99f6e4;
+  --el-color-primary-light-7: #ccfbf1;
+  --el-color-primary-light-9: #ecfeff;
+  --el-color-primary-dark-2: #14b8a6;
+  --el-bg-color: var(--tech-bg-deep);
+  --el-bg-color-overlay: rgba(3, 8, 24, 0.92);
+  --el-text-color-primary: var(--tech-text);
+  --el-text-color-regular: var(--tech-text-secondary);
+  --el-text-color-secondary: var(--tech-text-muted);
+  --el-text-color-placeholder: #4a6578;
+  --el-border-color: var(--tech-cyan-border);
+  --el-border-color-light: var(--aiops-border);
+  --el-fill-color-blank: var(--tech-bg-mid);
+  --el-fill-color-light: rgba(45, 212, 191, 0.06);
+  --el-fill-color: rgba(45, 212, 191, 0.1);
+  --el-fill-color-dark: rgba(45, 212, 191, 0.14);
+}
+
 html,
 body {
   margin: 0;
   min-height: 100%;
-  background-color: var(--aiops-bg);
-  color: var(--aiops-text);
+  min-height: 100dvh;
+  background-color: var(--tech-bg-deep);
+  background-image:
+    radial-gradient(ellipse 900px 480px at 50% -20%, rgba(45, 212, 191, 0.08), transparent 55%),
+    radial-gradient(ellipse 700px 400px at 100% 50%, rgba(56, 189, 248, 0.06), transparent 45%),
+    radial-gradient(ellipse 500px 360px at 0% 80%, rgba(14, 116, 144, 0.12), transparent 50%),
+    linear-gradient(180deg, #041024 0%, #030818 40%, #020510 100%);
+  background-attachment: fixed;
+  color: var(--tech-text);
   font-family: var(--aiops-font-sans);
+  font-size: 14px;
+  line-height: 1.5;
   -webkit-font-smoothing: antialiased;
 }
 
 #app {
-  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+/* 数字网格底纹（极低对比） */
+.tech-grid {
+  background-image:
+    linear-gradient(rgba(45, 212, 191, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(45, 212, 191, 0.045) 1px, transparent 1px);
+  background-size: 40px 40px;
 }
 
 .l5-glass {
-  background: var(--aiops-surface);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border: 1px solid var(--aiops-border);
+  background: var(--tech-panel);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--tech-cyan-border);
   border-radius: 12px;
+  box-shadow:
+    0 0 24px var(--tech-cyan-glow),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 
 a {
-  color: #a3a3a3;
+  color: var(--tech-cyan);
+  text-decoration: none;
+  transition: color 0.2s ease, opacity 0.2s ease;
 }
 
 a:hover {
-  color: #fafafa;
+  color: #5eead4;
 }
 
+/* —— Element Plus —— */
 .el-card {
-  --el-card-bg-color: rgba(12, 12, 12, 0.75) !important;
-  --el-card-border-color: #333333 !important;
+  --el-card-bg-color: var(--tech-panel-solid) !important;
+  --el-card-border-color: var(--aiops-border) !important;
+  border-radius: 10px !important;
+}
+
+.el-card.aiops-surface-card {
+  --el-card-bg-color: transparent !important;
+  background: linear-gradient(165deg, rgba(12, 32, 58, 0.55) 0%, rgba(6, 18, 42, 0.75) 100%) !important;
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  border: 1px solid var(--tech-cyan-border) !important;
+  box-shadow:
+    0 0 20px var(--tech-cyan-glow),
+    0 16px 48px -20px rgba(0, 0, 0, 0.65),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05) !important;
+}
+
+.el-card__header {
+  border-bottom-color: var(--aiops-border) !important;
 }
 
 .el-input__wrapper {
-  background-color: #0a0a0a !important;
-  box-shadow: 0 0 0 1px #333333 inset !important;
+  background-color: rgba(6, 18, 42, 0.85) !important;
+  box-shadow: 0 0 0 1px var(--aiops-border) inset !important;
+  border-radius: 8px !important;
+  transition: box-shadow 0.2s ease;
+}
+
+.el-input__wrapper:hover {
+  box-shadow: 0 0 0 1px var(--tech-cyan-border) inset !important;
+}
+
+.el-input__wrapper.is-focus {
+  box-shadow: 0 0 0 1px var(--tech-cyan) inset, 0 0 12px var(--tech-cyan-glow) !important;
+}
+
+.el-button--primary {
+  --el-button-bg-color: var(--tech-cyan);
+  --el-button-border-color: var(--tech-cyan);
+  --el-button-text-color: #021018;
+  --el-button-hover-bg-color: #5eead4;
+  --el-button-hover-border-color: #5eead4;
+  --el-button-hover-text-color: #021018;
+  font-weight: 600;
+  border-radius: 8px;
+}
+
+.el-button.is-plain {
+  --el-button-bg-color: transparent;
+  --el-button-border-color: var(--tech-cyan-border);
+  --el-button-text-color: var(--tech-text-secondary);
+}
+
+.el-tag--dark.el-tag--success {
+  --el-tag-bg-color: var(--tech-cyan-dim);
+  --el-tag-border-color: var(--tech-cyan-border);
+  --el-tag-text-color: var(--tech-cyan);
+}
+
+.el-divider {
+  --el-border-color: var(--aiops-border);
+}
+
+.el-descriptions__body .el-descriptions__table {
+  --el-descriptions-table-border: var(--aiops-border);
+}
+
+/* 禁用 Empty 默认 3D 插图 */
+.el-empty__image {
+  display: none !important;
+}
+
+.el-empty {
+  padding: 20px 16px !important;
+}
+
+.el-empty__description p {
+  color: var(--tech-text-muted);
+}
+
+.el-dialog {
+  --el-dialog-bg-color: var(--tech-panel-solid);
+  border-radius: 12px;
+  border: 1px solid var(--tech-cyan-border);
+  box-shadow: 0 0 32px var(--tech-cyan-glow), 0 24px 64px rgba(0, 0, 0, 0.55);
 }

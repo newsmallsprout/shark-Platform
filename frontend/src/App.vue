@@ -1,57 +1,75 @@
 <template>
   <div class="aiops-root">
+    <div class="aiops-ambient" aria-hidden="true" />
     <header class="aiops-header">
-      <div class="brand">
-        <router-link to="/" class="brand-link">AIOps Platform</router-link>
-        <span class="brand-tag">L4</span>
+      <div class="header-left">
+        <router-link to="/" class="brand-mark" aria-label="AIOps Platform home">
+          <span class="brand-dot" />
+          <span class="brand-text">AIOps</span>
+        </router-link>
+        <span class="brand-divider" />
+        <span class="brand-sub">Platform</span>
       </div>
-      <nav class="nav-links">
-        <router-link to="/" class="nav-item">概览</router-link>
-        <router-link to="/console" class="nav-item">运维台</router-link>
+      <nav class="nav-rail" aria-label="Main">
+        <router-link to="/" class="nav-pill">概览</router-link>
+        <router-link to="/console" class="nav-pill">运维台</router-link>
       </nav>
-      <div class="header-right">
-        <button type="button" class="kbd-hint" @click="openPalette">
-          <span>命令面板</span>
-          <kbd>{{ modKey }}K</kbd>
+      <div class="header-actions">
+        <button type="button" class="cmd-trigger" @click="openPalette">
+          <span class="cmd-label">命令</span>
+          <kbd class="cmd-kbd">{{ modKey }}K</kbd>
         </button>
       </div>
     </header>
 
     <div class="aiops-body">
+      <aside v-if="showSidenav" class="app-sidenav" aria-label="主导航">
+        <div class="sidenav-top">
+          <span class="sidenav-logo-dot" aria-hidden="true" />
+          <div class="sidenav-brand-block">
+            <span class="sidenav-name">Shark Platform</span>
+            <span class="sidenav-tag">AIOps</span>
+          </div>
+        </div>
+        <p class="sidenav-section">工作台</p>
+        <router-link to="/" class="sidenav-link" active-class="is-active">运营数据大屏</router-link>
+        <router-link to="/console" class="sidenav-link" active-class="is-active">运维台</router-link>
+        <p class="sidenav-section">说明</p>
+        <p class="sidenav-hint">大屏聚合运行态势、部署形态与 24h 趋势；工单审批在运维台完成。</p>
+      </aside>
+
       <main class="aiops-main">
         <router-view />
       </main>
 
-      <aside class="aiops-assistant" aria-label="AI 运维助理">
-        <p class="assistant-title">运维助理</p>
-        <div class="assistant-lamp">
-          <span class="dot" :class="sidebarLamp" />
-          <span>{{ sidebarStatusText }}</span>
+      <aside class="aiops-rail" aria-label="Context">
+        <p class="rail-label">状态</p>
+        <div class="rail-status">
+          <span class="status-dot" :class="sidebarLamp" />
+          <span class="status-text">{{ sidebarStatusText }}</span>
         </div>
-        <div class="assistant-stream">
-          <p v-if="assistantThinking" class="thinking typing">Thinking…</p>
-          <p v-else class="assistant-idle muted">
-            在运维台启动 LangGraph 诊断后，此处同步显示分析态；SSE 流式事件在页面内展开。
+        <div class="rail-body">
+          <p v-if="assistantThinking" class="rail-thinking">Thinking</p>
+          <p v-else class="rail-copy">
+            在运维台发起诊断后，SSE 事件在页面内展示；此处仅指示全局分析态。
           </p>
         </div>
       </aside>
     </div>
 
     <teleport to="body">
-      <div v-if="paletteOpen" class="palette-backdrop" @click.self="paletteOpen = false">
-        <div class="palette-dialog glass-panel" role="dialog" aria-modal="true" aria-label="命令面板">
+      <div v-if="paletteOpen" class="palette-scrim" @click.self="paletteOpen = false">
+        <div class="palette-sheet" role="dialog" aria-modal="true" aria-label="命令面板">
           <input
             ref="paletteInputRef"
             v-model="paletteQuery"
-            class="palette-input"
+            class="palette-field"
             type="text"
-            placeholder="自然语言查询状态、跳转…"
+            placeholder="查询或跳转运维台…"
             @keydown.esc="paletteOpen = false"
             @keydown.enter="runPaletteCommand"
           />
-          <p class="palette-hint muted">
-            回车：跳转运维台并带上查询参数（与后续日志检索管道对接）。
-          </p>
+          <p class="palette-note">Enter 确认 · Esc 关闭</p>
         </div>
       </div>
     </teleport>
@@ -62,9 +80,12 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { aiAssistantThinking } from '@/stores/aiAssistant'
+import { useSystemStore } from '@/stores/system'
 import { aiOpsApi } from '@/api/ai_ops'
 
 const router = useRouter()
+const systemStore = useSystemStore()
+const showSidenav = computed(() => Boolean(systemStore.currentUser))
 const paletteOpen = ref(false)
 const paletteQuery = ref('')
 const paletteInputRef = ref<HTMLInputElement | null>(null)
@@ -72,9 +93,7 @@ const paletteInputRef = ref<HTMLInputElement | null>(null)
 const modKey = computed(() => (navigator.platform.toLowerCase().includes('mac') ? '⌘' : 'Ctrl+'))
 
 const assistantThinking = computed(() => aiAssistantThinking.value)
-
 const dashAiStatus = ref<'idle' | 'analyzing' | 'degraded' | null>(null)
-
 let dashPoll: ReturnType<typeof setInterval> | null = null
 
 async function refreshDashStatus() {
@@ -87,17 +106,17 @@ async function refreshDashStatus() {
 }
 
 const sidebarLamp = computed(() => {
-  if (assistantThinking.value) return 'dot-analyze'
-  if (dashAiStatus.value === 'analyzing') return 'dot-analyze'
-  if (dashAiStatus.value === 'degraded') return 'dot-bad'
-  return 'dot-ok'
+  if (assistantThinking.value) return 'is-live'
+  if (dashAiStatus.value === 'analyzing') return 'is-live'
+  if (dashAiStatus.value === 'degraded') return 'is-warn'
+  return 'is-idle'
 })
 
 const sidebarStatusText = computed(() => {
-  if (assistantThinking.value) return '推理流进行中'
-  if (dashAiStatus.value === 'analyzing') return '后台事件分析中'
-  if (dashAiStatus.value === 'degraded') return '存在高风险开放事件'
-  return '待机'
+  if (assistantThinking.value) return '推理流'
+  if (dashAiStatus.value === 'analyzing') return '分析中'
+  if (dashAiStatus.value === 'degraded') return '风险开放事件'
+  return '就绪'
 })
 
 function openPalette() {
@@ -110,9 +129,7 @@ function onKeyDown(e: KeyboardEvent) {
   if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
     e.preventDefault()
     paletteOpen.value = !paletteOpen.value
-    if (paletteOpen.value) {
-      void nextTick(() => paletteInputRef.value?.focus())
-    }
+    if (paletteOpen.value) void nextTick(() => paletteInputRef.value?.focus())
   }
 }
 
@@ -140,268 +157,461 @@ onUnmounted(() => {
 
 <style scoped>
 .aiops-root {
-  min-height: 100vh;
+  min-height: 100dvh;
   display: flex;
   flex-direction: column;
-  background: #000000;
-  color: #e5e5e5;
+  position: relative;
+  background: transparent;
+  color: var(--aiops-text);
+}
+
+.aiops-ambient {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    radial-gradient(ellipse 55% 40% at 20% 0%, rgba(45, 212, 191, 0.07), transparent 50%),
+    radial-gradient(ellipse 45% 35% at 95% 100%, rgba(14, 165, 233, 0.06), transparent 45%);
+  opacity: 1;
 }
 
 .aiops-header {
-  display: flex;
+  position: relative;
+  z-index: 2;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
-  justify-content: space-between;
-  padding: 14px 24px;
-  border-bottom: 1px solid #333333;
-  background: rgba(10, 10, 10, 0.72);
+  gap: 16px;
+  padding: 0 24px;
+  height: 52px;
+  border-bottom: 1px solid var(--tech-cyan-border, rgba(45, 212, 191, 0.35));
+  background: rgba(4, 14, 32, 0.75);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
+  box-shadow: 0 1px 0 rgba(45, 212, 191, 0.12);
 }
 
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.brand-link {
-  font-size: 15px;
-  font-weight: 600;
-  letter-spacing: -0.02em;
-  color: #fafafa;
-  text-decoration: none;
-}
-
-.brand-link:hover {
-  color: #ffffff;
-}
-
-.brand-tag {
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.12em;
-  color: #888888;
-  border: 1px solid #333333;
-  border-radius: 4px;
-  padding: 2px 6px;
-}
-
-.nav-links {
-  display: flex;
-  gap: 8px;
-}
-
-.nav-item {
-  font-size: 13px;
-  color: #888888;
-  text-decoration: none;
-  padding: 6px 12px;
-  border-radius: 6px;
-}
-
-.nav-item:hover {
-  color: #fafafa;
-  background: rgba(255, 255, 255, 0.04);
-}
-
-.router-link-active.nav-item {
-  color: #fafafa;
-  background: rgba(255, 255, 255, 0.06);
-}
-
-.header-right {
+.header-left {
   display: flex;
   align-items: center;
   gap: 12px;
+  justify-self: start;
 }
 
-.kbd-hint {
+.brand-mark {
   display: flex;
   align-items: center;
-  gap: 8px;
-  background: transparent;
-  border: 1px solid #333333;
-  color: #a3a3a3;
+  gap: 10px;
+  text-decoration: none;
+  color: inherit;
+}
+
+.brand-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--tech-cyan, #2dd4bf);
+  box-shadow: 0 0 10px rgba(45, 212, 191, 0.55);
+  opacity: 0.95;
+}
+
+.brand-text {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+}
+
+.brand-divider {
+  width: 1px;
+  height: 14px;
+  background: var(--aiops-border-strong);
+}
+
+.brand-sub {
   font-size: 12px;
-  padding: 6px 12px;
+  font-weight: 500;
+  color: var(--aiops-text-tertiary);
+  letter-spacing: 0.02em;
+}
+
+.nav-rail {
+  justify-self: center;
+  display: flex;
+  padding: 3px;
+  gap: 2px;
+  border-radius: 10px;
+  background: rgba(45, 212, 191, 0.05);
+  border: 1px solid var(--tech-cyan-border, rgba(45, 212, 191, 0.35));
+}
+
+.nav-pill {
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--aiops-text-tertiary);
+  border-radius: 8px;
+  text-decoration: none;
+  transition:
+    color 0.2s cubic-bezier(0.16, 1, 0.3, 1),
+    background 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.nav-pill:hover {
+  color: var(--aiops-text-secondary);
+}
+
+.router-link-active.nav-pill {
+  color: #021018;
+  background: var(--tech-cyan, #2dd4bf);
+  box-shadow: 0 0 14px rgba(45, 212, 191, 0.35);
+}
+
+.header-actions {
+  justify-self: end;
+}
+
+.cmd-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px 6px 12px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--tech-text-secondary, #94b8cc);
+  background: rgba(45, 212, 191, 0.06);
+  border: 1px solid var(--tech-cyan-border, rgba(45, 212, 191, 0.35));
   border-radius: 8px;
   cursor: pointer;
+  transition:
+    border-color 0.2s ease,
+    color 0.2s ease,
+    box-shadow 0.2s ease;
 }
 
-.kbd-hint:hover {
-  border-color: #525252;
-  color: #fafafa;
+.cmd-trigger:hover {
+  border-color: var(--tech-cyan, #2dd4bf);
+  color: var(--tech-cyan, #2dd4bf);
+  box-shadow: 0 0 12px rgba(45, 212, 191, 0.2);
 }
 
-.kbd-hint kbd {
+.cmd-trigger:active {
+  transform: scale(0.98);
+}
+
+.cmd-label {
+  letter-spacing: 0.04em;
+}
+
+.cmd-kbd {
   font-family: var(--aiops-font-mono);
-  font-size: 11px;
-  padding: 2px 6px;
+  font-size: 10px;
+  font-weight: 500;
+  padding: 3px 6px;
   border-radius: 4px;
-  background: #141414;
-  border: 1px solid #333333;
-  color: #888888;
+  background: var(--aiops-bg-elevated);
+  border: 1px solid var(--aiops-border);
+  color: var(--aiops-text-tertiary);
 }
 
 .aiops-body {
-  display: flex;
+  position: relative;
+  z-index: 1;
   flex: 1;
+  display: flex;
   min-height: 0;
+}
+
+.app-sidenav {
+  width: 220px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 20px 14px 24px;
+  border-right: 1px solid var(--tech-cyan-border, rgba(45, 212, 191, 0.28));
+  background: rgba(4, 18, 40, 0.82);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+.sidenav-top {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 20px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid rgba(45, 212, 191, 0.12);
+}
+
+.sidenav-logo-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--tech-cyan, #2dd4bf);
+  box-shadow: 0 0 12px rgba(45, 212, 191, 0.5);
+  flex-shrink: 0;
+}
+
+.sidenav-brand-block {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.sidenav-name {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--tech-text, #e8f4ff);
+}
+
+.sidenav-tag {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--tech-text-muted, #6b8aa0);
+}
+
+.sidenav-section {
+  margin: 16px 0 8px;
+  padding: 0 8px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--tech-text-muted, #6b8aa0);
+}
+
+.sidenav-section:first-of-type {
+  margin-top: 0;
+}
+
+.sidenav-link {
+  display: block;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--tech-text-secondary, #94b8cc);
+  text-decoration: none;
+  border: 1px solid transparent;
+  transition:
+    background 0.2s ease,
+    color 0.2s ease,
+    border-color 0.2s ease;
+}
+
+.sidenav-link:hover {
+  color: var(--tech-cyan, #2dd4bf);
+  background: rgba(45, 212, 191, 0.06);
+}
+
+.sidenav-link.is-active {
+  color: #021018;
+  background: var(--tech-cyan, #2dd4bf);
+  border-color: rgba(45, 212, 191, 0.5);
+  box-shadow: 0 0 16px rgba(45, 212, 191, 0.25);
+}
+
+.sidenav-hint {
+  margin: 0;
+  padding: 0 8px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--tech-text-muted, #6b8aa0);
 }
 
 .aiops-main {
   flex: 1;
   min-width: 0;
-  padding: 24px 28px 48px;
+  padding: 28px 32px 56px;
+  max-width: 1600px;
+  margin: 0 auto;
+  width: 100%;
 }
 
-.aiops-assistant {
-  width: 280px;
+.aiops-rail {
+  width: 260px;
   flex-shrink: 0;
-  border-left: 1px solid #333333;
-  padding: 20px 18px;
-  background: rgba(10, 10, 10, 0.5);
+  border-left: 1px solid var(--tech-cyan-border, rgba(45, 212, 191, 0.28));
+  padding: 24px 20px;
+  background: rgba(4, 16, 36, 0.55);
   backdrop-filter: blur(12px);
 }
 
-@media (max-width: 900px) {
-  .aiops-assistant {
+@media (min-width: 901px) {
+  .nav-rail {
     display: none;
   }
 }
 
-.assistant-title {
+@media (max-width: 900px) {
+  .app-sidenav {
+    display: none;
+  }
+
+  .aiops-rail {
+    display: none;
+  }
+  .aiops-header {
+    grid-template-columns: 1fr auto;
+  }
+  .nav-rail {
+    display: flex;
+    justify-self: end;
+  }
+  .header-actions {
+    display: none;
+  }
+}
+
+.rail-label {
   margin: 0 0 12px;
   font-size: 11px;
-  letter-spacing: 0.14em;
+  font-weight: 600;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: #888888;
+  color: var(--aiops-text-tertiary);
 }
 
-.assistant-lamp {
+.rail-status {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  color: #d4d4d4;
-  margin-bottom: 16px;
+  gap: 10px;
+  margin-bottom: 20px;
 }
 
-.dot {
-  width: 8px;
-  height: 8px;
+.status-dot {
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
+  flex-shrink: 0;
 }
 
-.dot-ok {
-  background: #22c55e;
+.status-dot.is-idle {
+  background: var(--aiops-text-tertiary);
   opacity: 0.5;
-  box-shadow: 0 0 8px rgba(34, 197, 94, 0.4);
 }
 
-.dot-analyze {
-  background: #38bdf8;
-  animation: shimmer 2s ease-in-out infinite;
+.status-dot.is-live {
+  background: var(--tech-gold, #fcd34d);
+  box-shadow: 0 0 10px rgba(252, 211, 77, 0.45);
+  animation: pulse-soft 2s ease-in-out infinite;
 }
 
-.dot-bad {
-  background: #ef4444;
-  box-shadow: 0 0 10px rgba(239, 68, 68, 0.5);
+.status-dot.is-warn {
+  background: var(--aiops-danger);
 }
 
-@keyframes shimmer {
+@keyframes pulse-soft {
   0%,
   100% {
-    opacity: 0.35;
+    opacity: 0.55;
+    transform: scale(1);
   }
   50% {
     opacity: 1;
+    transform: scale(1.15);
   }
 }
 
-.assistant-stream {
+.status-text {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--aiops-text-secondary);
+}
+
+.rail-body {
   font-size: 13px;
   line-height: 1.55;
+  color: var(--aiops-text-tertiary);
 }
 
-.thinking {
+.rail-thinking {
   margin: 0;
-  color: #a3a3a3;
   font-family: var(--aiops-font-mono);
+  font-size: 12px;
+  color: var(--aiops-text-secondary);
+  letter-spacing: 0.06em;
 }
 
-.typing {
-  overflow: hidden;
-  border-right: 2px solid #525252;
-  white-space: nowrap;
-  animation:
-    cursor-blink 1s step-end infinite,
-    typing 2.4s steps(12, end) infinite;
+.rail-thinking::after {
+  content: '…';
+  animation: dots 1.2s steps(4, end) infinite;
 }
 
-@keyframes cursor-blink {
-  50% {
-    border-color: transparent;
+@keyframes dots {
+  0%,
+  20% {
+    content: '';
   }
-}
-
-@keyframes typing {
-  0% {
-    width: 0;
+  40% {
+    content: '.';
   }
-  40%,
+  60% {
+    content: '..';
+  }
+  80%,
   100% {
-    width: 100%;
+    content: '...';
   }
 }
 
-.assistant-idle {
+.rail-copy {
   margin: 0;
 }
 
-.muted {
-  color: #888888;
-}
-
-.palette-backdrop {
+.palette-scrim {
   position: fixed;
   inset: 0;
   z-index: 2000;
-  background: rgba(0, 0, 0, 0.55);
+  background: rgba(9, 9, 11, 0.65);
   display: flex;
   align-items: flex-start;
   justify-content: center;
-  padding-top: 15vh;
+  padding-top: min(18vh, 160px);
+  backdrop-filter: blur(6px);
 }
 
-.palette-dialog {
-  width: min(520px, 92vw);
-  padding: 20px;
+.palette-sheet {
+  width: min(480px, 92vw);
+  padding: 20px 22px 18px;
   border-radius: 12px;
-  border: 1px solid #333333;
-  background: rgba(12, 12, 12, 0.92);
-  backdrop-filter: blur(20px);
+  border: 1px solid var(--tech-cyan-border, rgba(45, 212, 191, 0.4));
+  background: var(--tech-panel-solid, #0a1628);
+  box-shadow:
+    0 0 28px rgba(45, 212, 191, 0.15),
+    0 24px 64px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
 
-.palette-input {
+.palette-field {
   width: 100%;
   box-sizing: border-box;
-  background: #0a0a0a;
-  border: 1px solid #333333;
-  border-radius: 8px;
-  color: #fafafa;
-  font-size: 15px;
   padding: 12px 14px;
+  font-size: 15px;
+  font-family: inherit;
+  color: var(--aiops-text);
+  background: var(--aiops-bg);
+  border: 1px solid var(--aiops-border);
+  border-radius: 10px;
   outline: none;
+  transition: border-color 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.palette-input:focus {
-  border-color: #525252;
+.palette-field:focus {
+  border-color: var(--tech-cyan, #2dd4bf);
+  box-shadow: 0 0 12px rgba(45, 212, 191, 0.2);
 }
 
-.palette-hint {
-  margin: 12px 0 0;
-  font-size: 12px;
-  line-height: 1.5;
+.palette-note {
+  margin: 10px 0 0;
+  font-size: 11px;
+  color: var(--aiops-text-tertiary);
+  letter-spacing: 0.02em;
 }
 </style>

@@ -16,7 +16,7 @@
 
     <el-row :gutter="24">
       <el-col :span="8">
-        <el-card shadow="never" class="list-card">
+        <el-card shadow="never" class="list-card aiops-surface-card">
           <div class="list-header">最近告警</div>
           <div v-loading="loading" class="incident-list">
             <div
@@ -39,13 +39,18 @@
               </div>
               <el-icon class="arrow-icon"><ArrowRight /></el-icon>
             </div>
-            <el-empty v-if="!incidents.length" description="暂无告警" />
+            <EmptyState
+              v-if="!incidents.length"
+              compact
+              title="暂无告警"
+              hint="接入 Prometheus Webhook 后，告警将出现在此列表。"
+            />
           </div>
         </el-card>
       </el-col>
 
       <el-col :span="16">
-        <el-card v-if="selectedId" shadow="never" class="detail-card">
+        <el-card v-if="selectedId" shadow="never" class="detail-card aiops-surface-card">
           <template #header>
             <div class="detail-header">
               <span>Incident #{{ selectedId }}</span>
@@ -259,7 +264,12 @@
             </div>
           </div>
         </el-card>
-        <el-empty v-else description="请选择一个告警" class="empty-detail" />
+        <el-card v-else shadow="never" class="detail-card detail-placeholder aiops-surface-card">
+          <EmptyState
+            title="请选择一个告警"
+            hint="在左侧选取一条告警，查看详情、启动 LangGraph 与工单审批。"
+          />
+        </el-card>
       </el-col>
     </el-row>
 
@@ -316,6 +326,7 @@ import { ref, computed, onMounted, nextTick, watch, onUnmounted, reactive } from
 import { useRoute } from 'vue-router'
 import { aiOpsApi, type TicketPayload } from '@/api/ai_ops'
 import AgentThoughtStream from '@/components/AgentThoughtStream.vue'
+import EmptyState from '@/components/EmptyState.vue'
 import {
   Refresh,
   ArrowRight,
@@ -678,52 +689,53 @@ onUnmounted(() => {
 
 <style scoped>
 .mono {
-  font-family: var(--l5-font-mono);
+  font-family: var(--aiops-font-mono);
   font-size: 12px;
 }
 
 .l5-aiops {
-  --l5-text: #e5e5e5;
-  --l5-muted: #737373;
-  --l5-line: rgba(14, 165, 233, 0.15);
+  --line: var(--aiops-border);
 }
 
 .ai-ops-container {
   display: flex;
   flex-direction: column;
-  gap: 20px;
-  height: calc(100vh - 120px);
+  gap: 22px;
+  min-height: calc(100dvh - 120px);
 }
 
 .page-header {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
+  gap: 16px;
 }
 
 .page-title {
-  font-size: 24px;
-  font-weight: 800;
-  color: #fafafa;
+  font-size: 1.375rem;
+  font-weight: 600;
+  color: var(--aiops-text);
   margin: 0;
-  letter-spacing: 0.02em;
+  letter-spacing: -0.03em;
 }
 
 .page-subtitle {
   font-size: 14px;
-  color: #a3a3a3;
-  margin: 4px 0 0;
-  line-height: 1.5;
+  color: var(--aiops-text-tertiary);
+  margin: 8px 0 0;
+  line-height: 1.55;
+  max-width: 52ch;
 }
 
 .back-dash {
   margin-left: 8px;
   font-size: 13px;
-  color: #737373;
+  font-weight: 500;
+  color: var(--aiops-text-secondary);
   text-decoration: none;
 }
 .back-dash:hover {
-  color: #fafafa;
+  color: var(--aiops-text);
 }
 
 .list-card,
@@ -743,11 +755,12 @@ onUnmounted(() => {
 }
 
 .list-header {
-  padding: 16px;
+  padding: 14px 16px;
   font-weight: 600;
-  border-bottom: 1px solid var(--l5-line);
-  background: rgba(12, 12, 14, 0.85);
-  color: #e5e5e5;
+  font-size: 13px;
+  border-bottom: 1px solid var(--line);
+  background: var(--aiops-bg-elevated);
+  color: var(--aiops-text-secondary);
 }
 
 .incident-list {
@@ -756,20 +769,20 @@ onUnmounted(() => {
 }
 
 .incident-item {
-  padding: 16px;
-  border-bottom: 1px solid rgba(38, 38, 42, 0.9);
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--aiops-border);
   cursor: pointer;
   display: flex;
   align-items: center;
   gap: 12px;
-  transition: background 0.2s;
+  transition: background 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 .incident-item:hover {
-  background: rgba(14, 165, 233, 0.06);
+  background: rgba(255, 255, 255, 0.03);
 }
 .incident-item.active {
-  background: rgba(16, 185, 129, 0.08);
-  border-left: 3px solid #10b981;
+  background: var(--aiops-accent-live-dim);
+  border-left: 2px solid var(--aiops-accent-live);
 }
 
 .inc-info {
@@ -777,12 +790,12 @@ onUnmounted(() => {
 }
 .inc-title {
   font-weight: 600;
-  color: #e5e5e5;
+  color: var(--aiops-text);
   margin-bottom: 4px;
 }
 .inc-meta {
   font-size: 12px;
-  color: #737373;
+  color: var(--aiops-text-tertiary);
   display: flex;
   align-items: center;
   gap: 6px;
@@ -801,8 +814,7 @@ onUnmounted(() => {
   display: inline-block;
 }
 .severity-dot.critical {
-  background: #ef4444;
-  box-shadow: 0 0 4px #ef4444;
+  background: var(--aiops-danger);
 }
 .severity-dot.warning {
   background: #f59e0b;
@@ -826,18 +838,17 @@ onUnmounted(() => {
 
 .section-langgraph {
   margin-bottom: 20px;
-  padding: 16px;
+  padding: 18px;
   border-radius: 12px;
-  background: rgba(16, 16, 18, 0.55);
-  backdrop-filter: blur(12px);
-  border: 1px solid rgba(14, 165, 233, 0.2);
-  box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.05) inset;
+  background: var(--aiops-surface-2);
+  border: 1px solid var(--aiops-border);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
 .section-title {
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 600;
-  color: #fafafa;
+  color: var(--aiops-text);
   display: flex;
   align-items: center;
   gap: 8px;
@@ -846,7 +857,7 @@ onUnmounted(() => {
 
 .section-hint {
   font-size: 13px;
-  color: #a3a3a3;
+  color: var(--aiops-text-tertiary);
   margin: 0 0 12px;
   line-height: 1.5;
 }
@@ -871,7 +882,7 @@ onUnmounted(() => {
 }
 
 .stream-meta {
-  color: #737373;
+  color: var(--aiops-text-tertiary);
   font-size: 12px;
 }
 
@@ -880,20 +891,19 @@ onUnmounted(() => {
   min-height: 420px;
   border-radius: 12px;
   overflow: hidden;
-  border: 1px solid rgba(14, 165, 233, 0.18);
+  border: 1px solid var(--aiops-border);
 }
 
 .inline-approval-card {
   margin-bottom: 28px;
   border-radius: 12px;
-  border: 1px solid rgba(16, 185, 129, 0.25);
-  background: rgba(12, 18, 16, 0.5);
-  backdrop-filter: blur(14px);
+  border: 1px solid var(--aiops-border-strong);
+  background: var(--aiops-bg-elevated);
 }
 
 .inline-approval-card :deep(.el-card__header) {
-  background: rgba(10, 14, 12, 0.75);
-  border-bottom: 1px solid rgba(16, 185, 129, 0.2);
+  background: var(--aiops-surface-2);
+  border-bottom: 1px solid var(--aiops-border);
 }
 
 .inline-approval-head {
@@ -910,14 +920,14 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   font-weight: 600;
-  color: #34d399;
+  color: var(--aiops-text);
   flex: 1;
   min-width: 0;
 }
 
 .inline-ticket-id {
   font-weight: 400;
-  color: #737373;
+  color: var(--aiops-text-tertiary);
   font-size: 12px;
 }
 
@@ -934,7 +944,7 @@ onUnmounted(() => {
 
 .ticket-desc {
   margin-bottom: 16px;
-  background: rgba(8, 8, 10, 0.6);
+  background: var(--aiops-bg);
 }
 
 .ticket-pre {
@@ -947,8 +957,8 @@ onUnmounted(() => {
   overflow: auto;
 }
 .ticket-pre.note {
-  color: #38bdf8;
-  background: rgba(14, 165, 233, 0.08);
+  color: var(--aiops-text-secondary);
+  background: rgba(255, 255, 255, 0.04);
   padding: 8px;
   border-radius: 6px;
 }
@@ -961,7 +971,7 @@ onUnmounted(() => {
 
 .approval-tip {
   font-size: 12px;
-  color: #737373;
+  color: var(--aiops-text-tertiary);
 }
 
 .approval-comment {
@@ -984,8 +994,9 @@ onUnmounted(() => {
 }
 
 .json-box {
-  background: #1e293b;
-  color: #e2e8f0;
+  background: var(--aiops-bg);
+  color: var(--aiops-text-secondary);
+  border: 1px solid var(--aiops-border);
   padding: 12px;
   border-radius: 8px;
   font-size: 12px;
@@ -996,15 +1007,16 @@ onUnmounted(() => {
 .trace-box {
   margin-bottom: 20px;
   padding: 16px;
-  background: rgba(16, 16, 18, 0.5);
-  border: 1px solid rgba(14, 165, 233, 0.15);
+  background: var(--aiops-surface-2);
+  border: 1px solid var(--aiops-border);
   border-radius: 12px;
 }
 .trace-json {
   margin: 0;
   padding: 12px;
-  background: #1e293b;
-  color: #e2e8f0;
+  background: var(--aiops-bg);
+  color: var(--aiops-text-secondary);
+  border: 1px solid var(--aiops-border);
   border-radius: 8px;
   font-size: 11px;
   max-height: 320px;
@@ -1013,22 +1025,22 @@ onUnmounted(() => {
 }
 
 .ai-report-box {
-  background: rgba(12, 20, 28, 0.45);
-  border: 1px solid rgba(14, 165, 233, 0.22);
+  background: var(--aiops-surface-2);
+  border: 1px solid var(--aiops-border);
   border-radius: 12px;
   padding: 20px;
   margin-bottom: 20px;
 }
 
 .report-header {
-  font-size: 16px;
-  font-weight: 700;
-  color: #0ea5e9;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--aiops-text);
   margin-bottom: 16px;
   display: flex;
   align-items: center;
   gap: 8px;
-  border-bottom: 1px solid rgba(14, 165, 233, 0.2);
+  border-bottom: 1px solid var(--aiops-border);
   padding-bottom: 12px;
 }
 
@@ -1036,21 +1048,22 @@ onUnmounted(() => {
   margin-bottom: 16px;
 }
 .analysis-section .label {
-  font-size: 12px;
-  font-weight: 700;
-  color: #38bdf8;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--aiops-text-tertiary);
   text-transform: uppercase;
+  letter-spacing: 0.06em;
   margin-bottom: 6px;
 }
 .analysis-section p {
   margin: 0;
-  color: #d4d4d4;
+  color: var(--aiops-text-secondary);
   line-height: 1.6;
 }
 
 .root-cause {
   font-weight: 600;
-  color: #be185d !important;
+  color: #f87171 !important;
 }
 
 .analysis-grid {
@@ -1088,16 +1101,17 @@ onUnmounted(() => {
 }
 
 .cmd-list {
-  background: #0f172a;
+  background: var(--aiops-bg);
+  border: 1px solid var(--aiops-border);
   border-radius: 8px;
   overflow: hidden;
 }
 .cmd-item {
   padding: 10px 16px;
-  border-bottom: 1px solid #1e293b;
-  font-family: Menlo, Monaco, monospace;
-  font-size: 13px;
-  color: #a5f3fc;
+  border-bottom: 1px solid var(--aiops-border);
+  font-family: var(--aiops-font-mono);
+  font-size: 12px;
+  color: var(--aiops-text-secondary);
 }
 .cmd-item:last-child {
   border-bottom: none;
@@ -1106,15 +1120,16 @@ onUnmounted(() => {
 .metrics-chart {
   height: 280px;
   width: 100%;
-  border: 1px solid rgba(14, 165, 233, 0.15);
+  border: 1px solid var(--aiops-border);
   border-radius: 8px;
   padding: 8px;
+  background: var(--aiops-bg);
 }
 
 .analyzing-state {
   text-align: center;
   padding: 32px;
-  color: #737373;
+  color: var(--aiops-text-tertiary);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1122,11 +1137,11 @@ onUnmounted(() => {
 }
 .analyzing-state .el-icon {
   font-size: 28px;
-  color: #0ea5e9;
+  color: var(--aiops-text-secondary);
 }
 
 .no-report {
-  color: #737373;
+  color: var(--aiops-text-tertiary);
   font-size: 14px;
   padding: 16px;
   text-align: center;

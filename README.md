@@ -119,12 +119,18 @@ cd go-agent && go mod tidy && go build -o aiops-agent .
 cd go-log-collector && go build -o aiops-log-collector .
 ```
 
+镜像内 **Nginx** 将访问/错误日志写到 `/var/log/nginx/shark_access.log` 与 `shark_error.log`（见 `nginx.conf`），可用本采集器批量上报中心。
+
 | 变量 | 说明 |
 |------|------|
-| `SHARK_AIOPS_LOG_SEVERITY` | `error`（默认）/ `warn` / `all` |
+| `SHARK_AIOPS_LOG_PATHS` | 逗号分隔多文件；配合 `SHARK_AIOPS_LOG_FOLLOW=1` 持续采集 |
+| `SHARK_AIOPS_LOG_FOLLOW` | `1`：类 `tail -f`，适合 access 日志不断增长 |
+| `SHARK_AIOPS_LOG_SEVERITY` | 采集 **access** 时必须 `all`（默认 `error` 会过滤掉正常 200 行） |
 | `SHARK_AIOPS_REDACT_REGEX` | 可选：`pattern@@@replacement` 多条用 `\|\|` 分隔 |
 
-示例：`tail -F /var/log/app.log | SHARK_AIOPS_EDGE_TOKEN=secret ./aiops-log-collector`
+Compose 侧车（需设置 `SHARK_EDGE_TOKEN`）：`docker compose --profile logs up -d`。
+
+更多说明见 [go-log-collector/README.md](go-log-collector/README.md)。
 
 ---
 

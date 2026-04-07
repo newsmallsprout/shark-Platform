@@ -27,6 +27,10 @@ gunicorn shark_platform.wsgi:application --bind 127.0.0.1:8001 --workers 1 --tim
   --logger-class shark_platform.gunicorn_logger.FilteredAccessLogger \
   --access-logfile - --error-logfile - --capture-output &
 
+# Nginx 日志目录（Docker 命名卷挂载时可能为空，需显式创建）
+mkdir -p /var/log/nginx
+touch /var/log/nginx/shark_access.log /var/log/nginx/shark_error.log 2>/dev/null || true
+
 # Start Nginx (Frontend & Proxy)
 echo "Starting Nginx on port 8000..."
 nginx

@@ -3,11 +3,12 @@ import json
 import logging
 import threading
 import uuid
+from datetime import timedelta
 from uuid import UUID
 
 from django.conf import settings
-from django.db.models import DateTimeField
-from django.db.models.functions import Coalesce
+from django.db.models import Count, DateTimeField
+from django.db.models.functions import Coalesce, TruncHour
 from django.core.exceptions import ObjectDoesNotExist
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
@@ -374,6 +375,7 @@ def dashboard_summary(request):
     pending = Ticket.objects.filter(status=Ticket.STATUS_PENDING_APPROVAL).order_by(
         "-updated_at"
     )[:10]
+    pending_n = Ticket.objects.filter(status=Ticket.STATUS_PENDING_APPROVAL).count()
     heals = (
         Ticket.objects.filter(status=Ticket.STATUS_EXECUTED)
         .select_related("incident")
@@ -383,15 +385,61 @@ def dashboard_summary(request):
     mode = getattr(settings, "AIOPS_DEPLOYMENT_MODE", "unspecified")
     in_k8s = getattr(settings, "AIOPS_IN_KUBERNETES_POD", False)
 
+    now = timezone.now()
+    window_start = now - timedelta(hours=24)
+    inc_by_bucket = {
+        row["bucket"]: row["c"]
+        for row in Incident.objects.filter(created_at__gte=window_start)
+        .annotate(bucket=TruncHour("created_at"))
+        .values("bucket")
+        .annotate(c=Count("id"))
+    }
+    heal_by_bucket = {
+        row["bucket"]: row["c"]
+        for row in Ticket.objects.filter(
+            status=Ticket.STATUS_EXECUTED,
+            executed_at__isnull=False,
+            executed_at__gte=window_start,
+        )
+        .annotate(bucket=TruncHour("executed_at"))
+        .values("bucket")
+        .annotate(c=Count("ticket_id"))
+    }
+    trend_labels: list[str] = []
+    trend_incidents: list[int] = []
+    trend_heals: list[int] = []
+    for i in range(23, -1, -1):
+        t_end = now - timedelta(hours=i)
+        bucket = t_end.replace(minute=0, second=0, microsecond=0)
+        trend_labels.append(t_end.strftime("%m-%d %H:00"))
+        trend_incidents.append(inc_by_bucket.get(bucket, 0))
+        trend_heals.append(heal_by_bucket.get(bucket, 0))
+
+    sev_rows = (
+        Incident.objects.exclude(status="resolved")
+        .values("severity")
+        .annotate(n=Count("id"))
+    )
+    severity_open = {"critical": 0, "warning": 0, "info": 0}
+    for row in sev_rows:
+        k = row.get("severity") or ""
+        if k in severity_open:
+            severity_open[k] = row["n"]
+
+    nodes = topo.nodes if topo else []
+    edges = topo.edges if topo else []
+    healthy_nodes = sum(1 for x in nodes if isinstance(x, dict) and x.get("healthy") is not False)
+
     return Response(
         {
             "health_score": round(health, 1),
             "topology": {
-                "nodes": topo.nodes if topo else [],
-                "edges": topo.edges if topo else [],
+                "nodes": nodes,
+                "edges": edges,
             },
             "ai_status": "analyzing" if analyzing else ("degraded" if critical_open else "idle"),
             "open_incidents": open_n,
+            "pending_approval_count": pending_n,
             "pending_tickets": [_tmini(t) for t in pending],
             "recent_heals": [
                 {
@@ -411,6 +459,19 @@ def dashboard_summary(request):
                 "center_in_kubernetes_pod": in_k8s,
                 "edge_heartbeat_expected": mode in ("physical", "hybrid"),
                 "cluster_data_via_api": mode in ("kubernetes", "hybrid"),
+            },
+            "topology_stats": {
+                "node_count": len(nodes),
+                "edge_count": len(edges) if isinstance(edges, list) else 0,
+                "healthy_nodes": healthy_nodes,
+            },
+            "severity_open": severity_open,
+            "trends": {
+                "granularity": "1h",
+                "window_hours": 24,
+                "labels": trend_labels,
+                "incidents_new": trend_incidents,
+                "tickets_executed": trend_heals,
             },
         }
     )

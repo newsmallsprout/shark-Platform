@@ -17,4 +17,5 @@ app.use(createPinia())
 app.use(router)
 // app.use(ElementPlus) // Removed for auto-import optimization
 
+document.documentElement.classList.add('dark')
 app.mount('#app')

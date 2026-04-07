@@ -14,6 +14,8 @@ services:
       - "8000:8000"
     volumes:
       - shark_state:/app/state
+      # Nginx access/error 日志；与 log-collector 侧车共享后可 POST 到 /api/edge/logs
+      - nginx_logs:/var/log/nginx
     environment:
       DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-dev-change-me-in-prod}
       DEBUG: ${DEBUG:-True}
@@ -26,6 +28,28 @@ services:
       SHARK_EDGE_TOKEN: ${SHARK_EDGE_TOKEN:-}
     depends_on:
       - redis
+    restart: unless-stopped
+
+  # 采集 web 容器内 Nginx 日志至中心（需设置 SHARK_EDGE_TOKEN，且 SHARK_AIOPS_LOG_SEVERITY=all）
+  # 启动：docker compose --profile logs up -d
+  log-collector:
+    build:
+      context: ./go-log-collector
+      dockerfile: Dockerfile
+    profiles:
+      - logs
+    depends_on:
+      - web
+    volumes:
+      - nginx_logs:/var/log/nginx:ro
+    environment:
+      SHARK_AIOPS_CENTER_URL: http://web:8000
+      SHARK_AIOPS_EDGE_TOKEN: ${SHARK_EDGE_TOKEN:-}
+      SHARK_AIOPS_LOG_SOURCE: nginx
+      SHARK_AIOPS_LOG_PATHS: /var/log/nginx/shark_access.log,/var/log/nginx/shark_error.log
+      SHARK_AIOPS_LOG_FOLLOW: "1"
+      SHARK_AIOPS_LOG_FROM_END: "1"
+      SHARK_AIOPS_LOG_SEVERITY: all
     restart: unless-stopped
 
   celery:
@@ -59,3 +83,4 @@ services:
 
 volumes:
   shark_state:
+  nginx_logs:

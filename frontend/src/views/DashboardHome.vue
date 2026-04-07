@@ -1,159 +1,305 @@
 <template>
-  <div class="bento-page">
-    <div class="bento-grid">
-      <section class="bento-cell bento-span-4 glass-panel hero-metrics">
-        <p class="eyebrow">全局健康</p>
-        <div class="health-row">
-          <span class="health-score">{{ dash?.health_score ?? '—' }}</span>
-          <span class="health-unit">/ 100</span>
-        </div>
-        <p class="muted small">开放事件 {{ dash?.open_incidents ?? 0 }} · 经验库条目 {{ dash?.knowledge_entries ?? 0 }}</p>
-        <p v-if="deployHint" class="muted small deploy-hint">{{ deployHint }}</p>
-      </section>
+  <div class="ops-dash">
+    <nav class="bc" aria-label="面包屑">
+      <span>首页</span>
+      <span class="bc-sep">/</span>
+      <span class="bc-here">运营数据大屏</span>
+    </nav>
 
-      <section class="bento-cell bento-span-4 glass-panel">
-        <p class="eyebrow">AI 巡检</p>
-        <div class="lamp-row">
-          <span class="lamp" :class="lampClass" aria-hidden="true" />
-          <div>
-            <p class="lamp-label">{{ lampLabel }}</p>
-            <p class="muted small">感知 → 拓扑 → 经验库 → 因果 → 工单 / 自愈</p>
+    <header class="page-head">
+      <div class="page-head-text">
+        <h1 class="page-title">运营数据大屏</h1>
+        <p class="page-sub">
+          运行环境、告警与自愈趋势、拓扑与工单一屏可读；数据来自中心库与主机采样（psutil）。
+        </p>
+      </div>
+      <div v-if="sysStats" class="resource-strip" aria-label="主机资源">
+        <div class="res-item">
+          <span class="res-label">CPU</span>
+          <div class="res-bar-wrap">
+            <div
+              class="res-bar-fill"
+              :style="{ width: `${Math.min(100, sysStats.resources.cpu.percentage)}%` }"
+            />
+          </div>
+          <span class="res-val mono">{{ sysStats.resources.cpu.value }}</span>
+        </div>
+        <div class="res-item">
+          <span class="res-label">内存</span>
+          <div class="res-bar-wrap">
+            <div
+              class="res-bar-fill res-bar-fill--mem"
+              :style="{ width: `${Math.min(100, sysStats.resources.memory.percentage)}%` }"
+            />
+          </div>
+          <span class="res-val mono">
+            {{ sysStats.resources.memory.value }} / {{ sysStats.resources.memory.total }}
+          </span>
+        </div>
+      </div>
+    </header>
+
+    <div class="notice-banner" role="status">
+      <span class="notice-dot" aria-hidden="true" />
+      拓扑与健康分由快照与开放事件推算；24h 趋势按整点桶聚合。边缘节点心跳写入缓存，大屏不单独枚举主机名。
+    </div>
+
+    <div class="toolbar">
+      <span class="toolbar-meta mono">最后同步 {{ lastAt }}</span>
+      <div class="toolbar-actions">
+        <el-select v-model="pollMs" size="small" class="poll-select" teleported>
+          <el-option :value="0" label="手动刷新" />
+          <el-option :value="10000" label="每 10s" />
+          <el-option :value="30000" label="每 30s" />
+          <el-option :value="60000" label="每 60s" />
+        </el-select>
+        <el-button size="small" type="primary" plain @click="loadAll">刷新</el-button>
+        <router-link class="link-console" to="/console">运维台 →</router-link>
+      </div>
+    </div>
+
+    <el-tabs v-model="activeTab" class="dash-tabs">
+      <el-tab-pane label="态势总览" name="overview">
+        <div class="kpi-row">
+          <div v-for="card in kpiCards" :key="card.key" class="kpi-card tech-corner">
+            <span class="kpi-card-label">{{ card.label }}</span>
+            <div class="kpi-card-mid">
+              <span class="kpi-card-value" :class="{ 'kpi-card-value--gold': card.emphasis }">
+                {{ card.value }}
+              </span>
+              <span v-if="card.suffix" class="kpi-card-suffix">{{ card.suffix }}</span>
+            </div>
+            <v-chart
+              class="kpi-spark"
+              :option="card.sparkOption"
+              autoresize
+            />
           </div>
         </div>
-      </section>
 
-      <section class="bento-cell bento-span-4 glass-panel">
-        <p class="eyebrow">自愈阈值</p>
-        <p class="mono threshold">
-          AutoHeal ≥ {{ (dash?.auto_heal_threshold ?? 0.95).toFixed(2) }}
-        </p>
-        <p class="muted small">匹配置信度达标时生成已批准工单并下发边缘 Playbook。</p>
-      </section>
+        <div class="mid-grid">
+          <section class="panel panel-chart tech-grid">
+            <div class="panel-cap">
+              <span class="cap-title">24h 告警与自愈</span>
+              <span class="cap-hint">新建事件 · 已执行工单</span>
+            </div>
+            <v-chart class="chart-main" :option="trendChartOption" autoresize />
+          </section>
 
-      <section class="bento-cell bento-span-12 glass-panel topo-panel">
-        <div class="topo-head">
-          <p class="eyebrow">动态拓扑</p>
-          <router-link class="link-console" to="/console">进入运维台 →</router-link>
+          <section class="panel panel-sidecol">
+            <div class="panel-cap">
+              <span class="cap-title">运行环境</span>
+            </div>
+            <div class="env-body">
+              <ul class="env-list">
+                <li v-for="row in envRows" :key="row.k">
+                  <span class="env-k">{{ row.k }}</span>
+                  <span class="env-v" :class="{ ok: row.ok, warn: row.warn }">{{ row.v }}</span>
+                </li>
+              </ul>
+              <div class="globe-wrap">
+                <TechGlobe class="env-globe" />
+                <p class="globe-caption">云 · 边 · 中心协同（示意）</p>
+              </div>
+              <div class="sev-block">
+                <span class="cap-title cap-title--inline">开放事件严重度</span>
+                <v-chart class="chart-sev" :option="severityChartOption" autoresize />
+              </div>
+            </div>
+          </section>
         </div>
-        <div v-if="layoutNodes.length" class="topo-stage">
-          <svg class="topo-svg" :viewBox="`0 0 ${svgW} ${svgH}`" preserveAspectRatio="xMidYMid meet">
-            <defs>
-              <filter id="glow-red" x="-50%" y="-50%" width="200%" height="200%">
-                <feGaussianBlur stdDeviation="3" result="b" />
-                <feMerge>
-                  <feMergeNode in="b" />
-                  <feMergeNode in="SourceGraphic" />
-                </feMerge>
-              </filter>
-            </defs>
-            <line
-              v-for="(e, i) in dash?.topology?.edges ?? []"
-              :key="`e-${i}`"
-              :x1="nodePos(e.from)?.x ?? 0"
-              :y1="nodePos(e.from)?.y ?? 0"
-              :x2="nodePos(e.to)?.x ?? 0"
-              :y2="nodePos(e.to)?.y ?? 0"
-              class="topo-edge"
-            />
-            <g
-              v-for="n in layoutNodes"
-              :key="n.id"
-              :transform="`translate(${n.x}, ${n.y})`"
-            >
-              <circle
-                r="22"
-                :class="['topo-node', n.healthy === false ? 'bad' : 'ok']"
-                :filter="n.healthy === false ? 'url(#glow-red)' : undefined"
-              />
-              <text y="4" text-anchor="middle" class="topo-label">{{ truncate(n.label, 10) }}</text>
-            </g>
-          </svg>
-        </div>
-        <div v-else class="empty-topo muted">
-          <span class="empty-icon">◇</span>
-          <p>暂无拓扑快照；接入 Prometheus Webhook 并触发诊断后将自动推导 Service Map。</p>
-        </div>
-      </section>
 
-      <section class="bento-cell bento-span-6 glass-panel list-panel">
-        <p class="eyebrow">待审批工单</p>
-        <ul v-if="(dash?.pending_tickets?.length ?? 0) > 0" class="mini-list">
-          <li v-for="t in dash!.pending_tickets" :key="t.ticket_id" class="mini-item">
-            <span class="mono id">{{ t.ticket_id.slice(0, 8) }}…</span>
-            <span class="txt">{{ t.summary }}</span>
-            <span class="pill">{{ t.routing || 'human' }}</span>
-          </li>
-        </ul>
-        <div v-else class="empty-list muted">
-          <span class="empty-icon">—</span>
-          <p>无待审项</p>
-        </div>
-      </section>
+        <div class="tables-grid">
+          <section class="panel panel-table">
+            <div class="panel-cap">
+              <span class="cap-title">待审批工单</span>
+              <span class="cap-count mono">{{ pendingCount }}</span>
+            </div>
+            <div class="table-body">
+              <template v-if="(dash?.pending_tickets?.length ?? 0) > 0">
+                <div
+                  v-for="t in dash!.pending_tickets"
+                  :key="t.ticket_id"
+                  class="t-row"
+                >
+                  <span class="mono t-id">{{ t.ticket_id.slice(0, 8) }}</span>
+                  <span class="t-main">{{ t.summary }}</span>
+                  <span class="t-tag">{{ t.routing || 'human' }}</span>
+                </div>
+              </template>
+              <p v-else class="table-zero">无待审项</p>
+            </div>
+          </section>
 
-      <section class="bento-cell bento-span-6 glass-panel list-panel">
-        <p class="eyebrow">近期自愈 / 执行</p>
-        <ul v-if="(dash?.recent_heals?.length ?? 0) > 0" class="mini-list">
-          <li v-for="h in dash!.recent_heals" :key="h.ticket_id" class="mini-item">
-            <span class="mono id">{{ h.ticket_id.slice(0, 8) }}…</span>
-            <span class="txt">{{ h.summary }}</span>
-            <span class="muted tiny">{{ h.executed_at || '—' }}</span>
-          </li>
-        </ul>
-        <div v-else class="empty-list muted">
-          <span class="empty-icon">—</span>
-          <p>尚无闭环记录</p>
+          <section class="panel panel-table">
+            <div class="panel-cap">
+              <span class="cap-title">近期自愈执行</span>
+            </div>
+            <div class="table-body">
+              <template v-if="(dash?.recent_heals?.length ?? 0) > 0">
+                <div
+                  v-for="h in dash!.recent_heals"
+                  :key="h.ticket_id"
+                  class="t-row"
+                >
+                  <span class="mono t-id">{{ h.ticket_id.slice(0, 8) }}</span>
+                  <span class="t-main">{{ h.summary }}</span>
+                  <span class="mono t-time">{{ h.executed_at || '—' }}</span>
+                </div>
+              </template>
+              <p v-else class="table-zero">尚无闭环记录</p>
+            </div>
+          </section>
         </div>
-      </section>
-    </div>
+      </el-tab-pane>
+
+      <el-tab-pane label="服务拓扑" name="topo">
+        <section class="panel panel-topo-full tech-grid">
+          <div class="panel-cap">
+            <span class="cap-title">服务拓扑</span>
+            <router-link class="cap-link" to="/console">在运维台诊断</router-link>
+          </div>
+          <div class="topo-body">
+            <div v-if="layoutNodes.length" class="topo-chart">
+              <svg class="topo-svg" :viewBox="`0 0 ${svgW} ${svgH}`" preserveAspectRatio="xMidYMid meet">
+                <defs>
+                  <filter id="dash-glow" x="-50%" y="-50%" width="200%" height="200%">
+                    <feGaussianBlur stdDeviation="2" result="b" />
+                    <feMerge>
+                      <feMergeNode in="b" />
+                      <feMergeNode in="SourceGraphic" />
+                    </feMerge>
+                  </filter>
+                </defs>
+                <line
+                  v-for="(e, i) in dash?.topology?.edges ?? []"
+                  :key="'e' + i"
+                  :x1="nodePos(e.from)?.x ?? 0"
+                  :y1="nodePos(e.from)?.y ?? 0"
+                  :x2="nodePos(e.to)?.x ?? 0"
+                  :y2="nodePos(e.to)?.y ?? 0"
+                  class="t-edge"
+                />
+                <g
+                  v-for="n in layoutNodes"
+                  :key="n.id"
+                  :transform="`translate(${n.x}, ${n.y})`"
+                >
+                  <circle
+                    r="18"
+                    :class="['t-node', n.healthy === false ? 't-node--bad' : '']"
+                    :filter="n.healthy === false ? 'url(#dash-glow)' : undefined"
+                  />
+                  <text y="4" text-anchor="middle" class="t-cap">{{ truncate(n.label, 8) }}</text>
+                </g>
+              </svg>
+            </div>
+            <div v-else class="topo-empty">
+              <TechGlobe class="topo-globe" />
+              <p class="empty-copy">暂无拓扑快照</p>
+              <p class="empty-hint">接入告警并运行诊断后生成 Service Map</p>
+            </div>
+          </div>
+        </section>
+      </el-tab-pane>
+    </el-tabs>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { use } from 'echarts/core'
+import { CanvasRenderer } from 'echarts/renderers'
+import { LineChart, BarChart } from 'echarts/charts'
+import { GridComponent, TooltipComponent, LegendComponent } from 'echarts/components'
+import VChart from 'vue-echarts'
 import { aiOpsApi, type DashboardSummary, type TopoNode } from '@/api/ai_ops'
+import { systemApi, type SystemStats } from '@/api/system'
+import TechGlobe from '@/components/TechGlobe.vue'
+
+use([CanvasRenderer, LineChart, BarChart, GridComponent, TooltipComponent, LegendComponent])
+
+const CYAN = '#2dd4bf'
+const CYAN_DIM = 'rgba(45, 212, 191, 0.25)'
+const GOLD = '#fcd34d'
+const MUTED = '#6b8aa0'
+const DANGER = '#fb7185'
 
 const dash = ref<DashboardSummary | null>(null)
-let poll: ReturnType<typeof setInterval> | null = null
-
-const lampClass = computed(() => {
-  const s = dash.value?.ai_status
-  if (s === 'analyzing') return 'lamp-analyze'
-  if (s === 'degraded') return 'lamp-bad'
-  return 'lamp-ok'
-})
-
-const lampLabel = computed(() => {
-  const s = dash.value?.ai_status
-  if (s === 'analyzing') return '分析中 · 图节点流式推送中'
-  if (s === 'degraded') return '异常域 · 存在 Critical 级开放事件'
-  return '正常 · 后台静默巡检'
-})
-
-const deployHint = computed(() => {
-  const d = dash.value?.deployment
-  if (!d) return ''
-  const modeLabel: Record<string, string> = {
-    kubernetes: 'K8s 中心部署',
-    hybrid: '混合（K8s + 物理/边缘）',
-    physical: '物理机 / VM 为主',
-    unspecified: '未声明部署模式',
-  }
-  const m = modeLabel[d.mode] || d.mode
-  const bits: string[] = [m]
-  if (d.center_in_kubernetes_pod) bits.push('运行在 Pod 内')
-  if (d.cluster_data_via_api) bits.push('集群侧建议走 API / Prometheus 取数')
-  if (d.edge_heartbeat_expected) bits.push('边缘探针用于集群外或 Playbook 执行点')
-  return bits.join(' · ')
-})
+const sysStats = ref<SystemStats | null>(null)
+const lastAt = ref('—')
+const activeTab = ref('overview')
+const pollMs = ref(30000)
+let pollTimer: ReturnType<typeof setInterval> | null = null
 
 const svgW = 720
-const svgH = 220
+const svgH = 280
+
+function truncate(s: string, max: number) {
+  if (!s) return ''
+  return s.length <= max ? s : `${s.slice(0, max - 1)}…`
+}
+
+function cumsum(arr: number[]) {
+  const o: number[] = []
+  let s = 0
+  for (const x of arr) {
+    s += x
+    o.push(s)
+  }
+  return o
+}
+
+function healthSparkSeries(incidentsNew: number[], healthNow: number): number[] {
+  if (!incidentsNew.length) return Array(24).fill(healthNow)
+  const out: number[] = []
+  let acc = 0
+  for (const n of incidentsNew) {
+    acc += n
+    out.push(Math.round(Math.max(38, Math.min(100, healthNow - acc * 2.2))))
+  }
+  out[out.length - 1] = Math.round(healthNow)
+  return out
+}
+
+function sparkOption(values: number[], color: string, fill: string) {
+  const n = values.length || 1
+  const x = values.map((_, i) => i)
+  return {
+    animation: false,
+    grid: { left: 2, right: 2, top: 4, bottom: 2 },
+    xAxis: { type: 'category', show: false, data: x },
+    yAxis: { type: 'value', show: false, min: 'dataMin', max: 'dataMax' },
+    series: [
+      {
+        type: 'line',
+        data: values,
+        smooth: true,
+        symbol: 'none',
+        lineStyle: { width: 1.2, color },
+        areaStyle: {
+          color: {
+            type: 'linear',
+            x: 0,
+            y: 0,
+            x2: 0,
+            y2: 1,
+            colorStops: [
+              { offset: 0, color: fill },
+              { offset: 1, color: 'transparent' },
+            ],
+          },
+        },
+      },
+    ],
+  }
+}
 
 const layoutNodes = computed(() => {
   const nodes = dash.value?.topology?.nodes ?? []
   const n = nodes.length || 0
   if (!n) return [] as Array<TopoNode & { x: number; y: number }>
-  const pad = 56
+  const pad = 48
   const usable = svgW - pad * 2
   const step = n > 1 ? usable / (n - 1) : 0
   return nodes.map((node, i) => ({
@@ -165,9 +311,7 @@ const layoutNodes = computed(() => {
 
 const posMap = computed(() => {
   const m = new Map<string, { x: number; y: number }>()
-  for (const n of layoutNodes.value) {
-    m.set(n.id, { x: n.x, y: n.y })
-  }
+  for (const n of layoutNodes.value) m.set(n.id, { x: n.x, y: n.y })
   return m
 })
 
@@ -175,293 +319,850 @@ function nodePos(id: string) {
   return posMap.value.get(id)
 }
 
-function truncate(s: string, max: number) {
-  if (!s) return ''
-  return s.length <= max ? s : `${s.slice(0, max - 1)}…`
+const pendingCount = computed(() => {
+  const d = dash.value
+  if (d?.pending_approval_count != null) return d.pending_approval_count
+  return d?.pending_tickets?.length ?? 0
+})
+
+const trendChartOption = computed(() => {
+  const t = dash.value?.trends
+  if (!t?.labels?.length) {
+    return {
+      backgroundColor: 'transparent',
+      grid: { left: 48, right: 24, top: 28, bottom: 40 },
+      xAxis: { type: 'category', data: [] },
+      yAxis: { type: 'value' },
+      series: [],
+    }
+  }
+  return {
+    backgroundColor: 'transparent',
+    textStyle: { color: MUTED, fontSize: 11 },
+    tooltip: {
+      trigger: 'axis',
+      backgroundColor: 'rgba(6, 22, 48, 0.92)',
+      borderColor: CYAN_DIM,
+      textStyle: { color: '#e8f4ff', fontSize: 12 },
+    },
+    legend: {
+      textStyle: { color: MUTED, fontSize: 11 },
+      top: 0,
+      data: ['新建事件', '自愈工单'],
+    },
+    grid: { left: 48, right: 24, top: 36, bottom: 36 },
+    xAxis: {
+      type: 'category',
+      boundaryGap: false,
+      data: t.labels,
+      axisLine: { lineStyle: { color: CYAN_DIM } },
+      axisLabel: { color: MUTED, fontSize: 10, rotate: 32 },
+    },
+    yAxis: {
+      type: 'value',
+      splitLine: { lineStyle: { color: 'rgba(45, 212, 191, 0.08)' } },
+      axisLabel: { color: MUTED, fontSize: 10 },
+    },
+    series: [
+      {
+        name: '新建事件',
+        type: 'line',
+        smooth: true,
+        symbol: 'none',
+        lineStyle: { width: 1.5, color: CYAN },
+        areaStyle: {
+          color: {
+            type: 'linear',
+            x: 0,
+            y: 0,
+            x2: 0,
+            y2: 1,
+            colorStops: [
+              { offset: 0, color: 'rgba(45, 212, 191, 0.22)' },
+              { offset: 1, color: 'transparent' },
+            ],
+          },
+        },
+        data: t.incidents_new,
+      },
+      {
+        name: '自愈工单',
+        type: 'line',
+        smooth: true,
+        symbol: 'none',
+        lineStyle: { width: 1.5, color: GOLD },
+        areaStyle: {
+          color: {
+            type: 'linear',
+            x: 0,
+            y: 0,
+            x2: 0,
+            y2: 1,
+            colorStops: [
+              { offset: 0, color: 'rgba(252, 211, 77, 0.15)' },
+              { offset: 1, color: 'transparent' },
+            ],
+          },
+        },
+        data: t.tickets_executed,
+      },
+    ],
+  }
+})
+
+const severityChartOption = computed(() => {
+  const s = dash.value?.severity_open
+  const c = s?.critical ?? 0
+  const w = s?.warning ?? 0
+  const i = s?.info ?? 0
+  return {
+    backgroundColor: 'transparent',
+    textStyle: { color: MUTED, fontSize: 11 },
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: { type: 'shadow' },
+      backgroundColor: 'rgba(6, 22, 48, 0.92)',
+      borderColor: CYAN_DIM,
+    },
+    grid: { left: 72, right: 16, top: 8, bottom: 8 },
+    xAxis: { type: 'value', show: false },
+    yAxis: {
+      type: 'category',
+      data: ['Info', 'Warning', 'Critical'],
+      axisLine: { show: false },
+      axisTick: { show: false },
+      axisLabel: { color: MUTED, fontSize: 11 },
+    },
+    series: [
+      {
+        type: 'bar',
+        barWidth: 10,
+        data: [
+          { value: i, itemStyle: { color: CYAN, borderRadius: [0, 4, 4, 0] } },
+          { value: w, itemStyle: { color: GOLD, borderRadius: [0, 4, 4, 0] } },
+          { value: c, itemStyle: { color: DANGER, borderRadius: [0, 4, 4, 0] } },
+        ],
+      },
+    ],
+  }
+})
+
+const kpiCards = computed(() => {
+  const d = dash.value
+  const inc = d?.trends?.incidents_new ?? []
+  const hel = d?.trends?.tickets_executed ?? []
+  const h = d?.health_score ?? 100
+  const sumInc = inc.reduce((a, b) => a + b, 0)
+  const sumHel = hel.reduce((a, b) => a + b, 0)
+  const pend = pendingCount.value
+  const ts = d?.topology_stats
+  const nodes = ts?.node_count ?? d?.topology?.nodes?.length ?? 0
+  const healthy = ts?.healthy_nodes ?? 0
+
+  const healthSpark = healthSparkSeries(inc, h)
+  const incCum = cumsum(inc)
+  const helCum = cumsum(hel)
+  const pendLine = inc.length ? Array(inc.length).fill(pend) : [pend]
+
+  return [
+    {
+      key: 'health',
+      label: '健康分',
+      value: d?.health_score != null ? String(d.health_score) : '—',
+      suffix: '/ 100',
+      emphasis: true,
+      sparkOption: sparkOption(healthSpark.length ? healthSpark : [h], GOLD, 'rgba(252, 211, 77, 0.2)'),
+    },
+    {
+      key: 'open',
+      label: '开放事件',
+      value: String(d?.open_incidents ?? 0),
+      suffix: '',
+      emphasis: false,
+      sparkOption: sparkOption(incCum.length ? incCum : [0], CYAN, 'rgba(45, 212, 191, 0.15)'),
+    },
+    {
+      key: 'pend',
+      label: '待审工单',
+      value: String(pend),
+      suffix: '',
+      emphasis: false,
+      sparkOption: sparkOption(pendLine, GOLD, 'rgba(252, 211, 77, 0.12)'),
+    },
+    {
+      key: '24h',
+      label: '24h 新告警',
+      value: String(sumInc),
+      suffix: '起',
+      emphasis: false,
+      sparkOption: sparkOption(inc.length ? inc : [0], CYAN, 'rgba(45, 212, 191, 0.12)'),
+    },
+    {
+      key: 'heal',
+      label: '24h 自愈',
+      value: String(sumHel),
+      suffix: '单',
+      emphasis: false,
+      sparkOption: sparkOption(hel.length ? hel : [0], GOLD, 'rgba(252, 211, 77, 0.12)'),
+    },
+    {
+      key: 'topo',
+      label: '拓扑节点',
+      value: String(nodes),
+      suffix: healthy && nodes ? `健 ${healthy}` : '',
+      emphasis: false,
+      sparkOption: sparkOption(
+        (inc.length ? inc : Array(12).fill(0)).map(() => nodes),
+        CYAN,
+        'rgba(45, 212, 191, 0.1)',
+      ),
+    },
+  ]
+})
+
+const envRows = computed(() => {
+  const d = dash.value?.deployment
+  const modeLabel: Record<string, string> = {
+    kubernetes: 'Kubernetes',
+    hybrid: '混合',
+    physical: '物理 / 边缘',
+    unspecified: '未声明',
+  }
+  const ai = dash.value?.ai_status
+  return [
+    {
+      k: '部署模式',
+      v: d ? modeLabel[d.mode] || d.mode : '—',
+      ok: Boolean(d && d.mode !== 'unspecified'),
+      warn: !d || d.mode === 'unspecified',
+    },
+    {
+      k: '控制面 Pod',
+      v: d?.center_in_kubernetes_pod ? '在 Pod 内' : '否 / 未知',
+      ok: Boolean(d?.center_in_kubernetes_pod),
+      warn: false,
+    },
+    {
+      k: '集群数据',
+      v: d?.cluster_data_via_api ? '经 API / 指标栈' : '未标记',
+      ok: Boolean(d?.cluster_data_via_api),
+      warn: false,
+    },
+    {
+      k: '边缘心跳',
+      v: d?.edge_heartbeat_expected ? '预期边缘探针' : '不强制',
+      ok: true,
+      warn: false,
+    },
+    {
+      k: 'AI 巡检',
+      v: ai === 'analyzing' ? '分析中' : ai === 'degraded' ? '有风险' : '静默',
+      ok: ai === 'idle',
+      warn: ai === 'degraded',
+    },
+    {
+      k: '经验库',
+      v: `${dash.value?.knowledge_entries ?? 0} 条`,
+      ok: (dash.value?.knowledge_entries ?? 0) > 0,
+      warn: false,
+    },
+  ]
+})
+
+function formatNow() {
+  const x = new Date()
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${x.getFullYear()}-${p(x.getMonth() + 1)}-${p(x.getDate())} ${p(x.getHours())}:${p(x.getMinutes())}:${p(x.getSeconds())}`
 }
 
-async function load() {
+async function loadAll() {
   try {
-    dash.value = await aiOpsApi.getDashboard()
+    const [d, s] = await Promise.all([aiOpsApi.getDashboard(), systemApi.getStats()])
+    dash.value = d
+    sysStats.value = s
+    lastAt.value = formatNow()
   } catch {
-    dash.value = null
+    try {
+      dash.value = await aiOpsApi.getDashboard()
+    } catch {
+      dash.value = null
+    }
+    sysStats.value = null
+    lastAt.value = formatNow()
   }
 }
 
-onMounted(() => {
-  void load()
-  poll = setInterval(() => void load(), 15000)
+function clearPoll() {
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
+}
+
+watch(pollMs, (ms) => {
+  clearPoll()
+  if (ms > 0) {
+    pollTimer = setInterval(() => void loadAll(), ms)
+  }
 })
 
-onUnmounted(() => {
-  if (poll) clearInterval(poll)
+onMounted(() => {
+  void loadAll()
+  if (pollMs.value > 0) {
+    pollTimer = setInterval(() => void loadAll(), pollMs.value)
+  }
 })
+
+onUnmounted(() => clearPoll())
 </script>
 
 <style scoped>
-.bento-page {
-  max-width: 1200px;
-  margin: 0 auto;
+.ops-dash {
+  animation: in 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
-.bento-grid {
-  display: grid;
-  grid-template-columns: repeat(12, 1fr);
-  gap: 16px;
-}
-
-.bento-cell {
-  min-height: 0;
-}
-
-.bento-span-4 {
-  grid-column: span 4;
-}
-.bento-span-6 {
-  grid-column: span 6;
-}
-.bento-span-12 {
-  grid-column: span 12;
-}
-
-@media (max-width: 960px) {
-  .bento-span-4,
-  .bento-span-6 {
-    grid-column: span 12;
+@keyframes in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
   }
 }
 
-.glass-panel {
-  background: rgba(12, 12, 12, 0.55);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid #333333;
-  border-radius: 12px;
-  padding: 20px 22px;
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.03) inset;
-}
-
-.eyebrow {
-  font-size: 11px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: #888888;
-  margin: 0 0 12px;
-}
-
-.health-row {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-}
-
-.health-score {
-  font-size: 42px;
-  font-weight: 600;
-  letter-spacing: -0.03em;
-  color: #fafafa;
-  font-feature-settings: 'tnum';
-}
-
-.health-unit {
-  font-size: 14px;
-  color: #888888;
-}
-
-.muted {
-  color: #888888;
-}
-.small {
-  font-size: 12px;
-  margin: 10px 0 0;
-  line-height: 1.5;
-}
-
-.deploy-hint {
-  margin-top: 8px;
-  max-width: 42em;
-}
-.tiny {
-  font-size: 11px;
-}
-
-.lamp-row {
+.bc {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 8px;
+  margin-bottom: 16px;
+  font-size: 12px;
+  color: var(--tech-text-muted);
 }
 
-.lamp {
-  width: 12px;
-  height: 12px;
+.bc-sep {
+  opacity: 0.45;
+}
+
+.bc-here {
+  color: var(--tech-text-secondary);
+}
+
+.page-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 14px;
+}
+
+.page-title {
+  margin: 0;
+  font-size: 1.45rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--tech-text);
+  text-shadow: 0 0 24px rgba(45, 212, 191, 0.12);
+}
+
+.page-sub {
+  margin: 8px 0 0;
+  max-width: 640px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--tech-text-muted);
+}
+
+.resource-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 220px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--tech-cyan-border);
+  background: rgba(6, 24, 48, 0.45);
+}
+
+.res-item {
+  display: grid;
+  grid-template-columns: 36px 1fr auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.res-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--tech-text-muted);
+}
+
+.res-bar-wrap {
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(45, 212, 191, 0.08);
+  overflow: hidden;
+}
+
+.res-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--tech-cyan), rgba(45, 212, 191, 0.45));
+  box-shadow: 0 0 10px rgba(45, 212, 191, 0.35);
+  transition: width 0.35s ease;
+}
+
+.res-bar-fill--mem {
+  background: linear-gradient(90deg, #38bdf8, rgba(56, 189, 248, 0.45));
+  box-shadow: 0 0 10px rgba(56, 189, 248, 0.25);
+}
+
+.res-val {
+  font-size: 11px;
+  color: var(--tech-text-secondary);
+}
+
+.notice-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  border-radius: 8px;
+  border: 1px solid rgba(56, 189, 248, 0.28);
+  background: rgba(14, 165, 233, 0.06);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--tech-text-secondary);
+}
+
+.notice-dot {
+  width: 6px;
+  height: 6px;
+  margin-top: 5px;
   border-radius: 50%;
   flex-shrink: 0;
+  background: var(--tech-cyan);
+  box-shadow: 0 0 8px rgba(45, 212, 191, 0.5);
 }
 
-.lamp-ok {
-  background: #14532d;
-  box-shadow: 0 0 10px rgba(34, 197, 94, 0.35);
-  opacity: 0.85;
-}
-
-.lamp-analyze {
-  background: #38bdf8;
-  animation: breathe 2.4s ease-in-out infinite;
-  box-shadow: 0 0 16px rgba(56, 189, 248, 0.55);
-}
-
-.lamp-bad {
-  background: #dc2626;
-  box-shadow: 0 0 14px rgba(220, 38, 38, 0.65);
-  animation: pulse-red 1.8s ease-in-out infinite;
-}
-
-@keyframes breathe {
-  0%,
-  100% {
-    opacity: 0.45;
-    transform: scale(0.92);
-  }
-  50% {
-    opacity: 1;
-    transform: scale(1.05);
-  }
-}
-
-@keyframes pulse-red {
-  50% {
-    opacity: 0.55;
-  }
-}
-
-.lamp-label {
-  margin: 0;
-  font-size: 15px;
-  color: #e5e5e5;
-}
-
-.threshold {
-  margin: 0;
-  font-size: 20px;
-  color: #fafafa;
-}
-
-.topo-head {
+.toolbar {
   display: flex;
-  justify-content: space-between;
+  flex-wrap: wrap;
   align-items: center;
-  margin-bottom: 8px;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.toolbar-meta {
+  font-size: 11px;
+  color: var(--tech-text-muted);
+}
+
+.toolbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.poll-select {
+  width: 120px;
 }
 
 .link-console {
-  font-size: 13px;
-  color: #a3a3a3;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--tech-cyan);
   text-decoration: none;
 }
+
 .link-console:hover {
-  color: #fafafa;
+  text-decoration: underline;
 }
 
-.topo-stage {
-  width: 100%;
-  min-height: 200px;
-  border-radius: 8px;
-  border: 1px solid #262626;
-  background: #050505;
+.dash-tabs :deep(.el-tabs__header) {
+  margin-bottom: 16px;
 }
 
-.topo-svg {
-  width: 100%;
-  height: 200px;
-  display: block;
+.dash-tabs :deep(.el-tabs__nav-wrap::after) {
+  background-color: rgba(45, 212, 191, 0.15);
 }
 
-.topo-edge {
-  stroke: #333333;
-  stroke-width: 1;
+.dash-tabs :deep(.el-tabs__item) {
+  color: var(--tech-text-muted);
+  font-weight: 500;
 }
 
-.topo-node.ok {
-  fill: #171717;
-  stroke: #404040;
-  stroke-width: 1;
+.dash-tabs :deep(.el-tabs__item.is-active) {
+  color: var(--tech-cyan);
 }
 
-.topo-node.bad {
-  fill: #450a0a;
-  stroke: #dc2626;
-  stroke-width: 1.5;
+.dash-tabs :deep(.el-tabs__active-bar) {
+  background-color: var(--tech-cyan);
+  box-shadow: 0 0 12px rgba(45, 212, 191, 0.45);
 }
 
-.topo-label {
-  fill: #a3a3a3;
-  font-size: 9px;
-  font-family: var(--aiops-font-mono);
+.kpi-row {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+@media (max-width: 1200px) {
+  .kpi-row {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+@media (max-width: 560px) {
+  .kpi-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+.kpi-card {
+  position: relative;
+  padding: 12px 14px 6px;
+  border-radius: 10px;
+  border: 1px solid var(--tech-cyan-border);
+  background: linear-gradient(165deg, rgba(10, 32, 56, 0.42) 0%, rgba(4, 14, 32, 0.72) 100%);
+  box-shadow: 0 0 14px var(--tech-cyan-glow), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.tech-corner::before {
+  content: '';
+  position: absolute;
+  top: -1px;
+  left: -1px;
+  width: 9px;
+  height: 9px;
+  border-top: 2px solid var(--tech-cyan);
+  border-left: 2px solid var(--tech-cyan);
+  opacity: 0.55;
   pointer-events: none;
 }
 
-.empty-topo,
-.empty-list {
+.kpi-card-label {
+  display: block;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--tech-text-muted);
+}
+
+.kpi-card-mid {
   display: flex;
-  flex-direction: column;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.kpi-card-value {
+  font-size: 1.35rem;
+  font-weight: 600;
+  font-feature-settings: 'tnum' 1;
+  color: var(--tech-text);
+}
+
+.kpi-card-value--gold {
+  color: var(--tech-gold);
+  text-shadow: 0 0 18px var(--tech-gold-dim);
+}
+
+.kpi-card-suffix {
+  font-size: 11px;
+  color: var(--tech-text-muted);
+}
+
+.kpi-spark {
+  height: 44px;
+  width: 100%;
+  margin-top: 4px;
+}
+
+.mid-grid {
+  display: grid;
+  grid-template-columns: 1fr 320px;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+@media (max-width: 1024px) {
+  .mid-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.panel {
+  border-radius: 10px;
+  border: 1px solid var(--tech-cyan-border);
+  background: linear-gradient(165deg, rgba(10, 32, 56, 0.45) 0%, rgba(4, 14, 32, 0.72) 100%);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  box-shadow: 0 0 18px var(--tech-cyan-glow), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.panel-cap {
+  display: flex;
+  justify-content: space-between;
   align-items: center;
-  justify-content: center;
-  text-align: center;
-  min-height: 160px;
-  padding: 24px;
-  font-size: 13px;
-  line-height: 1.6;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--aiops-border);
 }
 
-.empty-icon {
-  font-size: 22px;
-  color: #525252;
+.cap-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--tech-cyan);
+}
+
+.cap-title--inline {
+  display: block;
   margin-bottom: 8px;
-}
-
-.mini-list {
-  list-style: none;
-  margin: 0;
+  border: none;
   padding: 0;
 }
 
-.mini-item {
-  display: grid;
-  grid-template-columns: auto 1fr auto;
-  gap: 10px;
-  align-items: baseline;
-  padding: 10px 0;
-  border-bottom: 1px solid #1f1f1f;
-  font-size: 13px;
+.cap-hint {
+  font-size: 11px;
+  color: var(--tech-text-muted);
 }
 
-.mini-item:last-child {
+.cap-count {
+  font-size: 12px;
+  color: var(--tech-gold);
+}
+
+.cap-link {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.chart-main {
+  height: 300px;
+  width: 100%;
+  padding: 4px 8px 12px;
+}
+
+.env-body {
+  padding: 12px 16px 16px;
+}
+
+.env-list {
+  list-style: none;
+  margin: 0 0 16px;
+  padding: 0;
+}
+
+.env-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(45, 212, 191, 0.08);
+  font-size: 12px;
+}
+
+.env-list li:last-child {
   border-bottom: none;
 }
 
-.mini-item .id {
-  color: #737373;
-  font-size: 11px;
+.env-k {
+  color: var(--tech-text-muted);
 }
 
-.mini-item .txt {
-  color: #d4d4d4;
+.env-v {
+  color: var(--tech-text-secondary);
+  text-align: right;
+}
+
+.env-v.ok {
+  color: var(--tech-cyan);
+}
+
+.env-v.warn {
+  color: var(--tech-danger);
+}
+
+.globe-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 8px 0 12px;
+  border-top: 1px solid rgba(45, 212, 191, 0.1);
+  border-bottom: 1px solid rgba(45, 212, 191, 0.1);
+}
+
+.env-globe {
+  width: 160px;
+  height: 160px;
+  opacity: 0.9;
+}
+
+.globe-caption {
+  margin: 6px 0 0;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--tech-text-muted);
+}
+
+.chart-sev {
+  height: 120px;
+  width: 100%;
+}
+
+.tables-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+@media (max-width: 900px) {
+  .tables-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.table-body {
+  padding: 4px 0 8px;
+  min-height: 100px;
+}
+
+.t-row {
+  display: grid;
+  grid-template-columns: 72px 1fr auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 16px;
+  border-bottom: 1px solid rgba(45, 212, 191, 0.08);
+  font-size: 13px;
+}
+
+.t-row:last-child {
+  border-bottom: none;
+}
+
+.t-row:hover {
+  background: rgba(45, 212, 191, 0.04);
+}
+
+.t-id {
+  font-size: 11px;
+  color: var(--tech-text-muted);
+}
+
+.t-main {
+  color: var(--tech-text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.pill {
+.t-tag {
   font-size: 10px;
-  text-transform: uppercase;
+  font-weight: 600;
   letter-spacing: 0.06em;
-  color: #888888;
-  border: 1px solid #333333;
-  border-radius: 999px;
+  text-transform: uppercase;
+  color: var(--tech-gold);
   padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid rgba(252, 211, 77, 0.35);
+  background: var(--tech-gold-dim);
 }
 
-.list-panel {
-  min-height: 220px;
+.t-time {
+  font-size: 10px;
+  color: var(--tech-text-muted);
+}
+
+.table-zero {
+  margin: 0;
+  padding: 28px 16px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--tech-text-muted);
+}
+
+.panel-topo-full {
+  min-height: 360px;
+}
+
+.topo-body {
+  min-height: 300px;
+  padding: 12px;
+}
+
+.topo-chart {
+  border-radius: 8px;
+  border: 1px solid var(--aiops-border);
+  overflow: hidden;
+}
+
+.topo-svg {
+  display: block;
+  width: 100%;
+  height: 300px;
+}
+
+.t-edge {
+  stroke: rgba(45, 212, 191, 0.35);
+  stroke-width: 1;
+}
+
+.t-node {
+  fill: rgba(8, 24, 48, 0.9);
+  stroke: var(--tech-cyan);
+  stroke-width: 1;
+}
+
+.t-node--bad {
+  stroke: var(--tech-danger);
+  fill: rgba(251, 113, 133, 0.12);
+}
+
+.t-cap {
+  fill: var(--tech-text-muted);
+  font-size: 9px;
+  font-family: var(--aiops-font-mono);
+}
+
+.topo-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 16px;
+  min-height: 280px;
+}
+
+.topo-globe {
+  margin-bottom: 12px;
+}
+
+.empty-copy {
+  margin: 0;
+  font-size: 13px;
+  color: var(--tech-text-secondary);
+}
+
+.empty-hint {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--tech-text-muted);
+}
+
+.mono {
+  font-family: var(--aiops-font-mono);
 }
 </style>

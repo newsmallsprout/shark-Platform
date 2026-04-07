@@ -1,4 +1,5 @@
 // go-log-collector — 轻量日志上报：可选仅关键行、边缘正则脱敏、批量 POST。
+// 支持多文件、类 tail -f 持续读取（适合 Nginx access/error 日志）。
 package main
 
 import (
@@ -6,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"regexp"
@@ -21,35 +23,173 @@ func env(key, def string) string {
 	return v
 }
 
+func envBool(key string) bool {
+	v := strings.ToLower(strings.TrimSpace(env(key, "")))
+	return v == "1" || v == "true" || v == "yes"
+}
+
 func main() {
 	center := strings.TrimRight(env("SHARK_AIOPS_CENTER_URL", "http://127.0.0.1:8000"), "/")
 	token := env("SHARK_AIOPS_EDGE_TOKEN", "")
 	source := env("SHARK_AIOPS_LOG_SOURCE", "edge")
-	paths := env("SHARK_AIOPS_LOG_PATHS", "")
+	pathsRaw := env("SHARK_AIOPS_LOG_PATHS", "")
 	batch := 100
 	severity := strings.ToLower(env("SHARK_AIOPS_LOG_SEVERITY", "error"))
-	// severity=error|warn|all — all 表示不过滤关键字
+	follow := envBool("SHARK_AIOPS_LOG_FOLLOW")
+	fromEnd := true
+	if follow {
+		// 默认 1：从当前文件末尾开始只推新行；设为 0 则先把已有内容读完再跟随
+		fromEnd = strings.TrimSpace(env("SHARK_AIOPS_LOG_FROM_END", "1")) != "0"
+	}
+
 	url := center + "/api/edge/logs"
 	client := &http.Client{Timeout: 30 * time.Second}
-
 	redactors := compileRedactors()
 
-	var scanner *bufio.Scanner
-	if paths == "" {
-		scanner = bufio.NewScanner(os.Stdin)
-	} else {
-		parts := strings.Split(paths, ",")
-		f, err := os.Open(strings.TrimSpace(parts[0]))
+	paths := parsePaths(pathsRaw)
+	if len(paths) == 0 {
+		runStdin(source, url, token, client, redactors, severity, batch)
+		return
+	}
+
+	if follow {
+		lineCh := make(chan string, 4096)
+		for _, p := range paths {
+			p := p
+			go tailFileForever(p, fromEnd, lineCh)
+		}
+		runConsumer(lineCh, source, url, token, client, redactors, severity, batch)
+		return
+	}
+
+	runFilesOnce(paths, source, url, token, client, redactors, severity, batch)
+}
+
+func parsePaths(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		p := strings.TrimSpace(part)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func runStdin(
+	source, url, token string,
+	client *http.Client,
+	redactors []redactor,
+	severity string,
+	batch int,
+) {
+	scanner := bufio.NewScanner(os.Stdin)
+	// 极长行（JSON access log）放宽 buffer
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	lines, flush := makeFlusher(source, url, token, client, batch)
+	tick := time.NewTicker(5 * time.Second)
+	defer tick.Stop()
+	go func() {
+		for range tick.C {
+			flush()
+		}
+	}()
+	for scanner.Scan() {
+		line := processLine(scanner.Text(), redactors, severity)
+		if line == "" {
+			continue
+		}
+		lines = append(lines, line)
+		if len(lines) >= batch {
+			flush()
+		}
+	}
+	flush()
+	if err := scanner.Err(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func runFilesOnce(
+	paths []string,
+	source, url, token string,
+	client *http.Client,
+	redactors []redactor,
+	severity string,
+	batch int,
+) {
+	lines, flush := makeFlusher(source, url, token, client, batch)
+	tick := time.NewTicker(5 * time.Second)
+	defer tick.Stop()
+	go func() {
+		for range tick.C {
+			flush()
+		}
+	}()
+
+	for _, path := range paths {
+		f, err := os.Open(path)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
-		defer f.Close()
-		scanner = bufio.NewScanner(f)
+		sc := bufio.NewScanner(f)
+		sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		for sc.Scan() {
+			line := processLine(sc.Text(), redactors, severity)
+			if line == "" {
+				continue
+			}
+			lines = append(lines, line)
+			if len(lines) >= batch {
+				flush()
+			}
+		}
+		_ = f.Close()
+		if err := sc.Err(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	}
+	flush()
+}
 
-	var lines []string
-	flush := func() {
+func runConsumer(
+	lineCh <-chan string,
+	source, url, token string,
+	client *http.Client,
+	redactors []redactor,
+	severity string,
+	batch int,
+) {
+	lines, flush := makeFlusher(source, url, token, client, batch)
+	tick := time.NewTicker(5 * time.Second)
+	go func() {
+		for range tick.C {
+			flush()
+		}
+	}()
+	defer tick.Stop()
+	for line := range lineCh {
+		line = processLine(line, redactors, severity)
+		if line == "" {
+			continue
+		}
+		lines = append(lines, line)
+		if len(lines) >= batch {
+			flush()
+		}
+	}
+	flush()
+}
+
+func makeFlusher(source, url, token string, client *http.Client, batch int) (lines []string, flush func()) {
+	lines = make([]string, 0, batch)
+	flush = func() {
 		if len(lines) == 0 {
 			return
 		}
@@ -70,30 +210,62 @@ func main() {
 		}
 		lines = lines[:0]
 	}
+	return lines, flush
+}
 
-	tick := time.NewTicker(5 * time.Second)
-	defer tick.Stop()
-	go func() {
-		for range tick.C {
-			flush()
-		}
-	}()
+func processLine(raw string, redactors []redactor, severity string) string {
+	line := applyRedaction(raw, redactors)
+	if !shouldForward(line, severity) {
+		return ""
+	}
+	return line
+}
 
-	for scanner.Scan() {
-		line := scanner.Text()
-		line = applyRedaction(line, redactors)
-		if !shouldForward(line, severity) {
+// tailFileForever 轮询文件增长，类 tail -f；简单处理截断/轮转（文件变小则从头再读）。
+func tailFileForever(path string, startAtEnd bool, out chan<- string) {
+	var offset int64
+	first := true
+	const pause = time.Second
+	for {
+		f, err := os.Open(path)
+		if err != nil {
+			time.Sleep(pause)
 			continue
 		}
-		lines = append(lines, line)
-		if len(lines) >= batch {
-			flush()
+		st, err := f.Stat()
+		if err != nil {
+			_ = f.Close()
+			time.Sleep(pause)
+			continue
 		}
-	}
-	flush()
-	if err := scanner.Err(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		sz := st.Size()
+		if first && startAtEnd {
+			offset = sz
+			first = false
+		}
+		if sz < offset {
+			offset = 0
+		}
+		if sz > offset {
+			_, err = f.Seek(offset, io.SeekStart)
+			if err != nil {
+				_ = f.Close()
+				time.Sleep(pause)
+				continue
+			}
+			sc := bufio.NewScanner(f)
+			sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+			for sc.Scan() {
+				out <- sc.Text()
+			}
+			if err := sc.Err(); err != nil {
+				fmt.Fprintf(os.Stderr, "%s: %v\n", path, err)
+			}
+			pos, _ := f.Seek(0, io.SeekCurrent)
+			offset = pos
+		}
+		_ = f.Close()
+		time.Sleep(pause)
 	}
 }
 
@@ -105,7 +277,6 @@ type redactor struct {
 func compileRedactors() []redactor {
 	custom := env("SHARK_AIOPS_REDACT_REGEX", "")
 	var out []redactor
-	// 内置：邮箱、简易卡号、Bearer Token
 	builtin := []struct {
 		pat, rep string
 	}{
@@ -124,7 +295,6 @@ func compileRedactors() []redactor {
 			if part == "" {
 				continue
 			}
-			// 格式 pattern@@@replacement
 			chunks := strings.SplitN(part, "@@@", 2)
 			if len(chunks) != 2 {
 				continue
@@ -153,7 +323,6 @@ func shouldForward(line, severity string) bool {
 		return strings.Contains(low, "error") || strings.Contains(low, "fatal") ||
 			strings.Contains(low, "panic") || strings.Contains(low, "warn")
 	}
-	// error
 	return strings.Contains(low, "error") || strings.Contains(low, "fatal") ||
 		strings.Contains(low, "panic")
 }

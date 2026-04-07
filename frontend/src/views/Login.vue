@@ -1,26 +1,28 @@
 <template>
-  <div class="login-container">
-    <div class="login-card l5-glass">
-      <div class="brand">
-        <div class="mono-badge">L5</div>
-        <h1 class="title">shark-aiops</h1>
-        <p class="subtitle">Control plane access</p>
+  <div class="login">
+    <div class="login-panel">
+      <div class="login-brand">
+        <span class="login-mark" />
+        <div>
+          <h1 class="login-title">AIOps Platform</h1>
+          <p class="login-lede">控制中心登录</p>
+        </div>
       </div>
 
       <el-form :model="form" class="login-form" @submit.prevent="handleLogin">
-        <el-form-item>
+        <el-form-item class="fi">
           <el-input
             v-model="form.username"
-            placeholder="Username"
+            placeholder="用户名"
             size="large"
             :prefix-icon="User"
           />
         </el-form-item>
-        <el-form-item>
+        <el-form-item class="fi">
           <el-input
             v-model="form.password"
             type="password"
-            placeholder="Password"
+            placeholder="密码"
             size="large"
             show-password
             :prefix-icon="Lock"
@@ -30,15 +32,15 @@
         <el-button
           type="primary"
           size="large"
-          class="login-btn"
+          class="login-submit"
           :loading="loading"
           @click="handleLogin"
         >
-          Authenticate
+          登录
         </el-button>
       </el-form>
 
-      <div class="footer">Distributed edge · LangGraph center brain</div>
+      <p class="login-foot">LangGraph · Celery · SSE</p>
     </div>
   </div>
 </template>
@@ -83,76 +85,105 @@ const handleLogin = async () => {
 </script>
 
 <style scoped>
-.login-container {
-  min-height: 100vh;
+.login {
+  min-height: 100dvh;
   display: flex;
-  justify-content: center;
   align-items: center;
+  justify-content: center;
   padding: 24px;
-  background:
-    radial-gradient(ellipse 80% 50% at 50% -20%, rgba(14, 165, 233, 0.12), transparent),
-    radial-gradient(ellipse 60% 40% at 100% 100%, rgba(16, 185, 129, 0.08), transparent),
-    #050505;
+  background: var(--aiops-bg);
+  position: relative;
 }
 
-.login-card {
+.login::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(ellipse 55% 40% at 50% -15%, rgba(250, 250, 250, 0.05), transparent 60%);
+}
+
+.login-panel {
+  position: relative;
   width: 100%;
-  max-width: 420px;
+  max-width: 400px;
   padding: 40px 36px 32px;
+  border-radius: 14px;
+  border: 1px solid var(--aiops-border);
+  background: var(--aiops-surface-2);
+  box-shadow:
+    0 32px 64px rgba(0, 0, 0, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  animation: rise 0.55s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
-.brand {
-  text-align: center;
-  margin-bottom: 28px;
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
-.mono-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 48px;
-  height: 48px;
-  border-radius: 12px;
-  font-family: var(--l5-font-mono);
-  font-weight: 800;
-  font-size: 18px;
-  color: #0ea5e9;
-  border: 1px solid rgba(14, 165, 233, 0.35);
-  margin-bottom: 16px;
-  box-shadow: 0 0 20px rgba(14, 165, 233, 0.15);
+.login-brand {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+  margin-bottom: 32px;
 }
 
-.title {
+.login-mark {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-top: 8px;
+  background: var(--aiops-accent-live);
+  flex-shrink: 0;
+}
+
+.login-title {
   margin: 0;
-  font-size: 22px;
-  font-weight: 800;
-  letter-spacing: 0.06em;
-  color: #fafafa;
+  font-size: 1.375rem;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  color: var(--aiops-text);
 }
 
-.subtitle {
-  margin: 8px 0 0;
+.login-lede {
+  margin: 6px 0 0;
   font-size: 13px;
-  color: #737373;
+  color: var(--aiops-text-tertiary);
 }
 
 .login-form {
   width: 100%;
 }
 
-.login-btn {
-  width: 100%;
-  margin-top: 4px;
-  font-weight: 600;
-  --el-button-bg-color: #0ea5e9;
-  --el-button-border-color: #0ea5e9;
+.login-form :deep(.fi) {
+  margin-bottom: 16px;
 }
 
-.footer {
-  margin-top: 28px;
+.login-submit {
+  width: 100%;
+  margin-top: 8px;
+  height: 44px;
+  font-weight: 600;
+  border-radius: 8px;
+}
+
+.login-submit:active {
+  transform: scale(0.99);
+}
+
+.login-foot {
+  margin: 28px 0 0;
   text-align: center;
   font-size: 11px;
-  color: #525252;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--aiops-text-tertiary);
 }
 </style>

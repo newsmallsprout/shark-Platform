@@ -459,7 +459,7 @@ defineExpose({
           :timestamp="new Date(step.ts * 1000).toLocaleTimeString()"
           placement="top"
           :icon="CircleCheck"
-          :color="'#22d3ee'"
+          color="#a1a1aa"
           class="thought-timeline__item"
         >
           <div class="step-card">
@@ -536,11 +536,9 @@ defineExpose({
   height: 100%;
   min-height: 360px;
   border-radius: 12px;
-  border: 1px solid rgba(56, 189, 248, 0.25);
-  background: linear-gradient(145deg, rgba(15, 23, 42, 0.96) 0%, rgba(15, 23, 42, 0.88) 100%);
-  box-shadow:
-    0 0 0 1px rgba(34, 211, 238, 0.08),
-    0 12px 40px rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--aiops-border);
+  background: var(--aiops-surface-2);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
   overflow: hidden;
 }
 
@@ -549,8 +547,8 @@ defineExpose({
   align-items: center;
   justify-content: space-between;
   padding: 12px 16px;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.15);
-  background: rgba(15, 23, 42, 0.6);
+  border-bottom: 1px solid var(--aiops-border);
+  background: rgba(12, 12, 14, 0.85);
   backdrop-filter: blur(8px);
 }
 
@@ -562,35 +560,35 @@ defineExpose({
 
 .stream-header__title {
   font-weight: 600;
-  font-size: 15px;
-  letter-spacing: 0.02em;
-  color: #e2e8f0;
+  font-size: 14px;
+  letter-spacing: -0.02em;
+  color: var(--aiops-text);
 }
 
 .stream-header__runid {
-  color: #64748b;
+  color: var(--aiops-text-tertiary);
   margin-left: 4px;
 }
 
 .stream-header__pulse {
-  font-size: 20px;
-  color: #64748b;
-  transition: color 0.3s;
-}
-
-.stream-header__pulse.is-live {
-  color: #22d3ee;
-  animation: pulse-glow 1.8s ease-in-out infinite;
+  font-size: 18px;
+  color: var(--aiops-text-tertiary);
+  transition: color 0.25s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 @keyframes pulse-glow {
   0%,
   100% {
-    filter: drop-shadow(0 0 2px rgba(34, 211, 238, 0.4));
+    opacity: 0.55;
   }
   50% {
-    filter: drop-shadow(0 0 8px rgba(34, 211, 238, 0.85));
+    opacity: 1;
   }
+}
+
+.stream-header__pulse.is-live {
+  color: var(--aiops-accent-live);
+  animation: pulse-glow 2s ease-in-out infinite;
 }
 
 .stream-alert {
@@ -611,7 +609,7 @@ defineExpose({
   align-items: center;
   justify-content: center;
   min-height: 200px;
-  color: #94a3b8;
+  color: var(--aiops-text-tertiary);
   text-align: center;
 }
 
@@ -630,7 +628,8 @@ defineExpose({
 .stream-empty__hint {
   margin-top: 8px;
   font-size: 11px;
-  color: #475569;
+  color: var(--aiops-text-tertiary);
+  opacity: 0.85;
   word-break: break-all;
   max-width: 100%;
 }
@@ -640,14 +639,14 @@ defineExpose({
 }
 
 .thought-timeline :deep(.el-timeline-item__timestamp) {
-  color: #64748b;
-  font-family: var(--l5-font-mono);
+  color: var(--aiops-text-tertiary);
+  font-family: var(--aiops-font-mono);
   font-size: 11px;
 }
 
 .thought-timeline :deep(.el-timeline-item__node) {
-  background: linear-gradient(180deg, #22d3ee, #0ea5e9);
-  box-shadow: 0 0 12px rgba(34, 211, 238, 0.45);
+  background: var(--aiops-text-secondary);
+  box-shadow: none;
 }
 
 .thought-timeline__item {
@@ -656,8 +655,8 @@ defineExpose({
 
 .step-card {
   border-radius: 10px;
-  border: 1px solid rgba(51, 65, 85, 0.6);
-  background: rgba(30, 41, 59, 0.55);
+  border: 1px solid var(--aiops-border);
+  background: var(--aiops-bg-elevated);
   padding: 12px 14px;
   margin-bottom: 4px;
 }
@@ -671,10 +670,10 @@ defineExpose({
 }
 
 .step-card__label {
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 600;
-  color: #f1f5f9;
-  letter-spacing: 0.03em;
+  color: var(--aiops-text);
+  letter-spacing: -0.02em;
 }
 
 .tool-collapse {
@@ -683,11 +682,11 @@ defineExpose({
 }
 
 .tool-collapse :deep(.el-collapse-item__header) {
-  background: rgba(15, 23, 42, 0.5);
+  background: var(--aiops-bg);
   border-radius: 8px;
   padding: 8px 12px;
-  border: 1px solid rgba(71, 85, 105, 0.5);
-  color: #cbd5e1;
+  border: 1px solid var(--aiops-border);
+  color: var(--aiops-text-secondary);
 }
 
 .tool-collapse :deep(.el-collapse-item__wrap) {
@@ -712,7 +711,7 @@ defineExpose({
 
 .tool-title__name {
   flex: 1;
-  color: #e2e8f0;
+  color: var(--aiops-text-secondary);
 }
 
 .tool-body {
@@ -727,7 +726,7 @@ defineExpose({
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.12em;
-  color: #64748b;
+  color: var(--aiops-text-tertiary);
   margin-bottom: 6px;
 }
 
@@ -735,9 +734,9 @@ defineExpose({
   margin: 0;
   padding: 12px;
   border-radius: 8px;
-  background: rgba(15, 23, 42, 0.9);
-  border: 1px solid rgba(51, 65, 85, 0.8);
-  color: #a5f3fc;
+  background: var(--aiops-bg);
+  border: 1px solid var(--aiops-border);
+  color: var(--aiops-text-secondary);
   font-size: 11px;
   line-height: 1.45;
   overflow-x: auto;
@@ -745,7 +744,8 @@ defineExpose({
 }
 
 .tool-json--obs {
-  color: #86efac;
+  color: var(--aiops-accent-live);
+  opacity: 0.95;
 }
 
 .tool-err {
@@ -756,20 +756,20 @@ defineExpose({
   margin-top: 20px;
   padding: 16px;
   border-radius: 12px;
-  background: rgba(22, 101, 52, 0.12);
-  border: 1px solid rgba(74, 222, 128, 0.25);
+  background: var(--aiops-accent-live-dim);
+  border: 1px solid rgba(190, 242, 100, 0.22);
 }
 
 .stream-done :deep(.el-result__title) {
-  color: #ecfccb;
+  color: var(--aiops-text);
 }
 
 .stream-done :deep(.el-result__subtitle) {
-  color: #a3e635;
+  color: var(--aiops-text-secondary);
 }
 
 .done-ticket {
-  color: #bef264;
+  color: var(--aiops-accent-live);
   margin-bottom: 12px;
 }
 </style>

@@ -24,6 +24,14 @@ export interface TicketPayload {
   auto_heal_dispatched?: boolean
 }
 
+export interface DashboardTrends {
+  granularity: string
+  window_hours: number
+  labels: string[]
+  incidents_new: number[]
+  tickets_executed: number[]
+}
+
 export interface DashboardSummary {
   health_score: number
   topology: { nodes: TopoNode[]; edges: TopoEdge[] }
@@ -35,6 +43,14 @@ export interface DashboardSummary {
     cluster_data_via_api: boolean
   }
   open_incidents: number
+  pending_approval_count?: number
+  topology_stats?: {
+    node_count: number
+    edge_count: number
+    healthy_nodes: number
+  }
+  severity_open?: { critical: number; warning: number; info: number }
+  trends?: DashboardTrends
   pending_tickets: Array<{
     ticket_id: string
     summary: string
