@@ -8,6 +8,7 @@
           <span class="health-unit">/ 100</span>
         </div>
         <p class="muted small">开放事件 {{ dash?.open_incidents ?? 0 }} · 经验库条目 {{ dash?.knowledge_entries ?? 0 }}</p>
+        <p v-if="deployHint" class="muted small deploy-hint">{{ deployHint }}</p>
       </section>
 
       <section class="bento-cell bento-span-4 glass-panel">
@@ -126,6 +127,23 @@ const lampLabel = computed(() => {
   if (s === 'analyzing') return '分析中 · 图节点流式推送中'
   if (s === 'degraded') return '异常域 · 存在 Critical 级开放事件'
   return '正常 · 后台静默巡检'
+})
+
+const deployHint = computed(() => {
+  const d = dash.value?.deployment
+  if (!d) return ''
+  const modeLabel: Record<string, string> = {
+    kubernetes: 'K8s 中心部署',
+    hybrid: '混合（K8s + 物理/边缘）',
+    physical: '物理机 / VM 为主',
+    unspecified: '未声明部署模式',
+  }
+  const m = modeLabel[d.mode] || d.mode
+  const bits: string[] = [m]
+  if (d.center_in_kubernetes_pod) bits.push('运行在 Pod 内')
+  if (d.cluster_data_via_api) bits.push('集群侧建议走 API / Prometheus 取数')
+  if (d.edge_heartbeat_expected) bits.push('边缘探针用于集群外或 Playbook 执行点')
+  return bits.join(' · ')
 })
 
 const svgW = 720
@@ -257,6 +275,11 @@ onUnmounted(() => {
   font-size: 12px;
   margin: 10px 0 0;
   line-height: 1.5;
+}
+
+.deploy-hint {
+  margin-top: 8px;
+  max-width: 42em;
 }
 .tiny {
   font-size: 11px;

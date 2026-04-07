@@ -380,6 +380,9 @@ def dashboard_summary(request):
         .order_by("-executed_at")[:10]
     )
 
+    mode = getattr(settings, "AIOPS_DEPLOYMENT_MODE", "unspecified")
+    in_k8s = getattr(settings, "AIOPS_IN_KUBERNETES_POD", False)
+
     return Response(
         {
             "health_score": round(health, 1),
@@ -403,6 +406,12 @@ def dashboard_summary(request):
             "auto_heal_threshold": float(
                 getattr(settings, "AIOPS_AUTO_HEAL_CONFIDENCE_THRESHOLD", 0.95)
             ),
+            "deployment": {
+                "mode": mode,
+                "center_in_kubernetes_pod": in_k8s,
+                "edge_heartbeat_expected": mode in ("physical", "hybrid"),
+                "cluster_data_via_api": mode in ("kubernetes", "hybrid"),
+            },
         }
     )
 

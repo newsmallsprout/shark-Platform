@@ -174,3 +174,20 @@ AIOPS_AUTO_HEAL_CONFIDENCE_THRESHOLD = float(
     os.environ.get("AIOPS_AUTO_HEAL_CONFIDENCE", "0.95")
 )
 AIOPS_DEFAULT_PLAYBOOK_NODE = os.environ.get("AIOPS_DEFAULT_PLAYBOOK_NODE", "default")
+
+
+def _resolve_aiops_deployment_mode() -> str:
+    """部署形态（显式配置优先，否则根据是否在 Pod 内推断）。"""
+    v = os.environ.get("AIOPS_DEPLOYMENT_MODE", "").strip().lower()
+    if v in ("kubernetes", "hybrid", "physical", "unspecified"):
+        return v
+    # 标准 K8s  downward API / 自动注入
+    if os.environ.get("KUBERNETES_SERVICE_HOST"):
+        return "kubernetes"
+    return "unspecified"
+
+
+# kubernetes=中心主要在集群内，工作负载数据以 API/指标栈为主；hybrid=集群+物理机并存；physical=以边缘探针为主
+AIOPS_DEPLOYMENT_MODE = _resolve_aiops_deployment_mode()
+# 是否在 Kubernetes Pod 中运行（不依赖显式开关，便于云上/自建集群一致）
+AIOPS_IN_KUBERNETES_POD = bool(os.environ.get("KUBERNETES_SERVICE_HOST", "").strip())

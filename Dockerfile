@@ -8,6 +8,7 @@ COPY frontend/ ./
 RUN npm run build
 
 # --- Stage 2: Final Image ---
+# 镜像可直接作为 Kubernetes Deployment 运行；Pod 内会自动出现 KUBERNETES_SERVICE_HOST，便于 AIOPS_DEPLOYMENT_MODE 推断为 kubernetes。
 FROM python:3.9-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \

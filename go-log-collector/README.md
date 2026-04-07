@@ -2,6 +2,8 @@
 
 **AIOps Platform** 轻量日志上报：可选 **关键行过滤**、**边缘正则脱敏**，批量 POST 至中心。
 
+**与 Kubernetes 的关系**：Pod 标准输出/文件日志在集群内通常应由 **Loki、EFK、或中心服务拉取 Pod 日志** 完成，不必再经 sidecar 重复推送。本采集器更适合 **集群外节点**、**无 CRI 日志汇总的遗留系统**，或 **合规要求必须在边缘脱敏后再出网** 的场景。
+
 ## Environment
 
 | Variable | Description |

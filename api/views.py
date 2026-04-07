@@ -50,7 +50,7 @@ def _edge_token_ok(request) -> bool:
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def edge_heartbeat(request):
-    """Distributed go-agent: push host metrics snapshot."""
+    """物理机/VM 或 DaemonSet 上的 go-agent：推送主机摘要。纯 K8s 工作负载可省略，改由 Prometheus/kubelet 指标提供。"""
     if not _edge_token_ok(request):
         return Response({"error": "unauthorized"}, status=401)
     body = request.data if isinstance(request.data, dict) else {}
@@ -65,7 +65,7 @@ def edge_heartbeat(request):
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def edge_logs(request):
-    """Distributed go-log-collector: push batched log lines for analytics pipeline."""
+    """集群外或文件型日志：go-log-collector 批量上报。集群内容器日志建议由中心经 K8s API / 日志系统拉取，避免重复上报。"""
     if not _edge_token_ok(request):
         return Response({"error": "unauthorized"}, status=401)
     body = request.data if isinstance(request.data, dict) else {}

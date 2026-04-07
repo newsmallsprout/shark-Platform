@@ -28,6 +28,12 @@ export interface DashboardSummary {
   health_score: number
   topology: { nodes: TopoNode[]; edges: TopoEdge[] }
   ai_status: 'idle' | 'analyzing' | 'degraded'
+  deployment?: {
+    mode: 'kubernetes' | 'hybrid' | 'physical' | 'unspecified'
+    center_in_kubernetes_pod: boolean
+    edge_heartbeat_expected: boolean
+    cluster_data_via_api: boolean
+  }
   open_incidents: number
   pending_tickets: Array<{
     ticket_id: string
