@@ -1,13 +1,11 @@
-# Shark Platform 前端
+# shark-aiops UI
 
-Vue 3 + Vite + Element Plus + Pinia。部署与 Compose 见 **[docs/deployment/README.md](../docs/deployment/README.md)**；功能总览见根目录 [README.md](../README.md)。
-
-常用命令：
+Vue 3 + Vite + Element Plus + Pinia. **L5 cyber-industrial** dark shell lives in `src/App.vue` and `src/style.css`.
 
 ```bash
-npm install
+npm install --legacy-peer-deps
 npm run dev
 npm run build
 ```
 
-Traffic 等图表锁定 **ECharts 5.5.x**（见 `package.json`）。
+架构与版本说明见仓库根目录 **[README.md](../README.md)**，部署步骤见 **[docs/DEPLOYMENT.md](../docs/DEPLOYMENT.md)**。

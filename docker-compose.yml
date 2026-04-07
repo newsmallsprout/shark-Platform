@@ -1,0 +1,61 @@
+# shark-aiops — control plane (center)
+# Browser SSE: set AGENT_SSE_PUBLIC_BASE to http://localhost:8010 when using UI from host.
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+  web:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - shark_state:/app/state
+    environment:
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-dev-change-me-in-prod}
+      DEBUG: ${DEBUG:-True}
+      ALLOWED_HOSTS: "*"
+      CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS:-http://localhost:8000,http://127.0.0.1:8000}
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      AGENT_EVENT_REDIS_URL: redis://redis:6379/0
+      AGENT_SSE_PUBLIC_BASE: ${AGENT_SSE_PUBLIC_BASE:-http://localhost:8010}
+      SHARK_EDGE_TOKEN: ${SHARK_EDGE_TOKEN:-}
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  celery:
+    build: .
+    entrypoint: []
+    command: ["celery", "-A", "shark_platform", "worker", "-l", "INFO"]
+    volumes:
+      - shark_state:/app/state
+    environment:
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-dev-change-me-in-prod}
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      AGENT_EVENT_REDIS_URL: redis://redis:6379/0
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  sse:
+    build: .
+    entrypoint: []
+    command: ["uvicorn", "sse_server:app", "--host", "0.0.0.0", "--port", "8010"]
+    ports:
+      - "8010:8010"
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/0
+      AGENT_EVENT_REDIS_URL: redis://redis:6379/0
+      SSE_CORS_ORIGINS: ${SSE_CORS_ORIGINS:-http://localhost:8000,http://127.0.0.1:8000}
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+volumes:
+  shark_state:

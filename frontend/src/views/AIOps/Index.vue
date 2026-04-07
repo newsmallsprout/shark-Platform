@@ -1,5 +1,5 @@
 <template>
-  <div class="ai-ops-container">
+  <div class="ai-ops-container l5-aiops">
     <div class="page-header">
       <div class="header-info">
         <h2 class="page-title">智能故障分析</h2>
@@ -664,15 +664,21 @@ onUnmounted(() => {
 
 <style scoped>
 .mono {
-  font-family: 'Menlo', 'Monaco', 'Consolas', monospace;
+  font-family: 'JetBrains Mono', 'Menlo', 'Monaco', 'Consolas', monospace;
   font-size: 12px;
+}
+
+.l5-aiops {
+  --l5-text: #e5e5e5;
+  --l5-muted: #737373;
+  --l5-line: rgba(14, 165, 233, 0.15);
 }
 
 .ai-ops-container {
   display: flex;
   flex-direction: column;
   gap: 20px;
-  height: calc(100vh - 100px);
+  height: calc(100vh - 120px);
 }
 
 .page-header {
@@ -683,21 +689,22 @@ onUnmounted(() => {
 
 .page-title {
   font-size: 24px;
-  font-weight: 700;
-  color: #1e293b;
+  font-weight: 800;
+  color: #fafafa;
   margin: 0;
+  letter-spacing: 0.02em;
 }
 
 .page-subtitle {
   font-size: 14px;
-  color: #64748b;
+  color: #a3a3a3;
   margin: 4px 0 0;
   line-height: 1.5;
 }
 
 .list-card,
 .detail-card {
-  height: calc(100vh - 180px);
+  height: calc(100vh - 200px);
   display: flex;
   flex-direction: column;
 }
@@ -714,8 +721,9 @@ onUnmounted(() => {
 .list-header {
   padding: 16px;
   font-weight: 600;
-  border-bottom: 1px solid #f1f5f9;
-  background: #f8fafc;
+  border-bottom: 1px solid var(--l5-line);
+  background: rgba(12, 12, 14, 0.85);
+  color: #e5e5e5;
 }
 
 .incident-list {
@@ -725,7 +733,7 @@ onUnmounted(() => {
 
 .incident-item {
   padding: 16px;
-  border-bottom: 1px solid #f1f5f9;
+  border-bottom: 1px solid rgba(38, 38, 42, 0.9);
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -733,11 +741,11 @@ onUnmounted(() => {
   transition: background 0.2s;
 }
 .incident-item:hover {
-  background: #f8fafc;
+  background: rgba(14, 165, 233, 0.06);
 }
 .incident-item.active {
-  background: #f0f9ff;
-  border-left: 3px solid #3b82f6;
+  background: rgba(16, 185, 129, 0.08);
+  border-left: 3px solid #10b981;
 }
 
 .inc-info {
@@ -745,12 +753,12 @@ onUnmounted(() => {
 }
 .inc-title {
   font-weight: 600;
-  color: #334155;
+  color: #e5e5e5;
   margin-bottom: 4px;
 }
 .inc-meta {
   font-size: 12px;
-  color: #94a3b8;
+  color: #737373;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -796,14 +804,16 @@ onUnmounted(() => {
   margin-bottom: 20px;
   padding: 16px;
   border-radius: 12px;
-  background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
-  border: 1px solid #e2e8f0;
+  background: rgba(16, 16, 18, 0.55);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(14, 165, 233, 0.2);
+  box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.05) inset;
 }
 
 .section-title {
   font-size: 16px;
   font-weight: 600;
-  color: #1e293b;
+  color: #fafafa;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -812,7 +822,7 @@ onUnmounted(() => {
 
 .section-hint {
   font-size: 13px;
-  color: #64748b;
+  color: #a3a3a3;
   margin: 0 0 12px;
   line-height: 1.5;
 }
@@ -837,7 +847,7 @@ onUnmounted(() => {
 }
 
 .stream-meta {
-  color: #64748b;
+  color: #737373;
   font-size: 12px;
 }
 
@@ -846,18 +856,20 @@ onUnmounted(() => {
   min-height: 420px;
   border-radius: 12px;
   overflow: hidden;
+  border: 1px solid rgba(14, 165, 233, 0.18);
 }
 
 .inline-approval-card {
   margin-bottom: 28px;
   border-radius: 12px;
-  border: 1px solid #99f6e4;
-  background: linear-gradient(to bottom, #ecfdf5 0%, #f0fdfa 100%);
+  border: 1px solid rgba(16, 185, 129, 0.25);
+  background: rgba(12, 18, 16, 0.5);
+  backdrop-filter: blur(14px);
 }
 
 .inline-approval-card :deep(.el-card__header) {
-  background: rgba(255, 255, 255, 0.65);
-  border-bottom: 1px solid #99f6e4;
+  background: rgba(10, 14, 12, 0.75);
+  border-bottom: 1px solid rgba(16, 185, 129, 0.2);
 }
 
 .inline-approval-head {
@@ -874,14 +886,14 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   font-weight: 600;
-  color: #0f766e;
+  color: #34d399;
   flex: 1;
   min-width: 0;
 }
 
 .inline-ticket-id {
   font-weight: 400;
-  color: #64748b;
+  color: #737373;
   font-size: 12px;
 }
 
@@ -898,7 +910,7 @@ onUnmounted(() => {
 
 .ticket-desc {
   margin-bottom: 16px;
-  background: #fff;
+  background: rgba(8, 8, 10, 0.6);
 }
 
 .ticket-pre {
@@ -911,8 +923,8 @@ onUnmounted(() => {
   overflow: auto;
 }
 .ticket-pre.note {
-  color: #0369a1;
-  background: #f0f9ff;
+  color: #38bdf8;
+  background: rgba(14, 165, 233, 0.08);
   padding: 8px;
   border-radius: 6px;
 }
@@ -925,7 +937,7 @@ onUnmounted(() => {
 
 .approval-tip {
   font-size: 12px;
-  color: #64748b;
+  color: #737373;
 }
 
 .approval-comment {
@@ -943,7 +955,7 @@ onUnmounted(() => {
 
 .text-content {
   font-size: 14px;
-  color: #475569;
+  color: #d4d4d4;
   line-height: 1.6;
 }
 
@@ -960,8 +972,8 @@ onUnmounted(() => {
 .trace-box {
   margin-bottom: 20px;
   padding: 16px;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
+  background: rgba(16, 16, 18, 0.5);
+  border: 1px solid rgba(14, 165, 233, 0.15);
   border-radius: 12px;
 }
 .trace-json {
@@ -977,8 +989,8 @@ onUnmounted(() => {
 }
 
 .ai-report-box {
-  background: linear-gradient(to bottom right, #f0f9ff, #e0f2fe);
-  border: 1px solid #bae6fd;
+  background: rgba(12, 20, 28, 0.45);
+  border: 1px solid rgba(14, 165, 233, 0.22);
   border-radius: 12px;
   padding: 20px;
   margin-bottom: 20px;
@@ -987,12 +999,12 @@ onUnmounted(() => {
 .report-header {
   font-size: 16px;
   font-weight: 700;
-  color: #0369a1;
+  color: #0ea5e9;
   margin-bottom: 16px;
   display: flex;
   align-items: center;
   gap: 8px;
-  border-bottom: 1px solid #bae6fd;
+  border-bottom: 1px solid rgba(14, 165, 233, 0.2);
   padding-bottom: 12px;
 }
 
@@ -1002,13 +1014,13 @@ onUnmounted(() => {
 .analysis-section .label {
   font-size: 12px;
   font-weight: 700;
-  color: #0284c7;
+  color: #38bdf8;
   text-transform: uppercase;
   margin-bottom: 6px;
 }
 .analysis-section p {
   margin: 0;
-  color: #334155;
+  color: #d4d4d4;
   line-height: 1.6;
 }
 
@@ -1025,9 +1037,10 @@ onUnmounted(() => {
 }
 
 .analysis-card {
-  background: rgba(255, 255, 255, 0.6);
+  background: rgba(8, 10, 12, 0.55);
   padding: 12px;
   border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
 }
 .analysis-card .label {
   font-size: 11px;
@@ -1045,7 +1058,7 @@ onUnmounted(() => {
 .solutions .label {
   font-size: 12px;
   font-weight: 700;
-  color: #475569;
+  color: #a3a3a3;
   margin-bottom: 8px;
   text-transform: uppercase;
 }
@@ -1069,7 +1082,7 @@ onUnmounted(() => {
 .metrics-chart {
   height: 280px;
   width: 100%;
-  border: 1px solid #e2e8f0;
+  border: 1px solid rgba(14, 165, 233, 0.15);
   border-radius: 8px;
   padding: 8px;
 }
@@ -1077,7 +1090,7 @@ onUnmounted(() => {
 .analyzing-state {
   text-align: center;
   padding: 32px;
-  color: #64748b;
+  color: #737373;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1085,11 +1098,11 @@ onUnmounted(() => {
 }
 .analyzing-state .el-icon {
   font-size: 28px;
-  color: #3b82f6;
+  color: #0ea5e9;
 }
 
 .no-report {
-  color: #64748b;
+  color: #737373;
   font-size: 14px;
   padding: 16px;
   text-align: center;

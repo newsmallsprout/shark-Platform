@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import uuid
 from datetime import timedelta
 from typing import Any, Dict, List, Optional, Tuple
@@ -161,10 +162,9 @@ def _trace_to_log_snippets(trace: list, max_items: int = 24) -> List[str]:
 
 
 def run_sre_agent_analysis(incident: Incident) -> None:
-    from inspection.models import InspectionConfig
+    from django.conf import settings as dj_settings
 
-    insp = InspectionConfig.load()
-    prom_url = (getattr(insp, "prometheus_url", None) or "").strip()
+    prom_url = (getattr(dj_settings, "PROMETHEUS_URL", "") or os.environ.get("PROMETHEUS_URL", "")).strip()
 
     ai = AIConfig.get_active_config()
     max_iter = max(1, min(int(getattr(ai, "max_agent_iterations", 12) or 12), 24))
