@@ -16,6 +16,8 @@
 | `SHARK_AIOPS_LOG_FOLLOW` | `1` / `true`：持续跟随文件增长（类 `tail -f`），并支持 **多路径各开一个协程** |
 | `SHARK_AIOPS_LOG_FROM_END` | 仅在 `LOG_FOLLOW=1` 时有效。默认 `1`：启动后只推**新行**；`0`：先把文件已有内容读完再跟随 |
 | `SHARK_AIOPS_REDACT_REGEX` | 可选：`pattern@@@replacement`，多条用 `\|\|` 分隔 |
+| `SHARK_AIOPS_STREAM_KEY` | 写入 JSON `stream_key`，按域名/环境隔离落库（多采集器实例各设不同值） |
+| `SHARK_AIOPS_LOG_FORMAT` | 如 `nginx_json`（与中心 Nginx `shark_json` 一致）或留空走 `auto` |
 
 内置脱敏：类邮箱、长数字串（卡号形）、`Bearer …` token。
 

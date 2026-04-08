@@ -41,7 +41,8 @@ COPY . .
 # We copy the whole dist folder to /app/frontend/dist to align with local dev structure
 COPY --from=frontend-builder /frontend/dist /app/frontend/dist
 
-# Configure Nginx
+# Nginx：log_format 须在 http 块，Debian 默认 include conf.d/*.conf
+COPY nginx-log-format.conf /etc/nginx/conf.d/00-shark-log-format.conf
 COPY nginx.conf /etc/nginx/sites-available/default
 # Ensure Nginx runs in foreground if we were running it alone, but we will run it via entrypoint script
 # Remove default nginx site if it exists (though we overwrote default above)

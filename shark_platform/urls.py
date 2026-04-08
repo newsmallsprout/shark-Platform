@@ -36,6 +36,7 @@ urlpatterns = [
     path("admin/", admin.site.urls),
     path("api/", include("api.urls")),
     path("api/ai_ops/", include("ai_ops.urls")),
+    path("api/observability/", include("observability.urls")),
     re_path(
         r"^assets/(?P<path>.*)$",
         serve,

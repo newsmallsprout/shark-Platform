@@ -1,5 +1,5 @@
 // go-log-collector — 轻量日志上报：可选仅关键行、边缘正则脱敏、批量 POST。
-// 支持多文件、类 tail -f 持续读取（适合 Nginx access/error 日志）。
+// 支持多路径、通配符（glob）、类 tail -f；可按文件名推导 stream_key（如 access_api.json.log -> api）。
 package main
 
 import (
@@ -10,8 +10,10 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -28,6 +30,70 @@ func envBool(key string) bool {
 	return v == "1" || v == "true" || v == "yes"
 }
 
+// 路径含 * ? [ 时按 glob 展开；逗号分隔多个 pattern
+func expandPathPatterns(parts []string) []string {
+	var out []string
+	seen := make(map[string]struct{})
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if strings.ContainsAny(part, "*?[") {
+			matches, err := filepath.Glob(part)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "glob:", err)
+				continue
+			}
+			for _, m := range matches {
+				if st, err := os.Stat(m); err != nil || st.IsDir() {
+					continue
+				}
+				if _, ok := seen[m]; ok {
+					continue
+				}
+				seen[m] = struct{}{}
+				out = append(out, m)
+			}
+			continue
+		}
+		if _, ok := seen[part]; !ok {
+			seen[part] = struct{}{}
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+var reAccessJSON = regexp.MustCompile(`(?i)^access_(.+)\.json\.log$`)
+
+// 未设置 SHARK_AIOPS_STREAM_KEY 时，从文件名推导：access_api.json.log -> api，access_web_admin.json.log -> web_admin
+func deriveStreamKey(globalKey, filePath string) string {
+	if strings.TrimSpace(globalKey) != "" {
+		return strings.TrimSpace(globalKey)
+	}
+	base := filepath.Base(filePath)
+	if m := reAccessJSON.FindStringSubmatch(base); len(m) > 1 {
+		return m[1]
+	}
+	if strings.HasSuffix(strings.ToLower(base), ".json.log") {
+		s := strings.TrimSuffix(strings.TrimSuffix(base, ".log"), "")
+		return s
+	}
+	return strings.TrimSuffix(strings.TrimSuffix(base, ".log"), "")
+}
+
+func inferLogFormatForPath(globalLF, filePath string) string {
+	if strings.TrimSpace(globalLF) != "" {
+		return strings.TrimSpace(globalLF)
+	}
+	b := strings.ToLower(filepath.Base(filePath))
+	if strings.HasSuffix(b, ".json.log") {
+		return "nginx_json"
+	}
+	return "auto"
+}
+
 func main() {
 	center := strings.TrimRight(env("SHARK_AIOPS_CENTER_URL", "http://127.0.0.1:8000"), "/")
 	token := env("SHARK_AIOPS_EDGE_TOKEN", "")
@@ -38,7 +104,6 @@ func main() {
 	follow := envBool("SHARK_AIOPS_LOG_FOLLOW")
 	fromEnd := true
 	if follow {
-		// 默认 1：从当前文件末尾开始只推新行；设为 0 则先把已有内容读完再跟随
 		fromEnd = strings.TrimSpace(env("SHARK_AIOPS_LOG_FROM_END", "1")) != "0"
 	}
 
@@ -46,23 +111,59 @@ func main() {
 	client := &http.Client{Timeout: 30 * time.Second}
 	redactors := compileRedactors()
 
-	paths := parsePaths(pathsRaw)
+	parts := parsePaths(pathsRaw)
+	paths := expandPathPatterns(parts)
+	if len(paths) == 0 && pathsRaw != "" {
+		fmt.Fprintln(os.Stderr, "no files match patterns:", pathsRaw)
+		os.Exit(1)
+	}
+
 	if len(paths) == 0 {
 		runStdin(source, url, token, client, redactors, severity, batch)
 		return
 	}
 
+	globalStream := strings.TrimSpace(env("SHARK_AIOPS_STREAM_KEY", ""))
+	globalLF := strings.TrimSpace(env("SHARK_AIOPS_LOG_FORMAT", ""))
+
 	if follow {
-		lineCh := make(chan string, 4096)
-		for _, p := range paths {
-			p := p
+		lineCh := make(chan tailLine, 4096)
+		active := make(map[string]struct{})
+		var activeMu sync.Mutex
+
+		startTail := func(p string) {
+			activeMu.Lock()
+			if _, ok := active[p]; ok {
+				activeMu.Unlock()
+				return
+			}
+			active[p] = struct{}{}
+			activeMu.Unlock()
 			go tailFileForever(p, fromEnd, lineCh)
 		}
-		runConsumer(lineCh, source, url, token, client, redactors, severity, batch)
+
+		for _, p := range paths {
+			startTail(p)
+		}
+
+		// 周期性重新 glob，拾取新增文件（如日志按日滚动后新文件名仍匹配 pattern）
+		if strings.ContainsAny(pathsRaw, "*?[") {
+			go func() {
+				tick := time.NewTicker(45 * time.Second)
+				defer tick.Stop()
+				for range tick.C {
+					for _, p := range expandPathPatterns(parts) {
+						startTail(p)
+					}
+				}
+			}()
+		}
+
+		runConsumerMulti(lineCh, source, url, token, client, redactors, severity, batch, globalStream, globalLF)
 		return
 	}
 
-	runFilesOnce(paths, source, url, token, client, redactors, severity, batch)
+	runFilesOnceMulti(paths, source, url, token, client, redactors, severity, batch, globalStream, globalLF)
 }
 
 func parsePaths(raw string) []string {
@@ -79,6 +180,11 @@ func parsePaths(raw string) []string {
 	return out
 }
 
+type tailLine struct {
+	path string
+	line string
+}
+
 func runStdin(
 	source, url, token string,
 	client *http.Client,
@@ -87,14 +193,13 @@ func runStdin(
 	batch int,
 ) {
 	scanner := bufio.NewScanner(os.Stdin)
-	// 极长行（JSON access log）放宽 buffer
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	lines, flush := makeFlusher(source, url, token, client, batch)
+	sink := newBatchSink(source, url, token, client, batch, env("SHARK_AIOPS_STREAM_KEY", ""), env("SHARK_AIOPS_LOG_FORMAT", ""), "")
 	tick := time.NewTicker(5 * time.Second)
 	defer tick.Stop()
 	go func() {
 		for range tick.C {
-			flush()
+			sink.flushAll()
 		}
 	}()
 	for scanner.Scan() {
@@ -102,36 +207,36 @@ func runStdin(
 		if line == "" {
 			continue
 		}
-		lines = append(lines, line)
-		if len(lines) >= batch {
-			flush()
-		}
+		sink.push(line)
 	}
-	flush()
+	sink.flushAll()
 	if err := scanner.Err(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
-func runFilesOnce(
+func runFilesOnceMulti(
 	paths []string,
 	source, url, token string,
 	client *http.Client,
 	redactors []redactor,
 	severity string,
 	batch int,
+	globalStream, globalLF string,
 ) {
-	lines, flush := makeFlusher(source, url, token, client, batch)
+	sink := newBatchSink(source, url, token, client, batch, globalStream, globalLF, "")
 	tick := time.NewTicker(5 * time.Second)
 	defer tick.Stop()
 	go func() {
 		for range tick.C {
-			flush()
+			sink.flushAll()
 		}
 	}()
 
 	for _, path := range paths {
+		sk := deriveStreamKey(globalStream, path)
+		lf := inferLogFormatForPath(globalLF, path)
 		f, err := os.Open(path)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -144,10 +249,7 @@ func runFilesOnce(
 			if line == "" {
 				continue
 			}
-			lines = append(lines, line)
-			if len(lines) >= batch {
-				flush()
-			}
+			sink.pushWithMeta(sk, lf, path, line)
 		}
 		_ = f.Close()
 		if err := sc.Err(); err != nil {
@@ -155,62 +257,146 @@ func runFilesOnce(
 			os.Exit(1)
 		}
 	}
-	flush()
+	sink.flushAll()
 }
 
-func runConsumer(
-	lineCh <-chan string,
+func runConsumerMulti(
+	lineCh <-chan tailLine,
 	source, url, token string,
 	client *http.Client,
 	redactors []redactor,
 	severity string,
 	batch int,
+	globalStream, globalLF string,
 ) {
-	lines, flush := makeFlusher(source, url, token, client, batch)
+	sink := newBatchSink(source, url, token, client, batch, globalStream, globalLF, "")
 	tick := time.NewTicker(5 * time.Second)
 	go func() {
 		for range tick.C {
-			flush()
+			sink.flushAll()
 		}
 	}()
 	defer tick.Stop()
-	for line := range lineCh {
-		line = processLine(line, redactors, severity)
+
+	for tl := range lineCh {
+		line := processLine(tl.line, redactors, severity)
 		if line == "" {
 			continue
 		}
-		lines = append(lines, line)
-		if len(lines) >= batch {
-			flush()
-		}
+		sk := deriveStreamKey(globalStream, tl.path)
+		lf := inferLogFormatForPath(globalLF, tl.path)
+		sink.pushWithMeta(sk, lf, tl.path, line)
 	}
-	flush()
+	sink.flushAll()
 }
 
-func makeFlusher(source, url, token string, client *http.Client, batch int) (lines []string, flush func()) {
-	lines = make([]string, 0, batch)
-	flush = func() {
-		if len(lines) == 0 {
-			return
-		}
-		body, _ := json.Marshal(map[string]any{
-			"source": source,
-			"lines":  lines,
-		})
-		req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
-		req.Header.Set("Content-Type", "application/json")
-		if token != "" {
-			req.Header.Set("X-Shark-Edge-Token", token)
-		}
-		resp, err := client.Do(req)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "push:", err)
-		} else {
-			resp.Body.Close()
-		}
-		lines = lines[:0]
+type streamBatch struct {
+	lines      []string
+	logFormat  string
+	sourceFile string
+}
+
+type batchSink struct {
+	mu         sync.Mutex
+	buckets    map[string]*streamBatch
+	sourceTag  string
+	url        string
+	token      string
+	client     *http.Client
+	batchSize  int
+	globalSk   string
+	globalLF   string
+	stdinLabel string
+}
+
+func newBatchSink(sourceTag, url, token string, client *http.Client, batchSize int, globalSk, globalLF, stdinLabel string) *batchSink {
+	return &batchSink{
+		buckets:    make(map[string]*streamBatch),
+		sourceTag:  sourceTag,
+		url:        url,
+		token:      token,
+		client:     client,
+		batchSize:  batchSize,
+		globalSk:   globalSk,
+		globalLF:   globalLF,
+		stdinLabel: stdinLabel,
 	}
-	return lines, flush
+}
+
+func (s *batchSink) bucketFor(streamKey, logFormat, sourceFile string) *streamBatch {
+	b := s.buckets[streamKey]
+	if b == nil {
+		b = &streamBatch{lines: make([]string, 0, s.batchSize), logFormat: logFormat, sourceFile: sourceFile}
+		s.buckets[streamKey] = b
+	}
+	return b
+}
+
+func (s *batchSink) push(line string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sk := strings.TrimSpace(s.globalSk)
+	if sk == "" {
+		sk = "stdin"
+	}
+	lf := strings.TrimSpace(s.globalLF)
+	if lf == "" {
+		lf = "auto"
+	}
+	b := s.bucketFor(sk, lf, s.stdinLabel)
+	b.lines = append(b.lines, line)
+	if len(b.lines) >= s.batchSize {
+		s.flushOneUnlocked(sk, b)
+		delete(s.buckets, sk)
+	}
+}
+
+func (s *batchSink) pushWithMeta(streamKey, logFormat, sourceFile, line string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	b := s.bucketFor(streamKey, logFormat, sourceFile)
+	b.lines = append(b.lines, line)
+	if len(b.lines) >= s.batchSize {
+		s.flushOneUnlocked(streamKey, b)
+		delete(s.buckets, streamKey)
+	}
+}
+
+func (s *batchSink) flushOneUnlocked(streamKey string, b *streamBatch) {
+	if len(b.lines) == 0 {
+		return
+	}
+	payload := map[string]any{
+		"source":      s.sourceTag,
+		"lines":       b.lines,
+		"stream_key":  streamKey,
+		"log_format":  b.logFormat,
+		"source_file": b.sourceFile,
+	}
+	body, _ := json.Marshal(payload)
+	req, _ := http.NewRequest(http.MethodPost, s.url, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	if s.token != "" {
+		req.Header.Set("X-Shark-Edge-Token", s.token)
+	}
+	resp, err := s.client.Do(req)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "push:", err)
+	} else {
+		resp.Body.Close()
+	}
+}
+
+func (s *batchSink) flushAll() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for sk, b := range s.buckets {
+		if len(b.lines) == 0 {
+			continue
+		}
+		s.flushOneUnlocked(sk, b)
+		b.lines = b.lines[:0]
+	}
 }
 
 func processLine(raw string, redactors []redactor, severity string) string {
@@ -221,8 +407,7 @@ func processLine(raw string, redactors []redactor, severity string) string {
 	return line
 }
 
-// tailFileForever 轮询文件增长，类 tail -f；简单处理截断/轮转（文件变小则从头再读）。
-func tailFileForever(path string, startAtEnd bool, out chan<- string) {
+func tailFileForever(path string, startAtEnd bool, out chan<- tailLine) {
 	var offset int64
 	first := true
 	const pause = time.Second
@@ -256,7 +441,7 @@ func tailFileForever(path string, startAtEnd bool, out chan<- string) {
 			sc := bufio.NewScanner(f)
 			sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 			for sc.Scan() {
-				out <- sc.Text()
+				out <- tailLine{path: path, line: sc.Text()}
 			}
 			if err := sc.Err(); err != nil {
 				fmt.Fprintf(os.Stderr, "%s: %v\n", path, err)

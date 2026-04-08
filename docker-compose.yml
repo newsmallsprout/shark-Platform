@@ -1,5 +1,8 @@
 # shark-aiops — control plane (center)
 # Browser SSE: set AGENT_SSE_PUBLIC_BASE to http://localhost:8010 when using UI from host.
+#
+# 默认栈：PostgreSQL + Redis + ClickHouse + Web + Celery + SSE
+# 仅 SQLite 本地开发：不加载本文件或覆盖 web/celery 的 POSTGRES_HOST 为空（不推荐混用）。
 
 services:
   redis:
@@ -8,30 +11,97 @@ services:
       - "6379:6379"
     restart: unless-stopped
 
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-shark}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-shark}
+      POSTGRES_DB: ${POSTGRES_DB:-shark}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PORT_PUBLISH:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-shark} -d ${POSTGRES_DB:-shark}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8-alpine
+    volumes:
+      - ch_data:/var/lib/clickhouse
+    ports:
+      - "${CLICKHOUSE_HTTP_PORT:-8123}:8123"
+      - "${CLICKHOUSE_NATIVE_PORT:-9000}:9000"
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
   web:
     build: .
     ports:
       - "8000:8000"
     volumes:
       - shark_state:/app/state
-      # Nginx access/error 日志；与 log-collector 侧车共享后可 POST 到 /api/edge/logs
       - nginx_logs:/var/log/nginx
     environment:
       DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-dev-change-me-in-prod}
       DEBUG: ${DEBUG:-True}
-      ALLOWED_HOSTS: "*"
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-*}
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8000}
       CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS:-http://localhost:8000,http://127.0.0.1:8000}
-      CELERY_BROKER_URL: redis://redis:6379/0
-      CELERY_RESULT_BACKEND: redis://redis:6379/0
-      AGENT_EVENT_REDIS_URL: redis://redis:6379/0
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_USER: ${POSTGRES_USER:-shark}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-shark}
+      POSTGRES_DB: ${POSTGRES_DB:-shark}
+      POSTGRES_CONN_MAX_AGE: ${POSTGRES_CONN_MAX_AGE:-60}
+      POSTGRES_CONNECT_TIMEOUT: ${POSTGRES_CONNECT_TIMEOUT:-10}
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: ${CLICKHOUSE_PORT:-8123}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
+      CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:-shark_obs}
+      CLICKHOUSE_STORE_RAW_EXCERPT: ${CLICKHOUSE_STORE_RAW_EXCERPT:-false}
+      OBSERVABILITY_OLAP_MODE: ${OBSERVABILITY_OLAP_MODE:-analytics}
+      OBSERVABILITY_MAX_EVENTS: ${OBSERVABILITY_MAX_EVENTS:-200000}
+      OBSERVABILITY_LLM_TIMEOUT_SEC: ${OBSERVABILITY_LLM_TIMEOUT_SEC:-90}
+      OBSERVABILITY_DISABLE_DETECTORS: ${OBSERVABILITY_DISABLE_DETECTORS:-false}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/0}
+      CELERY_TIMEZONE: ${CELERY_TIMEZONE:-Asia/Shanghai}
+      AGENT_EVENT_REDIS_URL: ${AGENT_EVENT_REDIS_URL:-redis://redis:6379/0}
       AGENT_SSE_PUBLIC_BASE: ${AGENT_SSE_PUBLIC_BASE:-http://localhost:8010}
+      PROMETHEUS_URL: ${PROMETHEUS_URL:-}
       SHARK_EDGE_TOKEN: ${SHARK_EDGE_TOKEN:-}
+      SHARK_AI_API_KEY: ${SHARK_AI_API_KEY:-}
+      SHARK_AI_PROVIDER: ${SHARK_AI_PROVIDER:-deepseek}
+      SHARK_AI_API_BASE: ${SHARK_AI_API_BASE:-https://api.deepseek.com/v1}
+      SHARK_AI_MODEL: ${SHARK_AI_MODEL:-deepseek-chat}
+      SHARK_AI_ENABLE: ${SHARK_AI_ENABLE:-true}
+      AIOPS_DEPLOYMENT_MODE: ${AIOPS_DEPLOYMENT_MODE:-}
+      AIOPS_DEFAULT_PLAYBOOK_NODE: ${AIOPS_DEFAULT_PLAYBOOK_NODE:-default}
+      AIOPS_AUTO_HEAL_CONFIDENCE: ${AIOPS_AUTO_HEAL_CONFIDENCE:-0.95}
+      SHARK_WORK_ORDER_GATE_ENABLED: ${SHARK_WORK_ORDER_GATE_ENABLED:-false}
+      SHARK_WORK_ORDER_GATE_ALLOW_SUPERUSER: ${SHARK_WORK_ORDER_GATE_ALLOW_SUPERUSER:-true}
     depends_on:
-      - redis
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
     restart: unless-stopped
 
-  # 采集 web 容器内 Nginx 日志至中心（需设置 SHARK_EDGE_TOKEN，且 SHARK_AIOPS_LOG_SEVERITY=all）
-  # 启动：docker compose --profile logs up -d
   log-collector:
     build:
       context: ./go-log-collector
@@ -46,10 +116,13 @@ services:
       SHARK_AIOPS_CENTER_URL: http://web:8000
       SHARK_AIOPS_EDGE_TOKEN: ${SHARK_EDGE_TOKEN:-}
       SHARK_AIOPS_LOG_SOURCE: nginx
-      SHARK_AIOPS_LOG_PATHS: /var/log/nginx/shark_access.log,/var/log/nginx/shark_error.log
+      # 通配 access_*.json.log；可与单文件路径混用。不设 STREAM_KEY 时按文件名推导（如 access_api.json.log -> api）
+      SHARK_AIOPS_LOG_PATHS: /var/log/nginx/access_*.json.log,/var/log/nginx/shark_access.log,/var/log/nginx/shark_error.log
       SHARK_AIOPS_LOG_FOLLOW: "1"
       SHARK_AIOPS_LOG_FROM_END: "1"
       SHARK_AIOPS_LOG_SEVERITY: all
+      SHARK_AIOPS_STREAM_KEY: ${LOG_COLLECTOR_STREAM_KEY:-}
+      SHARK_AIOPS_LOG_FORMAT: ${LOG_COLLECTOR_LOG_FORMAT:-}
     restart: unless-stopped
 
   celery:
@@ -60,11 +133,41 @@ services:
       - shark_state:/app/state
     environment:
       DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-dev-change-me-in-prod}
-      CELERY_BROKER_URL: redis://redis:6379/0
-      CELERY_RESULT_BACKEND: redis://redis:6379/0
-      AGENT_EVENT_REDIS_URL: redis://redis:6379/0
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_USER: ${POSTGRES_USER:-shark}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-shark}
+      POSTGRES_DB: ${POSTGRES_DB:-shark}
+      POSTGRES_CONN_MAX_AGE: ${POSTGRES_CONN_MAX_AGE:-60}
+      POSTGRES_CONNECT_TIMEOUT: ${POSTGRES_CONNECT_TIMEOUT:-10}
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: ${CLICKHOUSE_PORT:-8123}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
+      CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:-shark_obs}
+      OBSERVABILITY_OLAP_MODE: ${OBSERVABILITY_OLAP_MODE:-analytics}
+      OBSERVABILITY_MAX_EVENTS: ${OBSERVABILITY_MAX_EVENTS:-200000}
+      OBSERVABILITY_LLM_TIMEOUT_SEC: ${OBSERVABILITY_LLM_TIMEOUT_SEC:-90}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/0}
+      CELERY_TIMEZONE: ${CELERY_TIMEZONE:-Asia/Shanghai}
+      AGENT_EVENT_REDIS_URL: ${AGENT_EVENT_REDIS_URL:-redis://redis:6379/0}
+      PROMETHEUS_URL: ${PROMETHEUS_URL:-}
+      SHARK_AI_API_KEY: ${SHARK_AI_API_KEY:-}
+      SHARK_AI_PROVIDER: ${SHARK_AI_PROVIDER:-deepseek}
+      SHARK_AI_API_BASE: ${SHARK_AI_API_BASE:-https://api.deepseek.com/v1}
+      SHARK_AI_MODEL: ${SHARK_AI_MODEL:-deepseek-chat}
+      SHARK_AI_ENABLE: ${SHARK_AI_ENABLE:-true}
+      AIOPS_DEPLOYMENT_MODE: ${AIOPS_DEPLOYMENT_MODE:-}
+      AIOPS_DEFAULT_PLAYBOOK_NODE: ${AIOPS_DEFAULT_PLAYBOOK_NODE:-default}
+      AIOPS_AUTO_HEAL_CONFIDENCE: ${AIOPS_AUTO_HEAL_CONFIDENCE:-0.95}
     depends_on:
-      - redis
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
     restart: unless-stopped
 
   sse:
@@ -74,8 +177,8 @@ services:
     ports:
       - "8010:8010"
     environment:
-      CELERY_BROKER_URL: redis://redis:6379/0
-      AGENT_EVENT_REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
+      AGENT_EVENT_REDIS_URL: ${AGENT_EVENT_REDIS_URL:-redis://redis:6379/0}
       SSE_CORS_ORIGINS: ${SSE_CORS_ORIGINS:-http://localhost:8000,http://127.0.0.1:8000}
     depends_on:
       - redis
@@ -84,3 +187,5 @@ services:
 volumes:
   shark_state:
   nginx_logs:
+  pg_data:
+  ch_data:

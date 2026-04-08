@@ -70,13 +70,34 @@ def edge_logs(request):
         return Response({"error": "unauthorized"}, status=401)
     body = request.data if isinstance(request.data, dict) else {}
     lines = body.get("lines") or body.get("events") or []
-    n = len(lines) if isinstance(lines, list) else 0
-    logger.info(
-        "edge logs batch source=%s count=%s",
-        body.get("source") or body.get("path") or "?",
-        n,
+    if not isinstance(lines, list):
+        lines = []
+    n = len(lines)
+    src = body.get("source") or body.get("path") or "?"
+    logger.info("edge logs batch source=%s count=%s", src, n)
+
+    try:
+        from observability.ingest import ingest_log_batch
+
+        parsed, raw_count, pruned = ingest_log_batch(
+            lines,
+            source_label=str(src),
+            stream_key=body.get("stream_key") or body.get("domain"),
+            log_format=str(body.get("log_format") or "auto"),
+            source_file=body.get("source_file") or body.get("path"),
+        )
+    except Exception as e:
+        logger.exception("observability ingest failed: %s", e)
+        return Response({"ok": False, "error": "ingest_failed", "detail": str(e)[:500]}, status=500)
+
+    return Response(
+        {
+            "ok": True,
+            "accepted": raw_count,
+            "parsed": parsed,
+            "pruned": pruned,
+        }
     )
-    return Response({"ok": True, "accepted": n})
 
 
 @api_view(["GET"])

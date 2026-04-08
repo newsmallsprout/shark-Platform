@@ -76,13 +76,33 @@ flowchart LR
 ## 一键部署（Docker Compose）
 
 ```bash
-cp .env.example .env   # 设置 SHARK_EDGE_TOKEN、数据库、Redis、AGENT_SSE_PUBLIC_BASE 等
+cp .env.example .env
+# 编辑 .env：必填 SHARK_AI_API_KEY（DeepSeek）、建议 SHARK_EDGE_TOKEN；线上 Prometheus 填 PROMETHEUS_URL
 docker compose up -d --build
+# 采集容器内 Nginx 日志：docker compose --profile logs up -d
 ```
+
+Compose **默认**拉起：**PostgreSQL 16**（Django 主库）、**ClickHouse 24**（访问日志 OLAP，按月分区 + TTL）、Redis、Web、Celery、SSE。
 
 - **控制台**：`http://localhost:8000`（首页为 Bento 概览，`/console` 为运维台）
 - **SSE**：默认 `http://localhost:8010`（浏览器可访问时请将 **`AGENT_SSE_PUBLIC_BASE`** 设为宿主机可达地址）
+- **PostgreSQL**：容器内 `postgres:5432`，库名默认 `shark`（用户/密码见 compose 环境变量）
+- **ClickHouse HTTP**：宿主机 `8123`，库名默认 `shark_obs`；摄取在 **`OBSERVABILITY_OLAP_MODE=mirror|analytics`** 时双写 PG + CH
 - **默认管理员**：`admin / admin`（生产环境务必修改）
+
+**本地仅用 SQLite（不用 Compose 数据库）**：不设 `POSTGRES_HOST` 时 `shark_platform/db_config.py` 仍回退 SQLite（`state/db.sqlite3`）；此时请勿对 Web 注入 `POSTGRES_HOST`。
+
+### 可观测性 OLAP 模式 `OBSERVABILITY_OLAP_MODE`
+
+| 值 | 行为 |
+|----|------|
+| `off` | 仅 PostgreSQL/SQLite ORM，不写 ClickHouse |
+| `mirror` | 双写 PG + CH；**大屏聚合仍读 PG**（CH 供外部 BI / 后续分析） |
+| `analytics` | 双写；**聚合与 compare_windows 优先 ClickHouse**，失败回退 ORM |
+
+相关环境变量：`CLICKHOUSE_HOST`、`CLICKHOUSE_PORT`、`CLICKHOUSE_DATABASE`、`CLICKHOUSE_USER`、`CLICKHOUSE_PASSWORD`。
+
+**PostgreSQL 表分区**：Django migration 仍为单表；超大规模时可参考 `observability/sql/README.md` 由 DBA 做原生 RANGE 分区（与 ClickHouse 自动月分区独立）。
 
 ### 中心关键环境变量（摘）
 
@@ -143,7 +163,12 @@ Compose 侧车（需设置 `SHARK_EDGE_TOKEN`）：`docker compose --profile log
 | GET | `/api/edge/playbooks` | 边缘领取 Playbook（Token） |
 | POST | `/api/edge/playbooks/<uuid>/complete` | 边缘回传执行结果 |
 | POST | `/api/edge/heartbeat` | 心跳 |
-| POST | `/api/edge/logs` | 日志批次 |
+| POST | `/api/edge/logs` | 日志批次（可选 `stream_key`、`domain`、`log_format`） |
+| GET | `/api/observability/traffic/summary/` | 访问日志聚合（登录） |
+| GET | `/api/observability/insights/` | 规则 / AI 洞察列表 |
+| POST | `/api/observability/traffic/analyze/` | 触发检测 + LLM 摘要（登录） |
+
+**可观测性（observability）**：边缘上报的 Nginx JSON 行会解析落库（`LogEvent`），按 `stream_key` 隔离多域名/多文件源；内置延迟、错误率、流量突降、5xx 集中等检测器，可在 `observability/insights.py` 或 `register_detector` 扩展。环境变量：`OBSERVABILITY_MAX_EVENTS`、`OBS_LATENCY_P99_WARN_SEC`、`OBS_ERROR_RATE_WARN` 等。
 
 ---
 
@@ -153,6 +178,7 @@ Compose 侧车（需设置 `SHARK_EDGE_TOKEN`）：`docker compose --profile log
 ├── shark_platform/     # Django 工程
 ├── api/                  # 认证、边缘 ingest、Playbook 轮询
 ├── ai_ops/               # 模型、LangGraph、工单、大屏 API
+├── observability/       # 访问日志落库、聚合、规则洞察、AI 摘要
 ├── frontend/             # Vue3（概览 + 运维台 + Cmd/Ctrl+K）
 ├── go-agent/
 ├── go-log-collector/

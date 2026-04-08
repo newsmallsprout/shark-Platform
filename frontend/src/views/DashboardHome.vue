@@ -77,6 +77,68 @@
           </div>
         </div>
 
+        <!-- 网关访问日志：按 stream_key / 域名区分；go-log-collector 推送 + 规则与 AI 洞察 -->
+        <section v-if="trafficPayload?.hint" class="panel traffic-banner">
+          <p class="traffic-zero">{{ trafficPayload.hint }}</p>
+        </section>
+        <section v-else-if="trafficBlock" class="panel traffic-panel">
+          <div class="panel-cap">
+            <span class="cap-title">网关访问态势</span>
+            <span class="cap-hint mono">{{ trafficBlock.streamKey }} · 近 {{ trafficBlock.windowM }} 分钟</span>
+          </div>
+          <div class="traffic-grid">
+            <div class="traffic-metric">
+              <span class="tm-label">请求</span>
+              <span class="tm-val">{{ trafficBlock.total }}</span>
+            </div>
+            <div class="traffic-metric">
+              <span class="tm-label">QPS</span>
+              <span class="tm-val">{{ trafficBlock.qps }}</span>
+            </div>
+            <div class="traffic-metric">
+              <span class="tm-label">错误率</span>
+              <span class="tm-val" :class="{ 'tm-warn': trafficBlock.errRate > 0.05 }">
+                {{ (trafficBlock.errRate * 100).toFixed(2) }}%
+              </span>
+            </div>
+            <div class="traffic-metric">
+              <span class="tm-label">p99 延迟</span>
+              <span class="tm-val">{{ trafficBlock.p99Ms ?? '—' }} ms</span>
+            </div>
+          </div>
+          <div v-if="trafficBlock.hosts.length" class="traffic-hosts">
+            <span class="cap-title cap-title--inline">Host Top</span>
+            <ul>
+              <li v-for="h in trafficBlock.hosts" :key="h.host">
+                <span class="mono">{{ h.host }}</span>
+                <span>{{ h.count }}</span>
+              </li>
+            </ul>
+          </div>
+          <div class="traffic-actions">
+            <el-button
+              size="small"
+              type="primary"
+              plain
+              :loading="analyzeLoading"
+              :disabled="!trafficPayload?.stream_key"
+              @click="runTrafficAnalyze"
+            >
+              运行规则 + AI 分析
+            </el-button>
+            <span class="traffic-ai-hint">基于聚合指标与检测器结果调用 LLM（需配置 AI Key）</span>
+          </div>
+          <div v-if="trafficInsights.length" class="traffic-insights">
+            <span class="cap-title cap-title--inline">最近洞察</span>
+            <ul>
+              <li v-for="ins in trafficInsights" :key="ins.id" :class="'sev-' + ins.severity">
+                <span class="ins-type mono">{{ ins.insight_type }}</span>
+                <span class="ins-title">{{ ins.title }}</span>
+              </li>
+            </ul>
+          </div>
+        </section>
+
         <div class="mid-grid">
           <section class="panel panel-chart tech-grid">
             <div class="panel-cap">
@@ -213,7 +275,13 @@ import { CanvasRenderer } from 'echarts/renderers'
 import { LineChart, BarChart } from 'echarts/charts'
 import { GridComponent, TooltipComponent, LegendComponent } from 'echarts/components'
 import VChart from 'vue-echarts'
+import { ElMessage } from 'element-plus'
 import { aiOpsApi, type DashboardSummary, type TopoNode } from '@/api/ai_ops'
+import {
+  observabilityApi,
+  type LogInsightRow,
+  type TrafficSummaryPayload,
+} from '@/api/observability'
 import { systemApi, type SystemStats } from '@/api/system'
 import TechGlobe from '@/components/TechGlobe.vue'
 
@@ -227,6 +295,9 @@ const DANGER = '#fb7185'
 
 const dash = ref<DashboardSummary | null>(null)
 const sysStats = ref<SystemStats | null>(null)
+const trafficPayload = ref<TrafficSummaryPayload | null>(null)
+const trafficInsights = ref<LogInsightRow[]>([])
+const analyzeLoading = ref(false)
 const lastAt = ref('—')
 const activeTab = ref('overview')
 const pollMs = ref(30000)
@@ -318,6 +389,22 @@ const posMap = computed(() => {
 function nodePos(id: string) {
   return posMap.value.get(id)
 }
+
+const trafficBlock = computed(() => {
+  const p = trafficPayload.value
+  if (!p?.stream_key || !p.summary) return null
+  const s = p.summary as Record<string, unknown>
+  const lat = (s.latency_ms || {}) as Record<string, unknown>
+  return {
+    streamKey: p.stream_key,
+    windowM: Number(s.window_minutes) || 60,
+    total: Number(s.total) || 0,
+    qps: Number(Number(s.qps).toFixed(3)),
+    errRate: Number(s.error_rate) || 0,
+    p99Ms: lat.p99 != null ? Number(lat.p99) : null,
+    hosts: Array.isArray(s.top_hosts) ? (s.top_hosts as { host: string; count: number }[]) : [],
+  }
+})
 
 const pendingCount = computed(() => {
   const d = dash.value
@@ -575,11 +662,43 @@ function formatNow() {
   return `${x.getFullYear()}-${p(x.getMonth() + 1)}-${p(x.getDate())} ${p(x.getHours())}:${p(x.getMinutes())}:${p(x.getSeconds())}`
 }
 
+async function loadTraffic() {
+  try {
+    trafficPayload.value = await observabilityApi.getTrafficSummary({ minutes: 60 })
+    const sk = trafficPayload.value.stream_key
+    if (sk) {
+      const ins = await observabilityApi.listInsights({ stream_key: sk, limit: 6 })
+      trafficInsights.value = ins.insights
+    } else {
+      trafficInsights.value = []
+    }
+  } catch {
+    trafficPayload.value = null
+    trafficInsights.value = []
+  }
+}
+
+async function runTrafficAnalyze() {
+  const sk = trafficPayload.value?.stream_key
+  if (!sk) return
+  analyzeLoading.value = true
+  try {
+    await observabilityApi.requestAnalyze(sk, 60)
+    ElMessage.success('已触发分析，请稍后点击刷新查看洞察')
+    await loadTraffic()
+  } catch {
+    ElMessage.error('分析请求失败')
+  } finally {
+    analyzeLoading.value = false
+  }
+}
+
 async function loadAll() {
   try {
     const [d, s] = await Promise.all([aiOpsApi.getDashboard(), systemApi.getStats()])
     dash.value = d
     sysStats.value = s
+    await loadTraffic()
     lastAt.value = formatNow()
   } catch {
     try {
@@ -588,6 +707,7 @@ async function loadAll() {
       dash.value = null
     }
     sysStats.value = null
+    await loadTraffic()
     lastAt.value = formatNow()
   }
 }
@@ -886,6 +1006,131 @@ onUnmounted(() => clearPoll())
   height: 44px;
   width: 100%;
   margin-top: 4px;
+}
+
+.traffic-banner {
+  margin-bottom: 16px;
+  padding: 14px 16px;
+}
+
+.traffic-zero {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--tech-text-muted);
+}
+
+.traffic-panel {
+  margin-bottom: 16px;
+}
+
+.traffic-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  padding: 12px 16px 8px;
+}
+
+@media (max-width: 720px) {
+  .traffic-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+.traffic-metric {
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(45, 212, 191, 0.2);
+  background: rgba(4, 20, 44, 0.35);
+}
+
+.tm-label {
+  display: block;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--tech-text-muted);
+}
+
+.tm-val {
+  font-size: 1.2rem;
+  font-weight: 600;
+  font-feature-settings: 'tnum' 1;
+  color: var(--tech-text);
+}
+
+.tm-warn {
+  color: var(--tech-gold);
+}
+
+.traffic-hosts {
+  padding: 0 16px 8px;
+}
+
+.traffic-hosts ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.traffic-hosts li {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(45, 212, 191, 0.08);
+  color: var(--tech-text-secondary);
+}
+
+.traffic-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px 12px;
+  border-top: 1px solid rgba(45, 212, 191, 0.1);
+}
+
+.traffic-ai-hint {
+  font-size: 11px;
+  color: var(--tech-text-muted);
+}
+
+.traffic-insights {
+  padding: 0 16px 14px;
+}
+
+.traffic-insights ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.traffic-insights li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(45, 212, 191, 0.08);
+  font-size: 12px;
+}
+
+.traffic-insights .ins-type {
+  font-size: 10px;
+  color: var(--tech-text-muted);
+}
+
+.traffic-insights .ins-title {
+  color: var(--tech-text-secondary);
+}
+
+.traffic-insights .sev-critical .ins-title {
+  color: var(--tech-danger);
+}
+
+.traffic-insights .sev-warning .ins-title {
+  color: var(--tech-gold);
 }
 
 .mid-grid {

@@ -6,6 +6,8 @@ from pathlib import Path
 import os
 import warnings
 
+from shark_platform.db_config import get_default_database
+
 warnings.filterwarnings("ignore", category=FutureWarning, module="google.auth")
 warnings.filterwarnings("ignore", category=FutureWarning, module="google.oauth2")
 
@@ -37,6 +39,7 @@ INSTALLED_APPS = [
     "core",
     "api",
     "ai_ops",
+    "observability",
 ]
 
 MIDDLEWARE = [
@@ -71,12 +74,7 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "shark_platform.wsgi.application"
 
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "state" / "db.sqlite3",
-    }
-}
+DATABASES = {"default": get_default_database(BASE_DIR)}
 
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
@@ -168,6 +166,34 @@ CACHES = {
         "LOCATION": "aiops-platform",
     }
 }
+
+# 访问日志落库（observability）：单流最大事件数，超出删最旧
+OBSERVABILITY_MAX_EVENTS_PER_STREAM = int(
+    os.environ.get("OBSERVABILITY_MAX_EVENTS", "200000")
+)
+OBSERVABILITY_DISABLE_DETECTORS = os.environ.get(
+    "OBSERVABILITY_DISABLE_DETECTORS", ""
+).lower() in ("1", "true", "yes")
+OBSERVABILITY_LLM_TIMEOUT_SEC = int(
+    os.environ.get("OBSERVABILITY_LLM_TIMEOUT_SEC", "90")
+)
+
+# ClickHouse OLAP：off=不写不查 | mirror=双写，聚合仍走 PG | analytics=双写且 API 聚合优先走 CH
+OBSERVABILITY_OLAP_MODE = os.environ.get(
+    "OBSERVABILITY_OLAP_MODE", "off"
+).strip().lower()
+if OBSERVABILITY_OLAP_MODE not in ("off", "mirror", "analytics"):
+    OBSERVABILITY_OLAP_MODE = "off"
+
+CLICKHOUSE_HOST = (os.environ.get("CLICKHOUSE_HOST") or "").strip()
+CLICKHOUSE_PORT = int(os.environ.get("CLICKHOUSE_PORT", "8123"))
+CLICKHOUSE_USER = os.environ.get("CLICKHOUSE_USER", "default")
+CLICKHOUSE_PASSWORD = os.environ.get("CLICKHOUSE_PASSWORD", "")
+CLICKHOUSE_DATABASE = os.environ.get("CLICKHOUSE_DATABASE", "shark_obs")
+# 原始行摘要（可选写入 CH，便于外部排查）
+CLICKHOUSE_STORE_RAW_EXCERPT = os.environ.get(
+    "CLICKHOUSE_STORE_RAW_EXCERPT", ""
+).lower() in ("1", "true", "yes")
 
 # L4 自愈：经验库匹配置信度 ≥ 此阈值时自动批准工单并下发 PlaybookJob
 AIOPS_AUTO_HEAL_CONFIDENCE_THRESHOLD = float(
