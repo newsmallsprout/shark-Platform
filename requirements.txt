@@ -26,6 +26,9 @@ geoip2==4.8.0
 # Optional: Traffic minute rollups in ClickHouse (set CLICKHOUSE_HOST)
 clickhouse-connect>=0.7.0
 
+# Optional OpenTelemetry（安装后 Celery 自动 instrument；未安装则忽略）
+# opentelemetry-instrumentation-celery>=0.46b0
+
 # Phase 1 AIOps: LangGraph + Redis checkpointer + SSE 微服务
 langgraph>=0.2.0,<0.3
 langchain-core>=0.3.0,<0.4

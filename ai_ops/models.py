@@ -257,6 +257,73 @@ class Ticket(models.Model):
         return f"Ticket {self.ticket_id} ({self.status})"
 
 
+class AgentRun(models.Model):
+    """一次 Celery/M2M 诊断运行：与 SSE run_id、工单、来源（Webhook/人工）对齐。"""
+
+    STATUS_QUEUED = "queued"
+    STATUS_RUNNING = "running"
+    STATUS_SUCCEEDED = "succeeded"
+    STATUS_FAILED = "failed"
+    STATUS_CHOICES = [
+        (STATUS_QUEUED, "Queued"),
+        (STATUS_RUNNING, "Running"),
+        (STATUS_SUCCEEDED, "Succeeded"),
+        (STATUS_FAILED, "Failed"),
+    ]
+
+    SOURCE_WEBHOOK = "webhook"
+    SOURCE_MANUAL = "manual"
+    SOURCE_REJECTION_RETRY = "rejection_retry"
+    SOURCE_CHOICES = [
+        (SOURCE_WEBHOOK, "Webhook (Alertmanager)"),
+        (SOURCE_MANUAL, "Manual (console)"),
+        (SOURCE_REJECTION_RETRY, "Rejection retry"),
+    ]
+
+    run_id = models.CharField(
+        max_length=64,
+        unique=True,
+        db_index=True,
+        help_text="与 SSE 频道 agent:run:{run_id} 一致",
+    )
+    incident = models.ForeignKey(
+        Incident,
+        on_delete=models.CASCADE,
+        related_name="agent_runs",
+        db_index=True,
+    )
+    source = models.CharField(
+        max_length=32,
+        choices=SOURCE_CHOICES,
+        default=SOURCE_MANUAL,
+        db_index=True,
+    )
+    status = models.CharField(
+        max_length=24,
+        choices=STATUS_CHOICES,
+        default=STATUS_QUEUED,
+        db_index=True,
+    )
+    celery_task_id = models.CharField(max_length=128, blank=True, default="")
+    ticket = models.ForeignKey(
+        Ticket,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="agent_runs",
+    )
+    error_message = models.TextField(blank=True, default="")
+    meta = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"AgentRun {self.run_id} ({self.status})"
+
+
 class KnowledgeEntry(models.Model):
     """经验库：成功处置后的 Playbook 签名，供因果匹配置信度提升。"""
 

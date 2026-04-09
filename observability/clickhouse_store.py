@@ -6,6 +6,7 @@ ClickHouse OLAP：按月分区 MergeTree，摄取双写 + 聚合查询（与 Dja
 from __future__ import annotations
 
 import logging
+import threading
 from datetime import datetime, timedelta, timezone as dt_timezone
 from typing import TYPE_CHECKING, Any, List
 
@@ -17,8 +18,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_client = None
+# clickhouse-connect 禁止多线程共用同一 client；Gunicorn --threads / 并发请求会触发
+# "concurrent queries within the same session"
+_tls = threading.local()
 _schema_ready = False
+_schema_lock = threading.Lock()
 
 
 def _ch_enabled() -> bool:
@@ -35,33 +39,38 @@ def _utc_naive(dt: datetime) -> datetime:
 
 
 def get_client():
-    global _client
-    if _client is not None:
-        return _client
+    c = getattr(_tls, "ch_client", None)
+    if c is not None:
+        return c
     import clickhouse_connect
 
     # 先连 default，确保库不存在时仍能执行 CREATE DATABASE
-    _client = clickhouse_connect.get_client(
+    c = clickhouse_connect.get_client(
         host=settings.CLICKHOUSE_HOST,
         port=int(settings.CLICKHOUSE_PORT),
         username=settings.CLICKHOUSE_USER,
         password=settings.CLICKHOUSE_PASSWORD or None,
         database="default",
     )
-    return _client
+    _tls.ch_client = c
+    return c
 
 
 def ensure_schema() -> None:
     global _schema_ready
     if _schema_ready or not _ch_enabled():
         return
-    try:
-        c = get_client()
-        db = settings.CLICKHOUSE_DATABASE
-        c.command(f"CREATE DATABASE IF NOT EXISTS {db}")
-        c.command(
-            """
-CREATE TABLE IF NOT EXISTS log_events (
+    with _schema_lock:
+        if _schema_ready:
+            return
+        try:
+            c = get_client()
+            db = settings.CLICKHOUSE_DATABASE
+            # 客户端连在 default 库上，表名必须带库前缀，否则会建到 default.log_events 与 insert/query 用的库不一致
+            c.command(f"CREATE DATABASE IF NOT EXISTS `{db}`")
+            c.command(
+                f"""
+CREATE TABLE IF NOT EXISTS `{db}`.log_events (
     stream_key LowCardinality(String),
     event_time DateTime64(3, 'UTC'),
     host String,
@@ -79,12 +88,23 @@ ORDER BY (stream_key, event_time, status_code, cityHash64(path))
 TTL toDateTime(event_time) + INTERVAL 180 DAY
 SETTINGS index_granularity = 8192
 """
-        )
-        _schema_ready = True
-        logger.info("clickhouse schema ensured db=%s", db)
-    except Exception as e:
-        logger.warning("clickhouse ensure_schema failed: %s", e)
-        raise
+            )
+            for alter in (
+                "ALTER TABLE `{db}`.log_events ADD COLUMN IF NOT EXISTS client_ip String DEFAULT ''",
+                "ALTER TABLE `{db}`.log_events ADD COLUMN IF NOT EXISTS geo_country String DEFAULT ''",
+                "ALTER TABLE `{db}`.log_events ADD COLUMN IF NOT EXISTS geo_city String DEFAULT ''",
+                "ALTER TABLE `{db}`.log_events ADD COLUMN IF NOT EXISTS geo_lat Nullable(Float64)",
+                "ALTER TABLE `{db}`.log_events ADD COLUMN IF NOT EXISTS geo_lon Nullable(Float64)",
+            ):
+                try:
+                    c.command(alter.format(db=db))
+                except Exception as ex:
+                    logger.debug("clickhouse alter optional: %s", ex)
+            _schema_ready = True
+            logger.info("clickhouse schema ensured db=%s", db)
+        except Exception as e:
+            logger.warning("clickhouse ensure_schema failed: %s", e)
+            raise
 
 
 def insert_log_events_from_orm(events: List[LogEvent]) -> None:
@@ -96,6 +116,8 @@ def insert_log_events_from_orm(events: List[LogEvent]) -> None:
     rows = []
     for e in events:
         rt = e.request_time
+        glat = getattr(e, "geo_lat", None)
+        glon = getattr(e, "geo_lon", None)
         rows.append(
             [
                 e.stream_key[:128],
@@ -111,6 +133,11 @@ def insert_log_events_from_orm(events: List[LogEvent]) -> None:
                 (e.raw_excerpt or "")[:512]
                 if getattr(settings, "CLICKHOUSE_STORE_RAW_EXCERPT", False)
                 else "",
+                (getattr(e, "client_ip", None) or "")[:64],
+                (getattr(e, "geo_country", None) or "")[:128],
+                (getattr(e, "geo_city", None) or "")[:256],
+                float(glat) if glat is not None else None,
+                float(glon) if glon is not None else None,
             ]
         )
     c.insert(
@@ -128,6 +155,11 @@ def insert_log_events_from_orm(events: List[LogEvent]) -> None:
             "upstream_time",
             "parser",
             "raw_excerpt",
+            "client_ip",
+            "geo_country",
+            "geo_city",
+            "geo_lat",
+            "geo_lon",
         ],
     )
 
@@ -301,4 +333,209 @@ def compare_windows_clickhouse(
         "ratio": ratio,
         "recent_start": r0.isoformat(),
         "baseline_start": b0.isoformat(),
+    }
+
+
+def count_events_window_clickhouse(
+    stream_key: str,
+    window_start: datetime,
+    window_end: datetime,
+) -> int:
+    if not _ch_enabled():
+        return 0
+    ensure_schema()
+    c = get_client()
+    db = settings.CLICKHOUSE_DATABASE
+    sk = stream_key[:128]
+    wstart = _utc_naive(window_start)
+    wend = _utc_naive(window_end)
+    r = c.query(
+        f"""
+        SELECT count()
+        FROM `{db}`.log_events
+        WHERE stream_key = {{sk:String}}
+          AND event_time >= {{t0:DateTime64(3, 'UTC')}}
+          AND event_time <= {{t1:DateTime64(3, 'UTC')}}
+        """,
+        parameters={"sk": sk, "t0": wstart, "t1": wend},
+    )
+    return int(r.result_rows[0][0] if r.result_rows else 0)
+
+
+def traffic_visual_extras_clickhouse(
+    stream_key: str,
+    window_start: datetime,
+    window_end: datetime,
+    _window_minutes: int,
+    *,
+    buckets: int = 24,
+) -> dict[str, Any]:
+    """与 summarize_stream_clickhouse 同源：地域按 geo_country/geo_city 聚合，热力图按时间桶。"""
+    from .aggregate import _geo_flow_display_name
+    from .time_buckets import heatmap_bucket_secs_and_labels
+
+    if not _ch_enabled():
+        raise RuntimeError("clickhouse disabled")
+    ensure_schema()
+    c = get_client()
+    db = settings.CLICKHOUSE_DATABASE
+    sk = stream_key[:128]
+    wstart = _utc_naive(window_start)
+    wend = _utc_naive(window_end)
+    bucket_secs, labels = heatmap_bucket_secs_and_labels(
+        window_start, window_end, buckets=buckets
+    )
+    bs = max(1, int(round(bucket_secs)))
+    t0u = int(wstart.timestamp())
+
+    heat = c.query(
+        f"""
+        SELECT intDiv(toUnixTimestamp(event_time) - {t0u}, {bs}) AS bi, count() AS c
+        FROM `{db}`.log_events
+        WHERE stream_key = {{sk:String}}
+          AND event_time >= {{t0:DateTime64(3, 'UTC')}}
+          AND event_time <= {{t1:DateTime64(3, 'UTC')}}
+        GROUP BY bi
+        ORDER BY bi
+        """,
+        parameters={"sk": sk, "t0": wstart, "t1": wend},
+    )
+    n_b = max(4, min(buckets, 48))
+    counts = [0] * n_b
+    for bi, cval in heat.result_rows:
+        idx = int(bi)
+        if 0 <= idx < n_b:
+            counts[idx] += int(cval or 0)
+
+    geo = c.query(
+        f"""
+        SELECT geo_country, geo_city, count() AS n, avg(geo_lat), avg(geo_lon)
+        FROM `{db}`.log_events
+        WHERE stream_key = {{sk:String}}
+          AND event_time >= {{t0:DateTime64(3, 'UTC')}}
+          AND event_time <= {{t1:DateTime64(3, 'UTC')}}
+          AND geo_country != ''
+        GROUP BY geo_country, geo_city
+        ORDER BY n DESC
+        LIMIT 32
+        """,
+        parameters={"sk": sk, "t0": wstart, "t1": wend},
+    )
+    n_no_geo_r = c.query(
+        f"""
+        SELECT count()
+        FROM `{db}`.log_events
+        WHERE stream_key = {{sk:String}}
+          AND event_time >= {{t0:DateTime64(3, 'UTC')}}
+          AND event_time <= {{t1:DateTime64(3, 'UTC')}}
+          AND geo_country = ''
+        """,
+        parameters={"sk": sk, "t0": wstart, "t1": wend},
+    )
+    n_no_geo = int(n_no_geo_r.result_rows[0][0] if n_no_geo_r.result_rows else 0)
+    n_empty_ip_r = c.query(
+        f"""
+        SELECT count()
+        FROM `{db}`.log_events
+        WHERE stream_key = {{sk:String}}
+          AND event_time >= {{t0:DateTime64(3, 'UTC')}}
+          AND event_time <= {{t1:DateTime64(3, 'UTC')}}
+          AND geo_country = ''
+          AND client_ip = ''
+        """,
+        parameters={"sk": sk, "t0": wstart, "t1": wend},
+    )
+    n_empty_ip = int(n_empty_ip_r.result_rows[0][0] if n_empty_ip_r.result_rows else 0)
+    n_has_ip_no_geo = max(0, n_no_geo - n_empty_ip)
+
+    top_ips = c.query(
+        f"""
+        SELECT client_ip, count() AS n
+        FROM `{db}`.log_events
+        WHERE stream_key = {{sk:String}}
+          AND event_time >= {{t0:DateTime64(3, 'UTC')}}
+          AND event_time <= {{t1:DateTime64(3, 'UTC')}}
+          AND client_ip != ''
+        GROUP BY client_ip
+        ORDER BY n DESC
+        LIMIT 8
+        """,
+        parameters={"sk": sk, "t0": wstart, "t1": wend},
+    )
+    top_client_ips = [
+        {"ip": str(ip or "")[:64], "count": int(n or 0)}
+        for ip, n in (top_ips.result_rows or [])
+    ]
+
+    out: List[dict[str, Any]] = []
+    for row in geo.result_rows:
+        co, ci, n, lat, lon = row[0], row[1], row[2], row[3], row[4]
+        co_s = (co or "").strip()
+        ci_s = (ci or "").strip()
+        name = _geo_flow_display_name(co_s, ci_s) or "未知区域"
+        out.append(
+            {
+                "name": name[:160],
+                "value": int(n or 0),
+                "lat": float(lat) if lat is not None else None,
+                "lon": float(lon) if lon is not None else None,
+            }
+        )
+    if geo.result_rows and n_no_geo > 0:
+        if n_empty_ip > 0:
+            out.append(
+                {
+                    "name": "无 client_ip（未解析出 IP：缺 remote_addr、为 “-”、非 JSON 行混入等）",
+                    "value": n_empty_ip,
+                    "lat": 26.0,
+                    "lon": 101.0,
+                }
+            )
+        if n_has_ip_no_geo > 0:
+            out.append(
+                {
+                    "name": "有 IP · 仍无国家（内网/保留地址/缺 mmdb）",
+                    "value": n_has_ip_no_geo,
+                    "lat": 44.0,
+                    "lon": 122.0,
+                }
+            )
+    if not geo.result_rows:
+        total = count_events_window_clickhouse(stream_key, window_start, window_end)
+        if total == 0:
+            return {
+                "time_heatmap": {"labels": labels, "counts": counts},
+                "region_flow": [],
+                "top_client_ips": top_client_ips,
+            }
+        stub = c.query(
+            f"""
+            SELECT
+              multiIf(
+                modulo(cityHash64(host), 6) = 0, '华北',
+                modulo(cityHash64(host), 6) = 1, '华东',
+                modulo(cityHash64(host), 6) = 2, '华南',
+                modulo(cityHash64(host), 6) = 3, '西南',
+                modulo(cityHash64(host), 6) = 4, '西北',
+                '海外'
+              ) AS reg,
+              count() AS n
+            FROM `{db}`.log_events
+            WHERE stream_key = {{sk:String}}
+              AND event_time >= {{t0:DateTime64(3, 'UTC')}}
+              AND event_time <= {{t1:DateTime64(3, 'UTC')}}
+            GROUP BY reg
+            ORDER BY n DESC
+            """,
+            parameters={"sk": sk, "t0": wstart, "t1": wend},
+        )
+        out = [
+            {"name": str(rg or ""), "value": int(n or 0), "lat": None, "lon": None}
+            for rg, n in stub.result_rows
+        ]
+
+    return {
+        "time_heatmap": {"labels": labels, "counts": counts},
+        "region_flow": out,
+        "top_client_ips": top_client_ips,
     }

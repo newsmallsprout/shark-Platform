@@ -124,7 +124,8 @@ def tool_schemas() -> List[Dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "submit_final_report",
-                "description": "证据充分时调用，结束排查并输出结构化结论。禁止编造未出现在先前 Observation 中的指标或日志。",
+                "description": "证据充分时调用，结束排查并输出结构化结论。禁止编造未出现在先前 Observation 中的指标或日志。"
+                "mitigation_commands 仅填会改变集群状态的命令；只读 kubectl get/describe、PromQL 查询应写在 root_cause 的分步排查中。",
                 "parameters": {
                     "type": "object",
                     "properties": {

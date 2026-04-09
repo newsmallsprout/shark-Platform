@@ -2,7 +2,7 @@
 
 **AI 驱动的 L4 级云原生运维系统——让大模型接管监控与排障。**
 
-中心控制面以 **Django + Celery + LangGraph + Redis SSE** 编排闭环；在 **物理机或隔离网络** 场景下由 **纯 Go 探针** 承担心跳、日志脱敏上报与 **Playbook 自愈脚本**。在 **Kubernetes（云上或本地）** 中，容器与工作负载的指标、日志应优先通过 **集群内 API**（如 Kubernetes API、`kubectl logs` 等价能力、Loki/ES、已部署的 Prometheus）获取，**不必**再为每个业务 Pod 叠加一层「容器内上报」——避免重复与权限扩散。生产环境推荐将 **本平台部署在目标集群内**（同一 VPC / 同一集群），以降低跨网延迟并复用 ServiceAccount 与指标栈。
+中心控制面以 **Django + Celery + M2M 诊断协议（`EXECUTE` / `TICKET` 机读标签）+ Redis SSE** 编排闭环；Celery 任务名仍保留历史别名 ``ai_ops.run_incident_langgraph``。在 **物理机或隔离网络** 场景下由 **纯 Go 探针** 承担心跳、日志脱敏上报与 **Playbook 自愈脚本**。在 **Kubernetes（云上或本地）** 中，容器与工作负载的指标、日志应优先通过 **集群内 API**（如 Kubernetes API、`kubectl logs` 等价能力、Loki/ES、已部署的 Prometheus）获取，**不必**再为每个业务 Pod 叠加一层「容器内上报」——避免重复与权限扩散。生产环境推荐将 **本平台部署在目标集群内**（同一 VPC / 同一集群），以降低跨网延迟并复用 ServiceAccount 与指标栈。
 
 ---
 
@@ -25,8 +25,8 @@
 | 能力 | 说明 |
 |------|------|
 | **API / ORM** | 告警、工单、经验库、拓扑快照、Playbook 任务模型 |
-| **Celery** | 异步触发 LangGraph 流水线 |
-| **LangGraph** | `感知指标 → 推断拓扑 → 经验库匹配 → 因果诊断 → 落库工单/自愈`；置信度 ≥ `AIOPS_AUTO_HEAL_CONFIDENCE_THRESHOLD`（默认 0.95）且存在可执行 Playbook 时，生成**已批准**工单并创建 **PlaybookJob** 下发边缘 |
+| **Celery** | 异步触发诊断流水线（``run_pipeline_for_incident``）；与控制台「一键诊断」、**Alertmanager Webhook** 共用同一任务，带稳定 ``run_id`` 与 **AgentRun** 记录 |
+| **M2M + 工具** | 平台软上下文（拓扑、经验库、可选接入层流量摘要、服务目录）→ 大模型 **`EXECUTE` 段**只读取证 → **`TICKET` 段**落库；置信度 ≥ `AIOPS_AUTO_HEAL_CONFIDENCE_THRESHOLD`（默认 0.95）且存在可执行 Playbook 时，生成**已批准**工单并创建 **PlaybookJob** 下发边缘 |
 | **SSE** | 独立 `sse_server` 通过 Redis 向浏览器推送图节点与工具事件 |
 | **边缘入口** | `POST /api/edge/*`（需 `X-Shark-Edge-Token` = 中心 `SHARK_EDGE_TOKEN`） |
 
@@ -100,7 +100,7 @@ Compose **默认**拉起：**PostgreSQL 16**（Django 主库）、**ClickHouse 2
 | `mirror` | 双写 PG + CH；**大屏聚合仍读 PG**（CH 供外部 BI / 后续分析） |
 | `analytics` | 双写；**聚合与 compare_windows 优先 ClickHouse**，失败回退 ORM |
 
-相关环境变量：`CLICKHOUSE_HOST`、`CLICKHOUSE_PORT`、`CLICKHOUSE_DATABASE`、`CLICKHOUSE_USER`、`CLICKHOUSE_PASSWORD`。
+相关环境变量：`CLICKHOUSE_HOST`、`CLICKHOUSE_PORT`、`CLICKHOUSE_DATABASE`、`CLICKHOUSE_USER`、`CLICKHOUSE_PASSWORD`。Docker Compose 下 `clickhouse` 与 `web`/`celery` 默认共用 **`CLICKHOUSE_PASSWORD=shark`**（CH 24+ 跨容器 HTTP 需与镜像内 `default` 用户密码一致）；若曾用无密码旧数据卷启动过，需删卷重建或 `ALTER USER` 与 `.env` 对齐。
 
 **PostgreSQL 表分区**：Django migration 仍为单表；超大规模时可参考 `observability/sql/README.md` 由 DBA 做原生 RANGE 分区（与 ClickHouse 自动月分区独立）。
 
@@ -113,7 +113,14 @@ Compose **默认**拉起：**PostgreSQL 16**（Django 主库）、**ClickHouse 2
 | `AIOPS_AUTO_HEAL_CONFIDENCE` | 自动批准并下发 Playbook 的置信度阈值（默认 `0.95`） |
 | `AIOPS_DEFAULT_PLAYBOOK_NODE` | 与边缘 `SHARK_AIOPS_NODE_ID` 或集群内执行器一致（默认 `default`） |
 | `AGENT_SSE_PUBLIC_BASE` | 返回给前端的 SSE 根 URL |
-| `PROMETHEUS_URL` | 集群内或托管 Prometheus 地址，供 LangGraph 工具链查询 |
+| `PROMETHEUS_URL` | 默认 Prometheus 地址，供 M2M `PROMQL|` 工具查询 |
+| `AIOPS_PROMETHEUS_URL_BY_CLUSTER` | 可选 JSON 映射，按告警标签 `cluster` / `k8s_cluster` 等多集群路由 |
+| `AIOPS_AUTO_CREATE_TICKET_ON_ALERT` | Webhook 触发的诊断是否仍创建工单（`false` 时仅报告） |
+| `AIOPS_WEBHOOK_BEARER_TOKEN` / `AIOPS_WEBHOOK_HMAC_SECRET` | Alertmanager Webhook 鉴权（未配置则不校验该项） |
+| `AIOPS_OPS_REQUIRE_STAFF` | `true` 时仅 Django `is_staff` 可调运维台 API（列表/诊断/工单/大屏等） |
+| `SHARK_PLAYBOOK_ALLOWED_PREFIXES` | **go-agent**：非空时脚本正文须以其中某一前缀开头（逗号分隔），否则拒绝执行并回传失败 |
+
+**Alertmanager**：告警 **firing** 时中心会 **入队 Celery**（与控制台诊断同一任务），并生成稳定 `run_id` 供 SSE 订阅；解析见 `.env.example`。
 
 ---
 
@@ -132,6 +139,7 @@ cd go-agent && go mod tidy && go build -o aiops-agent .
 | `SHARK_AIOPS_NODE_ID` | 与 `AIOPS_DEFAULT_PLAYBOOK_NODE` 对齐，用于拉取 Playbook |
 | `SHARK_AIOPS_INTERVAL` | 心跳周期，默认 `30s` |
 | `SHARK_AIOPS_PLAYBOOK_POLL` | Playbook 轮询周期，默认 `5s` |
+| `SHARK_PLAYBOOK_ALLOWED_PREFIXES` | 可选；例如 `#ALLOWED,#!/bin/bash` 限制可执行脚本前缀 |
 
 ### go-log-collector
 

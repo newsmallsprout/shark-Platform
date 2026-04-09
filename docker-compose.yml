@@ -6,6 +6,7 @@
 
 services:
   redis:
+    # Agent SSE Pub/Sub + Celery broker; async diagnosis uses ReAct (no RediSearch required on this path).
     image: redis:7-alpine
     ports:
       - "6379:6379"
@@ -30,6 +31,11 @@ services:
 
   clickhouse:
     image: clickhouse/clickhouse-server:24.8-alpine
+    # 与 web/celery 的 CLICKHOUSE_* 保持一致。CH 24+ 从其他容器经 HTTP 连 default 用户通常需要非空密码。
+    environment:
+      CLICKHOUSE_DB: ${CLICKHOUSE_DATABASE:-shark_obs}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-shark}
     volumes:
       - ch_data:/var/lib/clickhouse
     ports:
@@ -40,6 +46,7 @@ services:
         soft: 262144
         hard: 262144
     healthcheck:
+      # 本机 native 连接；与经 HTTP 从 web 容器访问的鉴权策略不同
       test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
       interval: 5s
       timeout: 5s
@@ -52,6 +59,8 @@ services:
       - "8000:8000"
     volumes:
       - shark_state:/app/state
+      # 宿主机仓库根目录的 GeoLite2-City.mmdb 挂到默认读取路径（与 GEOIP_DATABASE_PATH 空值一致）
+      - ${GEOIP_MMDB_HOST_FILE:-./GeoLite2-City.mmdb}:/app/state/GeoLite2-City.mmdb:ro
       - nginx_logs:/var/log/nginx
     environment:
       DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-dev-change-me-in-prod}
@@ -69,13 +78,15 @@ services:
       CLICKHOUSE_HOST: clickhouse
       CLICKHOUSE_PORT: ${CLICKHOUSE_PORT:-8123}
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-shark}
       CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:-shark_obs}
       CLICKHOUSE_STORE_RAW_EXCERPT: ${CLICKHOUSE_STORE_RAW_EXCERPT:-false}
       OBSERVABILITY_OLAP_MODE: ${OBSERVABILITY_OLAP_MODE:-analytics}
       OBSERVABILITY_MAX_EVENTS: ${OBSERVABILITY_MAX_EVENTS:-200000}
       OBSERVABILITY_LLM_TIMEOUT_SEC: ${OBSERVABILITY_LLM_TIMEOUT_SEC:-90}
       OBSERVABILITY_DISABLE_DETECTORS: ${OBSERVABILITY_DISABLE_DETECTORS:-false}
+      GEOIP_DATABASE_URL: ${GEOIP_DATABASE_URL:-}
+      GEOIP_DATABASE_PATH: ${GEOIP_DATABASE_PATH:-}
       CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
       CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/0}
       CELERY_TIMEZONE: ${CELERY_TIMEZONE:-Asia/Shanghai}
@@ -131,6 +142,7 @@ services:
     command: ["celery", "-A", "shark_platform", "worker", "-l", "INFO"]
     volumes:
       - shark_state:/app/state
+      - ${GEOIP_MMDB_HOST_FILE:-./GeoLite2-City.mmdb}:/app/state/GeoLite2-City.mmdb:ro
     environment:
       DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-dev-change-me-in-prod}
       POSTGRES_HOST: postgres
@@ -143,7 +155,7 @@ services:
       CLICKHOUSE_HOST: clickhouse
       CLICKHOUSE_PORT: ${CLICKHOUSE_PORT:-8123}
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-shark}
       CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:-shark_obs}
       OBSERVABILITY_OLAP_MODE: ${OBSERVABILITY_OLAP_MODE:-analytics}
       OBSERVABILITY_MAX_EVENTS: ${OBSERVABILITY_MAX_EVENTS:-200000}

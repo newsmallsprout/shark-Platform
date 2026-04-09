@@ -81,29 +81,50 @@
         <section v-if="trafficPayload?.hint" class="panel traffic-banner">
           <p class="traffic-zero">{{ trafficPayload.hint }}</p>
         </section>
-        <section v-else-if="trafficBlock" class="panel traffic-panel">
-          <div class="panel-cap">
-            <span class="cap-title">网关访问态势</span>
+        <section v-else-if="trafficBlock" class="panel traffic-panel traffic-panel--scifi">
+          <div class="traffic-scifi-frame" aria-hidden="true" />
+          <div class="panel-cap traffic-cap">
+            <span class="cap-title">网关访问趋势</span>
             <span class="cap-hint mono">{{ trafficBlock.streamKey }} · 近 {{ trafficBlock.windowM }} 分钟</span>
           </div>
           <div class="traffic-grid">
-            <div class="traffic-metric">
+            <div class="traffic-metric traffic-metric--glow">
               <span class="tm-label">请求</span>
               <span class="tm-val">{{ trafficBlock.total }}</span>
             </div>
-            <div class="traffic-metric">
+            <div class="traffic-metric traffic-metric--glow">
               <span class="tm-label">QPS</span>
               <span class="tm-val">{{ trafficBlock.qps }}</span>
             </div>
-            <div class="traffic-metric">
+            <div class="traffic-metric traffic-metric--glow">
               <span class="tm-label">错误率</span>
               <span class="tm-val" :class="{ 'tm-warn': trafficBlock.errRate > 0.05 }">
                 {{ (trafficBlock.errRate * 100).toFixed(2) }}%
               </span>
             </div>
-            <div class="traffic-metric">
+            <div class="traffic-metric traffic-metric--glow">
               <span class="tm-label">p99 延迟</span>
               <span class="tm-val">{{ trafficBlock.p99Ms ?? '—' }} ms</span>
+            </div>
+          </div>
+          <div class="traffic-viz-row">
+            <div class="traffic-viz-cell">
+              <span class="traffic-viz-title">时间热力 · 请求密度</span>
+              <v-chart class="traffic-chart-heat" :option="trafficHeatmapOption" autoresize />
+            </div>
+            <div class="traffic-viz-cell">
+              <span class="traffic-viz-title">地域流量 · 国家/城市（GeoIP）</span>
+              <v-chart class="traffic-chart-region" :option="trafficRegionOption" autoresize />
+              <p v-if="trafficRegionGeoStub" class="traffic-geo-hint">
+                当前气泡为<strong>无 GeoIP 时的示意分区</strong>（常见原因：日志里是 Docker/内网
+                remote_addr、XFF 未带出公网 IP，或未挂载 GeoLite2）。请把真实客户端 IP 写入
+                X-Forwarded-For（或 CDN 的 CF-Connecting-IP 等）并配置 .mmdb；历史行可执行
+                <code class="mono">python manage.py backfill_logevent_geoip --only-empty-geo</code>。
+              </p>
+              <p v-else-if="trafficBlock.topClientIps.length" class="traffic-geo-hint traffic-geo-hint--subtle">
+                <strong>Host Top</strong> 是浏览器请求的 <code class="mono">Host</code> 头；<strong>地域图</strong>按
+                <strong>访客 IP（client_ip）</strong> 解析。下方「访客 IP Top」才是 GeoIP 依据，二者不必一致。
+              </p>
             </div>
           </div>
           <div v-if="trafficBlock.hosts.length" class="traffic-hosts">
@@ -112,6 +133,15 @@
               <li v-for="h in trafficBlock.hosts" :key="h.host">
                 <span class="mono">{{ h.host }}</span>
                 <span>{{ h.count }}</span>
+              </li>
+            </ul>
+          </div>
+          <div v-if="trafficBlock.topClientIps.length" class="traffic-hosts traffic-client-ip-top">
+            <span class="cap-title cap-title--inline">访客 IP Top（GeoIP 依据）</span>
+            <ul>
+              <li v-for="(c, idx) in trafficBlock.topClientIps" :key="c.ip + String(idx)">
+                <span class="mono">{{ c.ip }}</span>
+                <span>{{ c.count }}</span>
               </li>
             </ul>
           </div>
@@ -128,14 +158,14 @@
             </el-button>
             <span class="traffic-ai-hint">基于聚合指标与检测器结果调用 LLM（需配置 AI Key）</span>
           </div>
-          <div v-if="trafficInsights.length" class="traffic-insights">
-            <span class="cap-title cap-title--inline">最近洞察</span>
-            <ul>
-              <li v-for="ins in trafficInsights" :key="ins.id" :class="'sev-' + ins.severity">
-                <span class="ins-type mono">{{ ins.insight_type }}</span>
-                <span class="ins-title">{{ ins.title }}</span>
-              </li>
-            </ul>
+          <div v-if="trafficLatestInsight" class="traffic-insights traffic-insights--single">
+            <span class="cap-title cap-title--inline">AI 洞察</span>
+            <div :class="['ins-card', 'sev-' + trafficLatestInsight.severity]">
+              <span class="ins-type mono">{{ trafficLatestInsight.insight_type }}</span>
+              <span class="ins-title">{{ trafficLatestInsight.title }}</span>
+              <p v-if="trafficLatestInsight.body" class="ins-body">{{ trafficLatestInsight.body }}</p>
+              <span class="ins-at mono">{{ trafficLatestInsight.created_at }}</span>
+            </div>
           </div>
         </section>
 
@@ -272,8 +302,12 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
-import { LineChart, BarChart } from 'echarts/charts'
-import { GridComponent, TooltipComponent, LegendComponent } from 'echarts/components'
+import { LineChart, BarChart, ScatterChart } from 'echarts/charts'
+import {
+  GridComponent,
+  TooltipComponent,
+  LegendComponent,
+} from 'echarts/components'
 import VChart from 'vue-echarts'
 import { ElMessage } from 'element-plus'
 import { aiOpsApi, type DashboardSummary, type TopoNode } from '@/api/ai_ops'
@@ -285,13 +319,55 @@ import {
 import { systemApi, type SystemStats } from '@/api/system'
 import TechGlobe from '@/components/TechGlobe.vue'
 
-use([CanvasRenderer, LineChart, BarChart, GridComponent, TooltipComponent, LegendComponent])
+use([
+  CanvasRenderer,
+  LineChart,
+  BarChart,
+  ScatterChart,
+  GridComponent,
+  TooltipComponent,
+  LegendComponent,
+])
 
 const CYAN = '#2dd4bf'
 const CYAN_DIM = 'rgba(45, 212, 191, 0.25)'
 const GOLD = '#fcd34d'
 const MUTED = '#6b8aa0'
 const DANGER = '#fb7185'
+
+/** 示意经纬度（无 GeoIP 时按 Host 哈希大区后的气泡位置） */
+const REGION_COORDS: Record<string, [number, number]> = {
+  华北: [116.4, 40.0],
+  华东: [121.5, 31.2],
+  华南: [113.3, 23.1],
+  西南: [104.1, 30.7],
+  西北: [108.9, 34.3],
+  海外: [125.0, 24.0],
+}
+
+/** 后端无 GeoIP 时按 Host 哈希的六大区名（与 aggregate / ClickHouse 一致） */
+const TRAFFIC_STUB_REGION_NAMES = new Set([
+  '华北',
+  '华东',
+  '华南',
+  '西南',
+  '西北',
+  '海外',
+])
+
+/** 请求强度柱配色：深青 → 电青 → 淡紫峰，避免高对比黄块 */
+function trafficHeatBarColors(v: number, max: number) {
+  const t = max > 0 ? Math.min(1, v / max) : 0
+  if (t < 0.1)
+    return { top: '#2a4a5c', mid: '#152a38', bottom: '#0a141c' }
+  if (t < 0.35)
+    return { top: '#2a8a8a', mid: '#1a5f62', bottom: '#0e252c' }
+  if (t < 0.65)
+    return { top: '#5eead4', mid: '#2db8a8', bottom: '#0f3438' }
+  if (t < 0.88)
+    return { top: '#a7faf0', mid: '#2dd4bf', bottom: '#123840' }
+  return { top: '#ddd6fe', mid: '#8b7fd8', bottom: '#1e1a36' }
+}
 
 const dash = ref<DashboardSummary | null>(null)
 const sysStats = ref<SystemStats | null>(null)
@@ -403,6 +479,257 @@ const trafficBlock = computed(() => {
     errRate: Number(s.error_rate) || 0,
     p99Ms: lat.p99 != null ? Number(lat.p99) : null,
     hosts: Array.isArray(s.top_hosts) ? (s.top_hosts as { host: string; count: number }[]) : [],
+    topClientIps: Array.isArray(s.top_client_ips)
+      ? (s.top_client_ips as { ip: string; count: number }[])
+      : [],
+    timeHeatmap: s.time_heatmap as { labels: string[]; counts: number[] } | undefined,
+    regionFlow: Array.isArray(s.region_flow)
+      ? (s.region_flow as { name: string; value: number; lat?: number | null; lon?: number | null }[])
+      : [],
+  }
+})
+
+const trafficRegionGeoStub = computed(() => {
+  const rows = trafficBlock.value?.regionFlow ?? []
+  if (!rows.length) return false
+  return rows.every((r) => TRAFFIC_STUB_REGION_NAMES.has(r.name))
+})
+
+const trafficLatestInsight = computed(() => trafficInsights.value[0] ?? null)
+
+const trafficHeatmapOption = computed(() => {
+  const th = trafficBlock.value?.timeHeatmap
+  const labels = th?.labels?.length ? th.labels : []
+  const counts = th?.counts?.length ? th.counts : []
+  if (!labels.length) {
+    return {
+      backgroundColor: 'transparent',
+      textStyle: { color: MUTED, fontSize: 10 },
+      grid: { left: 44, right: 10, top: 12, bottom: 40 },
+      xAxis: { type: 'category', data: [], axisLine: { lineStyle: { color: CYAN_DIM } } },
+      yAxis: { type: 'value', show: false },
+      series: [{ type: 'bar', data: [] }],
+    }
+  }
+  const maxC = Math.max(1, ...counts)
+  const barData = labels.map((lab, i) => {
+    const v = counts[i] ?? 0
+    const c = trafficHeatBarColors(v, maxC)
+    const hot = maxC > 0 && v >= maxC * 0.72
+    return {
+      value: v,
+      name: lab,
+      itemStyle: {
+        color: {
+          type: 'linear',
+          x: 0,
+          y: 0,
+          x2: 0,
+          y2: 1,
+          colorStops: [
+            { offset: 0, color: c.top },
+            { offset: 0.5, color: c.mid },
+            { offset: 1, color: c.bottom },
+          ],
+        },
+        borderRadius: [4, 4, 1, 1],
+        shadowBlur: hot ? 16 : 6,
+        shadowColor: hot ? 'rgba(167, 250, 240, 0.35)' : 'rgba(45, 212, 191, 0.2)',
+      },
+    }
+  })
+  return {
+    backgroundColor: 'transparent',
+    animationDuration: 480,
+    animationEasing: 'cubicOut',
+    textStyle: { color: MUTED, fontSize: 10 },
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: {
+        type: 'shadow',
+        shadowStyle: { color: 'rgba(45, 212, 191, 0.12)' },
+      },
+      backgroundColor: 'rgba(4, 12, 28, 0.94)',
+      borderColor: CYAN_DIM,
+      borderWidth: 1,
+      textStyle: { color: '#e8f4ff', fontSize: 12 },
+      formatter: (p: unknown) => {
+        const arr = Array.isArray(p) ? p : [p]
+        const x = arr[0] as { name?: string; value?: number }
+        return `${x?.name ?? ''}<br/><span style="color:#5eead4">请求</span> ${x?.value ?? 0}`
+      },
+    },
+    grid: { left: 44, right: 10, top: 14, bottom: 44 },
+    xAxis: {
+      type: 'category',
+      data: labels,
+      axisLine: { lineStyle: { color: CYAN_DIM } },
+      axisTick: { show: false },
+      axisLabel: { color: MUTED, fontSize: 9, rotate: 42, margin: 10 },
+    },
+    yAxis: {
+      type: 'value',
+      min: 0,
+      splitLine: { lineStyle: { color: 'rgba(45, 212, 191, 0.06)' } },
+      axisLine: { show: false },
+      axisLabel: { color: MUTED, fontSize: 9 },
+    },
+    series: [
+      {
+        type: 'bar',
+        name: '请求',
+        barMaxWidth: 9,
+        barGap: '52%',
+        showBackground: true,
+        backgroundStyle: {
+          color: 'rgba(6, 24, 44, 0.55)',
+          borderRadius: [4, 4, 0, 0],
+        },
+        data: barData,
+      },
+    ],
+  }
+})
+
+const trafficRegionOption = computed(() => {
+  const rows = trafficBlock.value?.regionFlow ?? []
+  const data = rows.map((r) => {
+    let lon = r.lon
+    let lat = r.lat
+    if (lat == null || lon == null) {
+      const c = REGION_COORDS[r.name]
+      if (c) {
+        lon = c[0]
+        lat = c[1]
+      } else {
+        lon = 105
+        lat = 35
+      }
+    }
+    return {
+      name: r.name,
+      value: [lon, lat, r.value] as [number, number, number],
+    }
+  })
+  if (!data.length) {
+    return {
+      backgroundColor: 'transparent',
+      grid: { left: 44, right: 16, top: 16, bottom: 28 },
+      xAxis: { type: 'value', min: 100, max: 132, show: true },
+      yAxis: { type: 'value', min: 18, max: 42, show: true },
+      series: [],
+    }
+  }
+
+  let minX = 180
+  let maxX = -180
+  let minY = 90
+  let maxY = -90
+  for (const d of data) {
+    const x = d.value[0]
+    const y = d.value[1]
+    if (typeof x === 'number' && typeof y === 'number' && Number.isFinite(x) && Number.isFinite(y)) {
+      minX = Math.min(minX, x)
+      maxX = Math.max(maxX, x)
+      minY = Math.min(minY, y)
+      maxY = Math.max(maxY, y)
+    }
+  }
+  if (minX > maxX) {
+    minX = 100
+    maxX = 132
+    minY = 18
+    maxY = 42
+  }
+  const spanX = Math.max(maxX - minX, 4)
+  const spanY = Math.max(maxY - minY, 4)
+  const padX = Math.max(2.5, spanX * 0.14)
+  const padY = Math.max(2.5, spanY * 0.14)
+  const xMin = Math.max(70, minX - padX)
+  const xMax = Math.min(150, maxX + padX)
+  const yMin = Math.max(0, minY - padY)
+  const yMax = Math.min(55, maxY + padY)
+
+  return {
+    backgroundColor: 'transparent',
+    animationDuration: 400,
+    textStyle: { color: MUTED, fontSize: 10 },
+    tooltip: {
+      backgroundColor: 'rgba(4, 12, 28, 0.94)',
+      borderColor: CYAN_DIM,
+      borderWidth: 1,
+      textStyle: { color: '#e8f4ff', fontSize: 12 },
+      formatter: (p: { data?: { name?: string; value?: number[] } }) => {
+        const v = p.data?.value
+        const n = p.data?.name
+        return `${n ?? ''}<br/><span style="color:#5eead4">请求</span> ${v?.[2] ?? 0}`
+      },
+    },
+    grid: { left: 44, right: 16, top: 18, bottom: 30 },
+    xAxis: {
+      min: xMin,
+      max: xMax,
+      scale: true,
+      name: '经度示意',
+      nameTextStyle: { color: MUTED, fontSize: 9 },
+      axisLine: { lineStyle: { color: CYAN_DIM } },
+      splitLine: { lineStyle: { color: 'rgba(45,212,191,0.04)' } },
+      axisLabel: { color: MUTED, fontSize: 9 },
+    },
+    yAxis: {
+      min: yMin,
+      max: yMax,
+      scale: true,
+      name: '纬度示意',
+      nameTextStyle: { color: MUTED, fontSize: 9 },
+      axisLine: { lineStyle: { color: CYAN_DIM } },
+      splitLine: { lineStyle: { color: 'rgba(45,212,191,0.04)' } },
+      axisLabel: { color: MUTED, fontSize: 9 },
+    },
+    series: [
+      {
+        type: 'scatter',
+        data,
+        symbolSize: (raw: unknown) => {
+          const arr = raw as number[]
+          const n = arr?.[2] ?? 0
+          return Math.max(14, Math.min(44, 10 + Math.sqrt(n) * 1.85))
+        },
+        itemStyle: {
+          color: {
+            type: 'radial',
+            x: 0.4,
+            y: 0.4,
+            r: 0.92,
+            colorStops: [
+              { offset: 0, color: '#e8fffb' },
+              { offset: 0.45, color: '#5eead4' },
+              { offset: 1, color: 'rgba(20, 60, 72, 0.55)' },
+            ],
+          },
+          borderColor: 'rgba(94, 234, 212, 0.35)',
+          borderWidth: 1,
+          shadowBlur: 10,
+          shadowColor: 'rgba(45,212,191,0.28)',
+        },
+        label: {
+          show: true,
+          formatter: (p: { data?: { name?: string } }) => p.data?.name ?? '',
+          color: '#cfeef0',
+          fontSize: 9,
+          fontWeight: 600,
+          position: 'top',
+          distance: 10,
+          textBorderColor: 'rgba(2, 12, 28, 0.9)',
+          textBorderWidth: 2,
+        },
+        labelLayout: { hideOverlap: true },
+        emphasis: {
+          scale: 1.12,
+          itemStyle: { shadowBlur: 14, shadowColor: 'rgba(45,212,191,0.4)' },
+        },
+      },
+    ],
   }
 })
 
@@ -667,7 +994,7 @@ async function loadTraffic() {
     trafficPayload.value = await observabilityApi.getTrafficSummary({ minutes: 60 })
     const sk = trafficPayload.value.stream_key
     if (sk) {
-      const ins = await observabilityApi.listInsights({ stream_key: sk, limit: 6 })
+      const ins = await observabilityApi.listInsights({ stream_key: sk, limit: 1 })
       trafficInsights.value = ins.insights
     } else {
       trafficInsights.value = []
@@ -1022,6 +1349,110 @@ onUnmounted(() => clearPoll())
 
 .traffic-panel {
   margin-bottom: 16px;
+  position: relative;
+  overflow: hidden;
+}
+
+.traffic-panel--scifi {
+  border-color: rgba(45, 212, 191, 0.45);
+  box-shadow:
+    0 0 24px rgba(45, 212, 191, 0.18),
+    0 0 60px rgba(45, 212, 191, 0.06),
+    inset 0 0 40px rgba(45, 212, 191, 0.04);
+}
+
+.traffic-scifi-frame {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  border: 1px solid transparent;
+  background:
+    linear-gradient(90deg, rgba(45, 212, 191, 0.12) 1px, transparent 1px) 0 0 / 24px 24px,
+    linear-gradient(rgba(45, 212, 191, 0.08) 1px, transparent 1px) 0 0 / 24px 24px;
+  opacity: 0.35;
+  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.65), rgba(0, 0, 0, 0.2));
+}
+
+.traffic-cap {
+  position: relative;
+  z-index: 1;
+}
+
+.traffic-metric--glow {
+  box-shadow: 0 0 12px rgba(45, 212, 191, 0.08);
+}
+
+.traffic-viz-row {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  padding: 8px 16px 4px;
+}
+
+@media (max-width: 900px) {
+  .traffic-viz-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+.traffic-viz-cell {
+  border: 1px solid rgba(45, 212, 191, 0.22);
+  border-radius: 10px;
+  background: linear-gradient(165deg, rgba(4, 28, 52, 0.55) 0%, rgba(2, 10, 26, 0.82) 100%);
+  padding: 8px 8px 4px;
+  box-shadow:
+    inset 0 0 24px rgba(45, 212, 191, 0.05),
+    0 0 1px rgba(94, 234, 212, 0.15);
+}
+
+.traffic-viz-title {
+  display: block;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--tech-cyan);
+  margin-bottom: 4px;
+  padding-left: 4px;
+}
+
+.traffic-chart-heat {
+  height: 200px;
+  width: 100%;
+  filter: drop-shadow(0 0 10px rgba(45, 212, 191, 0.06));
+}
+
+.traffic-chart-region {
+  height: 220px;
+  width: 100%;
+  filter: drop-shadow(0 0 12px rgba(45, 212, 191, 0.08));
+}
+
+.traffic-geo-hint {
+  margin: 6px 2px 0;
+  padding: 8px 10px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--tech-text-muted);
+  background: rgba(4, 20, 44, 0.45);
+  border-radius: 6px;
+  border: 1px solid rgba(45, 212, 191, 0.12);
+}
+
+.traffic-geo-hint .mono {
+  font-size: 10px;
+  word-break: break-all;
+}
+
+.traffic-geo-hint--subtle {
+  background: rgba(4, 20, 44, 0.28);
+  border-color: rgba(45, 212, 191, 0.08);
+}
+
+.traffic-client-ip-top {
+  margin-top: 4px;
 }
 
 .traffic-grid {
@@ -1098,22 +1529,21 @@ onUnmounted(() => clearPoll())
 }
 
 .traffic-insights {
+  position: relative;
+  z-index: 1;
   padding: 0 16px 14px;
 }
 
-.traffic-insights ul {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-
-.traffic-insights li {
+.traffic-insights--single .ins-card {
+  margin-top: 8px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  border: 1px solid rgba(45, 212, 191, 0.28);
+  background: linear-gradient(135deg, rgba(8, 28, 52, 0.85), rgba(4, 14, 32, 0.95));
+  box-shadow: 0 0 18px rgba(45, 212, 191, 0.1);
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding: 8px 0;
-  border-bottom: 1px solid rgba(45, 212, 191, 0.08);
-  font-size: 12px;
+  gap: 6px;
 }
 
 .traffic-insights .ins-type {
@@ -1122,7 +1552,22 @@ onUnmounted(() => clearPoll())
 }
 
 .traffic-insights .ins-title {
+  font-size: 13px;
+  font-weight: 600;
   color: var(--tech-text-secondary);
+}
+
+.traffic-insights .ins-body {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--tech-text-muted);
+}
+
+.traffic-insights .ins-at {
+  font-size: 10px;
+  color: var(--tech-text-muted);
+  opacity: 0.85;
 }
 
 .traffic-insights .sev-critical .ins-title {
@@ -1131,6 +1576,16 @@ onUnmounted(() => clearPoll())
 
 .traffic-insights .sev-warning .ins-title {
   color: var(--tech-gold);
+}
+
+.traffic-insights .sev-critical.ins-card {
+  border-color: rgba(251, 113, 133, 0.35);
+  box-shadow: 0 0 20px rgba(251, 113, 133, 0.12);
+}
+
+.traffic-insights .sev-warning.ins-card {
+  border-color: rgba(252, 211, 77, 0.35);
+  box-shadow: 0 0 18px rgba(252, 211, 77, 0.1);
 }
 
 .mid-grid {

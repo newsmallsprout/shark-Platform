@@ -41,6 +41,17 @@ class LogEvent(models.Model):
     )
     parser = models.CharField(max_length=32, blank=True, default="")
     raw_excerpt = models.CharField(max_length=512, blank=True, default="")
+    client_ip = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        db_index=True,
+        help_text="客户端 IP（优先 X-Forwarded-For 首段）",
+    )
+    geo_country = models.CharField(max_length=128, blank=True, default="")
+    geo_city = models.CharField(max_length=256, blank=True, default="")
+    geo_lat = models.FloatField(null=True, blank=True)
+    geo_lon = models.FloatField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

@@ -195,11 +195,73 @@ CLICKHOUSE_STORE_RAW_EXCERPT = os.environ.get(
     "CLICKHOUSE_STORE_RAW_EXCERPT", ""
 ).lower() in ("1", "true", "yes")
 
+# GeoLite2 City：镜像 URL（.mmdb.gz），首次 ingest 或 manage.py download_geoip 时拉取；须遵守 MaxMind EULA
+GEOIP_DATABASE_URL = (os.environ.get("GEOIP_DATABASE_URL") or "").strip()
+GEOIP_DATABASE_PATH = (os.environ.get("GEOIP_DATABASE_PATH") or "").strip()
+
 # L4 自愈：经验库匹配置信度 ≥ 此阈值时自动批准工单并下发 PlaybookJob
 AIOPS_AUTO_HEAL_CONFIDENCE_THRESHOLD = float(
     os.environ.get("AIOPS_AUTO_HEAL_CONFIDENCE", "0.95")
 )
 AIOPS_DEFAULT_PLAYBOOK_NODE = os.environ.get("AIOPS_DEFAULT_PLAYBOOK_NODE", "default")
+
+# 告警 Webhook 触发的 Celery 诊断是否落库工单（False 时仅更新 AnalysisReport / agent_trace）
+AIOPS_AUTO_CREATE_TICKET_ON_ALERT = os.environ.get(
+    "AIOPS_AUTO_CREATE_TICKET_ON_ALERT", "true"
+).lower() in ("1", "true", "yes")
+
+# Webhook 来源工单：是否在 draft 后自动提交待审批
+AIOPS_ALERT_AUTO_SUBMIT_TICKET_PENDING = os.environ.get(
+    "AIOPS_ALERT_AUTO_SUBMIT_TICKET_PENDING", "false"
+).lower() in ("1", "true", "yes")
+
+# 审批策略总开关（False 时跳过自动 submit / 自动批准逻辑）
+AIOPS_APPROVAL_POLICY_ENABLED = os.environ.get(
+    "AIOPS_APPROVAL_POLICY_ENABLED", "true"
+).lower() in ("1", "true", "yes")
+
+# 极低风险：severity=info 且模型 confidence=high 且无危险命令模式时 draft→approved
+AIOPS_APPROVAL_AUTO_LOW_RISK = os.environ.get(
+    "AIOPS_APPROVAL_AUTO_LOW_RISK", "false"
+).lower() in ("1", "true", "yes")
+
+# 出站通知（Slack/钉钉等 POST JSON；空则不发）
+AIOPS_NOTIFY_WEBHOOK_URL = (os.environ.get("AIOPS_NOTIFY_WEBHOOK_URL") or "").strip()
+AIOPS_NOTIFY_ON_RUN_START = os.environ.get(
+    "AIOPS_NOTIFY_ON_RUN_START", "false"
+).lower() in ("1", "true", "yes")
+AIOPS_NOTIFY_ON_TICKET_EVENTS = os.environ.get(
+    "AIOPS_NOTIFY_ON_TICKET_EVENTS", "true"
+).lower() in ("1", "true", "yes")
+
+# 多集群 Prometheus：JSON 映射，如 {"default":"https://prom/","prod-east":"https://pe/"}
+AIOPS_PROMETHEUS_URL_BY_CLUSTER = (
+    os.environ.get("AIOPS_PROMETHEUS_URL_BY_CLUSTER") or ""
+).strip()
+
+# 注入 Agent 软上下文的接入层日志 stream（空则取最近有数据的 LogStream）
+AIOPS_OBSERVABILITY_STREAM_KEY_FOR_INCIDENTS = (
+    os.environ.get("AIOPS_OBSERVABILITY_STREAM_KEY_FOR_INCIDENTS") or ""
+).strip()
+
+# 服务目录 JSON（列表或字典），注入模型 bootstrap
+AIOPS_SERVICE_CATALOG_JSON = (os.environ.get("AIOPS_SERVICE_CATALOG_JSON") or "").strip()
+
+# 工单执行成功后可选 PromQL 校验（空则跳过）
+AIOPS_POST_EXEC_VERIFY_PROMQL = (os.environ.get("AIOPS_POST_EXEC_VERIFY_PROMQL") or "").strip()
+
+# Webhook 鉴权：任选其一配置；未配置则不校验该项
+AIOPS_WEBHOOK_BEARER_TOKEN = (os.environ.get("AIOPS_WEBHOOK_BEARER_TOKEN") or "").strip()
+AIOPS_WEBHOOK_HMAC_SECRET = (os.environ.get("AIOPS_WEBHOOK_HMAC_SECRET") or "").strip()
+
+# 运维 API：为 True 时仅 is_staff 可访问（与 AiOpsOpsPermission 配合）
+AIOPS_OPS_REQUIRE_STAFF = os.environ.get(
+    "AIOPS_OPS_REQUIRE_STAFF", "false"
+).lower() in ("1", "true", "yes")
+
+# HashiCorp Vault（可选）：仅占位读取，密钥仍以环境变量为主
+AIOPS_VAULT_ADDR = (os.environ.get("AIOPS_VAULT_ADDR") or "").strip()
+AIOPS_VAULT_SECRET_PATH = (os.environ.get("AIOPS_VAULT_SECRET_PATH") or "").strip()
 
 
 def _resolve_aiops_deployment_mode() -> str:

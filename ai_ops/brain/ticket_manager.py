@@ -98,6 +98,37 @@ class TicketManager:
         )
         if not (error or "").strip():
             TicketManager._ingest_knowledge_from_ticket(t)
+            try:
+                from django.conf import settings
+                from celery import current_app
+
+                if (getattr(settings, "AIOPS_POST_EXEC_VERIFY_PROMQL", "") or "").strip():
+                    current_app.send_task(
+                        "ai_ops.verify_ticket_post_execution",
+                        args=[str(ticket_uuid)],
+                    )
+            except Exception:
+                pass
+        return t
+
+    @staticmethod
+    @transaction.atomic
+    def policy_auto_approve(ticket_uuid: UUID, comment: str = "") -> Ticket:
+        """策略引擎：低风险 draft 直接批准（无人工用户）。"""
+        t = Ticket.objects.select_for_update().get(pk=ticket_uuid)
+        if t.status != Ticket.STATUS_DRAFT:
+            raise ValueError(f"工单 {ticket_uuid} 非 draft，当前={t.status}")
+        t.status = Ticket.STATUS_APPROVED
+        t.approved_at = timezone.now()
+        t.approval_comment = (comment or "policy_auto_approve")[:2000]
+        t.save(
+            update_fields=[
+                "status",
+                "approved_at",
+                "approval_comment",
+                "updated_at",
+            ]
+        )
         return t
 
     @staticmethod

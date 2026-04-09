@@ -1,6 +1,13 @@
 from django.contrib import admin
 
-from .models import AIConfig, Incident, KnowledgeEntry, PlaybookJob, Ticket, TopologySnapshot
+from .models import AgentRun, AIConfig, Incident, KnowledgeEntry, PlaybookJob, Ticket, TopologySnapshot
+
+
+@admin.register(AgentRun)
+class AgentRunAdmin(admin.ModelAdmin):
+    list_display = ("run_id", "incident", "source", "status", "ticket", "created_at", "finished_at")
+    list_filter = ("source", "status")
+    search_fields = ("run_id", "celery_task_id")
 
 
 @admin.register(Incident)

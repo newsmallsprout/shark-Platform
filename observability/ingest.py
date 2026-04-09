@@ -8,6 +8,7 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
+from .geoip import lookup_city
 from .models import LogEvent, LogStream
 from .parsers import parse_line
 
@@ -89,6 +90,8 @@ def ingest_log_batch(
         data = parse_line(line, fmt)
         if not data:
             continue
+        cip = (data.get("client_ip") or "")[:64]
+        geo = lookup_city(cip) if cip else {}
         events.append(
             LogEvent(
                 stream_key=sk,
@@ -102,6 +105,11 @@ def ingest_log_batch(
                 upstream_time=data.get("upstream_time") or "",
                 parser=data.get("parser") or "",
                 raw_excerpt=line[:512],
+                client_ip=cip,
+                geo_country=geo.get("country") or "",
+                geo_city=geo.get("city") or "",
+                geo_lat=geo.get("lat"),
+                geo_lon=geo.get("lon"),
             )
         )
 

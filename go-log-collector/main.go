@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -100,6 +101,11 @@ func main() {
 	source := env("SHARK_AIOPS_LOG_SOURCE", "edge")
 	pathsRaw := env("SHARK_AIOPS_LOG_PATHS", "")
 	batch := 100
+	if v := strings.TrimSpace(env("SHARK_AIOPS_LOG_BATCH_SIZE", "")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 2000 {
+			batch = n
+		}
+	}
 	severity := strings.ToLower(env("SHARK_AIOPS_LOG_SEVERITY", "error"))
 	follow := envBool("SHARK_AIOPS_LOG_FOLLOW")
 	fromEnd := true
@@ -113,14 +119,31 @@ func main() {
 
 	parts := parsePaths(pathsRaw)
 	paths := expandPathPatterns(parts)
+	hasGlob := false
+	for _, p := range parts {
+		if strings.ContainsAny(p, "*?[") {
+			hasGlob = true
+			break
+		}
+	}
+	// 非 follow 或纯字面路径：无文件则失败。follow + glob：无匹配时保持运行并周期性重试（避免宿主机尚未写出日志时重启风暴）
 	if len(paths) == 0 && pathsRaw != "" {
-		fmt.Fprintln(os.Stderr, "no files match patterns:", pathsRaw)
-		os.Exit(1)
+		if !(follow && hasGlob) {
+			fmt.Fprintln(os.Stderr, "no files match patterns:", pathsRaw)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "log-collector: no files yet, retrying glob every 45s: %s\n", pathsRaw)
 	}
 
 	if len(paths) == 0 {
-		runStdin(source, url, token, client, redactors, severity, batch)
-		return
+		if pathsRaw == "" {
+			runStdin(source, url, token, client, redactors, severity, batch)
+			return
+		}
+		if !follow || !hasGlob {
+			fmt.Fprintln(os.Stderr, "no files match patterns:", pathsRaw)
+			os.Exit(1)
+		}
 	}
 
 	globalStream := strings.TrimSpace(env("SHARK_AIOPS_STREAM_KEY", ""))
@@ -146,15 +169,19 @@ func main() {
 			startTail(p)
 		}
 
-		// 周期性重新 glob，拾取新增文件（如日志按日滚动后新文件名仍匹配 pattern）
-		if strings.ContainsAny(pathsRaw, "*?[") {
+		// glob：立即扫一次，再每 45s 重扫（新文件、日志尚未创建）
+		if hasGlob {
 			go func() {
-				tick := time.NewTicker(45 * time.Second)
-				defer tick.Stop()
-				for range tick.C {
+				rescan := func() {
 					for _, p := range expandPathPatterns(parts) {
 						startTail(p)
 					}
+				}
+				rescan()
+				tick := time.NewTicker(45 * time.Second)
+				defer tick.Stop()
+				for range tick.C {
+					rescan()
 				}
 			}()
 		}
@@ -382,8 +409,17 @@ func (s *batchSink) flushOneUnlocked(streamKey string, b *streamBatch) {
 	resp, err := s.client.Do(req)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "push:", err)
-	} else {
-		resp.Body.Close()
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		var tail [512]byte
+		n, _ := io.ReadFull(resp.Body, tail[:])
+		msg := string(tail[:n])
+		if n == len(tail) {
+			msg += "…"
+		}
+		fmt.Fprintf(os.Stderr, "push: HTTP %s %s\n", resp.Status, strings.TrimSpace(msg))
 	}
 }
 

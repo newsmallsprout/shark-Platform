@@ -6,7 +6,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from .aggregate import summarize_stream
+from .aggregate import summarize_stream, traffic_visual_extras
 from .models import LogInsight, LogStream
 from .pipeline import run_observability_pipeline_impl
 from .tasks import run_observability_pipeline
@@ -55,7 +55,9 @@ def traffic_summary(request):
         minutes = 60
     minutes = max(5, min(minutes, 24 * 60))
     summary = summarize_stream(sk, window_minutes=minutes)
-    return Response({"stream_key": sk, "summary": summary.to_dict()})
+    payload = summary.to_dict()
+    payload.update(traffic_visual_extras(sk, minutes))
+    return Response({"stream_key": sk, "summary": payload})
 
 
 @api_view(["GET"])

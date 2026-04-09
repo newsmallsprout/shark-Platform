@@ -11,9 +11,19 @@ class LogStreamAdmin(admin.ModelAdmin):
 
 @admin.register(LogEvent)
 class LogEventAdmin(admin.ModelAdmin):
-    list_display = ("stream_key", "event_time", "host", "method", "status_code", "request_time")
+    list_display = (
+        "stream_key",
+        "event_time",
+        "client_ip",
+        "geo_country",
+        "geo_city",
+        "host",
+        "method",
+        "status_code",
+        "request_time",
+    )
     list_filter = ("stream_key", "status_code")
-    search_fields = ("path", "host")
+    search_fields = ("path", "host", "client_ip", "geo_country", "geo_city")
     date_hierarchy = "event_time"
 
 

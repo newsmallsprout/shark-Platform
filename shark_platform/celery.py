@@ -1,7 +1,15 @@
 import os
+
 from celery import Celery
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "shark_platform.settings")
+
+try:
+    from opentelemetry.instrumentation.celery import CeleryInstrumentor
+
+    CeleryInstrumentor().instrument()
+except Exception:
+    pass
 
 app = Celery("shark_platform")
 broker_url = os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379/0")

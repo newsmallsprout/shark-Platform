@@ -1,7 +1,7 @@
 import hashlib
+import hmac
 import json
 import logging
-import threading
 import uuid
 from datetime import timedelta
 from uuid import UUID
@@ -16,9 +16,10 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
+from core.permissions import AiOpsOpsPermission
+
 from .models import AIConfig, Incident, KnowledgeEntry, Ticket, TopologySnapshot
 from .brain.ticket_manager import TicketManager
-from .services.analyzer import FaultAnalyzer
 from .tasks import run_incident_langgraph
 
 logger = logging.getLogger(__name__)
@@ -46,8 +47,33 @@ def get_alert_fingerprint(alert):
     return hashlib.md5(label_str.encode("utf-8")).hexdigest()
 
 
+def _webhook_bearer_ok(request) -> bool:
+    secret = (getattr(settings, "AIOPS_WEBHOOK_BEARER_TOKEN", "") or "").strip()
+    if not secret:
+        return True
+    auth = request.headers.get("Authorization") or ""
+    if auth.startswith("Bearer ") and hmac.compare_digest(auth[7:].strip(), secret):
+        return True
+    tok = (request.headers.get("X-Shark-Webhook-Token") or "").strip()
+    return bool(tok) and hmac.compare_digest(tok, secret)
+
+
+def _webhook_hmac_ok(request) -> bool:
+    key = (getattr(settings, "AIOPS_WEBHOOK_HMAC_SECRET", "") or "").strip()
+    if not key:
+        return True
+    body = request.body or b""
+    expected = hmac.new(key.encode("utf-8"), body, hashlib.sha256).hexdigest()
+    hdr = (request.headers.get("X-Shark-Signature") or request.headers.get("X-Hub-Signature-256") or "").strip()
+    if not hdr:
+        return False
+    if hdr.startswith("sha256="):
+        hdr = hdr[7:].strip()
+    return hmac.compare_digest(hdr, expected)
+
+
 @api_view(["GET", "POST"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, AiOpsOpsPermission])
 def ai_config(request):
     if request.method == "GET":
         config = AIConfig.get_active_config()
@@ -97,6 +123,11 @@ def prometheus_webhook(request):
     Receiver for Prometheus Alertmanager Webhook
     """
     try:
+        if not _webhook_bearer_ok(request):
+            return Response({"error": "unauthorized"}, status=401)
+        if not _webhook_hmac_ok(request):
+            return Response({"error": "invalid webhook signature"}, status=401)
+
         data = request.data
         alerts = data.get("alerts", [])
 
@@ -174,11 +205,22 @@ def prometheus_webhook(request):
                 incident.last_analyzed_at = now
                 incident.save(update_fields=["last_analyzed_at"])
 
-                def run_analysis(inc):
-                    analyzer = FaultAnalyzer(inc)
-                    analyzer.analyze()
-
-                threading.Thread(target=run_analysis, args=(incident,)).start()
+                run_id = str(uuid.uuid4())
+                create_ticket = getattr(settings, "AIOPS_AUTO_CREATE_TICKET_ON_ALERT", True)
+                run_incident_langgraph.delay(
+                    incident.id,
+                    run_id,
+                    operator_context=None,
+                    human_feedback=None,
+                    trigger_source="webhook",
+                    create_ticket=bool(create_ticket),
+                )
+                logger.info(
+                    "Queued Celery diagnosis incident=%s run_id=%s create_ticket=%s",
+                    incident.id,
+                    run_id,
+                    create_ticket,
+                )
 
         return Response({"msg": "Alerts received", "count": len(alerts)})
     except Exception as e:
@@ -187,7 +229,7 @@ def prometheus_webhook(request):
 
 
 @api_view(["GET"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, AiOpsOpsPermission])
 def incident_list(request):
     cutoff = timezone.now() - timezone.timedelta(days=7)
     Incident.objects.filter(
@@ -241,7 +283,7 @@ def _report_payload(report):
 
 
 @api_view(["GET"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, AiOpsOpsPermission])
 def incident_detail(request, pk):
     try:
         incident = Incident.objects.get(pk=pk)
@@ -276,7 +318,7 @@ def incident_detail(request, pk):
 
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, AiOpsOpsPermission])
 def diagnose_incident(request, incident_id=None):
     """
     一键触发 LangGraph+Celery 诊断：立即返回 run_id，客户端用 sse_stream_url 订阅事件流。
@@ -309,6 +351,8 @@ def diagnose_incident(request, incident_id=None):
         run_id,
         operator_context=operator_context,
         human_feedback=None,
+        trigger_source="manual",
+        create_ticket=True,
     )
 
     base = getattr(settings, "AGENT_SSE_PUBLIC_BASE", "http://localhost:8010").rstrip("/")
@@ -345,7 +389,7 @@ def _ticket_payload(t: Ticket) -> dict:
 
 
 @api_view(["GET"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, AiOpsOpsPermission])
 def dashboard_summary(request):
     """Bento 大屏：健康分、拓扑、AI 状态、待办工单、近期自愈。"""
     topo = TopologySnapshot.objects.filter(scope="global").first()
@@ -478,7 +522,7 @@ def dashboard_summary(request):
 
 
 @api_view(["GET"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, AiOpsOpsPermission])
 def ticket_detail(request, ticket_id):
     try:
         tid = UUID(str(ticket_id))
@@ -492,7 +536,7 @@ def ticket_detail(request, ticket_id):
 
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, AiOpsOpsPermission])
 def ticket_submit(request, ticket_id):
     try:
         tid = UUID(str(ticket_id))
@@ -506,7 +550,7 @@ def ticket_submit(request, ticket_id):
 
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, AiOpsOpsPermission])
 def ticket_approve(request, ticket_id):
     try:
         tid = UUID(str(ticket_id))
@@ -521,7 +565,7 @@ def ticket_approve(request, ticket_id):
 
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, AiOpsOpsPermission])
 def ticket_reject(request, ticket_id):
     try:
         tid = UUID(str(ticket_id))
@@ -542,6 +586,8 @@ def ticket_reject(request, ticket_id):
         new_run_id,
         operator_context=None,
         human_feedback=reason,
+        trigger_source="rejection_retry",
+        create_ticket=True,
     )
     base = getattr(settings, "AGENT_SSE_PUBLIC_BASE", "http://localhost:8010").rstrip("/")
     new_sse_stream_url = f"{base}/api/agent/stream/{new_run_id}"

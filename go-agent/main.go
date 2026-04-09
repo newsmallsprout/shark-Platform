@@ -130,7 +130,43 @@ func playbookLoop(client *http.Client, center, token, nodeID string, d time.Dura
 	}
 }
 
+func playbookScriptAllowed(script string) bool {
+	prefixes := strings.TrimSpace(env("SHARK_PLAYBOOK_ALLOWED_PREFIXES", ""))
+	if prefixes == "" {
+		return true
+	}
+	s := strings.TrimSpace(script)
+	for _, p := range strings.Split(prefixes, ",") {
+		p = strings.TrimSpace(p)
+		if p != "" && strings.HasPrefix(s, p) {
+			return true
+		}
+	}
+	fmt.Fprintln(os.Stderr, "playbook rejected: script does not match SHARK_PLAYBOOK_ALLOWED_PREFIXES")
+	return false
+}
+
 func runPlaybook(client *http.Client, center, token, nodeID string, j playbookJob) {
+	if !playbookScriptAllowed(j.Script) {
+		payload := map[string]any{
+			"ok":       false,
+			"stdout":   "",
+			"stderr":   "rejected by SHARK_PLAYBOOK_ALLOWED_PREFIXES policy",
+			"node_id":  nodeID,
+			"exit_err": "policy_reject",
+		}
+		b, _ := json.Marshal(payload)
+		u := fmt.Sprintf("%s/api/edge/playbooks/%s/complete", center, j.ID)
+		req, err := http.NewRequest(http.MethodPost, u, bytes.NewReader(b))
+		if err == nil {
+			setEdgeHeaders(req, token)
+			resp, err2 := client.Do(req)
+			if err2 == nil {
+				resp.Body.Close()
+			}
+		}
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", j.Script)
