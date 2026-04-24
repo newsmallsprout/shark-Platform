@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 
 RANGE_MAP = {
+    "10m": timedelta(minutes=10),
     "1h": timedelta(hours=1),
     "6h": timedelta(hours=6),
     "24h": timedelta(hours=24),
@@ -26,6 +27,8 @@ def window_bounds(range_key: str) -> Tuple[float, float]:
 
 
 def bucket_seconds(range_key: str) -> int:
+    if range_key == "10m":
+        return 10
     if range_key == "1h":
         return 10
     if range_key == "6h":

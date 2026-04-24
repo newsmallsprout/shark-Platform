@@ -12,8 +12,8 @@ urlpatterns = [
     path("traffic/blackbox", views.traffic_blackbox, name="traffic_blackbox"),
     path(
         "traffic/jaeger/traces",
-        views.traffic_jaeger_traces_mock,
-        name="traffic_jaeger_traces_mock",
+        views.traffic_jaeger_traces,
+        name="traffic_jaeger_traces",
     ),
     path("traffic/config", views.traffic_dashboard_config, name="traffic_dashboard_config"),
     path("traffic/ingest", views.traffic_ingest, name="traffic_ingest"),

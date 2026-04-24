@@ -38,13 +38,16 @@ def _client():
 
 
 def fetch_tail_lines(key: str, max_lines: int) -> List[str]:
-    if not key or max_lines <= 0 or not is_configured():
+    # max_lines <= 0: read the entire list (no line cap)
+    if not key or not is_configured():
         return []
     try:
         r = _client()
         n = r.llen(key)
         if n <= 0:
             return []
+        if max_lines <= 0:
+            return [ln for ln in r.lrange(key, 0, -1) if ln and str(ln).strip()]
         start = max(0, n - max_lines)
         return [ln for ln in r.lrange(key, start, -1) if ln and str(ln).strip()]
     except Exception as e:
@@ -53,8 +56,9 @@ def fetch_tail_lines(key: str, max_lines: int) -> List[str]:
 
 
 def push_raw_lines(lines: List[str], key: str, max_lines: int) -> int:
-    if not key or max_lines <= 0 or not is_configured():
+    if not key or not is_configured():
         return 0
+    # max_lines <= 0: append only, do not ltrim (no retention cap; rely on memory / external ops)
     cleaned = []
     for ln in lines:
         if not ln:
@@ -68,7 +72,8 @@ def push_raw_lines(lines: List[str], key: str, max_lines: int) -> int:
     try:
         r = _client()
         r.rpush(key, *cleaned)
-        r.ltrim(key, -max_lines, -1)
+        if max_lines > 0:
+            r.ltrim(key, -max_lines, -1)
         return len(cleaned)
     except Exception as e:
         logger.warning("redis_log_buffer push failed: %s", e)

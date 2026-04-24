@@ -7,6 +7,7 @@
       </div>
       <div class="header-actions">
         <el-radio-group v-model="range" size="small" class="range-group" @change="onRangePresetChange">
+          <el-radio-button label="10m">10m</el-radio-button>
           <el-radio-button label="1h">1H</el-radio-button>
           <el-radio-button label="6h">6H</el-radio-button>
           <el-radio-button label="24h">24H</el-radio-button>
@@ -180,31 +181,63 @@
         </el-row>
       </el-tab-pane>
 
-      <el-tab-pane label="请求流转（Jaeger 预留）" name="flow">
+      <el-tab-pane label="请求流转" name="flow">
         <el-alert
+          v-if="jaegerError"
+          type="warning"
+          :closable="false"
+          show-icon
+          class="jaeger-alert"
+          :title="jaegerError"
+        />
+        <el-alert
+          v-else-if="!jaegerConfigured"
           type="info"
           :closable="false"
           show-icon
           class="jaeger-alert"
-          title="当前为模拟数据，后续接入 Jaeger Query API 替换。"
-        />
-        <el-row :gutter="16" class="flow-row">
+          title="未配置 Jaeger Query"
+        >
+          请在中心环境设置 <code>JAEGER_QUERY_BASE_URL</code>（如 <code>http://jaeger:16686</code>，视集群 Service
+          名为准），并可选 <code>JAEGER_DEFAULT_SERVICE</code>、<code>JAEGER_QUERY_TOKEN</code> 等。保存后切回本 Tab
+          即可拉取 Traces 与依赖边。
+        </el-alert>
+        <div v-if="jaegerUiBase" class="flow-jaeger-link mb-8">
+          <a :href="jaegerUiBase" target="_blank" rel="noopener">打开 Jaeger UI</a>
+        </div>
+        <el-row :gutter="16" class="flow-row" align="middle">
+          <el-col :xs="24" :md="8">
+            <el-select
+              v-model="jaegerService"
+              filterable
+              clearable
+              placeholder="服务（与左侧时间范围一致）"
+              size="small"
+              style="width: 100%"
+              @change="onJaegerServiceChange"
+            >
+              <el-option v-for="s in jaegerServices" :key="s" :label="s" :value="s" />
+            </el-select>
+          </el-col>
+        </el-row>
+        <el-row :gutter="16" class="flow-row mt-8">
           <el-col :xs="24" :lg="16" :md="14">
-            <div class="page-panel flow-placeholder">
-              <div class="ph-title">服务依赖拓扑</div>
-              <p class="ph-desc">将基于 Jaeger 依赖图 / service map 渲染。现展示占位骨架。</p>
-              <div class="ph-grid">
-                <div class="ph-node">gateway</div>
-                <div class="ph-edge" />
-                <div class="ph-node dim">api</div>
-                <div class="ph-edge" />
-                <div class="ph-node dim">worker</div>
-              </div>
+            <div class="page-panel flow-deps-panel">
+              <div class="chart-title">服务依赖（Jaeger 窗口内）</div>
+              <p v-if="!jaegerDepItems.length" class="ph-desc">本时间窗无依赖边或服务尚无调用数据。</p>
+              <ul v-else class="dep-list">
+                <li v-for="(d, i) in jaegerDepItems" :key="i" class="dep-row">
+                  <span class="dep-node">{{ d.parent }}</span>
+                  <span class="dep-arrow">→</span>
+                  <span class="dep-node">{{ d.child }}</span>
+                  <el-tag v-if="d.call_count" size="small" class="ml-6">{{ d.call_count }}</el-tag>
+                </li>
+              </ul>
             </div>
           </el-col>
           <el-col :xs="24" :lg="8" :md="10">
             <div class="page-panel chart-wrap table-wrap">
-              <div class="chart-title">最近 Trace（模拟）</div>
+              <div class="chart-title">最近 Trace</div>
               <el-table
                 :data="traceRows"
                 :row-key="rowKeyTrace"
@@ -213,10 +246,24 @@
                 class="dark-table traffic-data-table"
                 max-height="360"
               >
-                <el-table-column prop="trace_id" label="Trace ID" min-width="120" show-overflow-tooltip />
-                <el-table-column prop="root_service" label="Service" width="110" />
-                <el-table-column prop="duration_ms" label="ms" width="70" />
-                <el-table-column prop="status" label="Status" width="72" />
+                <el-table-column label="Trace ID" min-width="200" show-overflow-tooltip>
+                  <template #default="{ row }">
+                    <a
+                      v-if="row.trace_id && jaegerTraceHref(row.trace_id) !== '#'"
+                      :href="jaegerTraceHref(row.trace_id)"
+                      class="link-trace"
+                      target="_blank"
+                      rel="noopener"
+                      >{{ row.trace_id }}</a
+                    >
+                    <span v-else>{{ row.trace_id }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column prop="root_service" label="Service" width="120" show-overflow-tooltip />
+                <el-table-column prop="started_at" label="开始(UTC)" width="156" show-overflow-tooltip />
+                <el-table-column prop="duration_ms" label="ms" width="72" />
+                <el-table-column prop="span_count" label="Span" width="64" />
+                <el-table-column prop="status" label="Status" width="64" />
               </el-table>
             </div>
           </el-col>
@@ -251,23 +298,25 @@
           <el-input v-model="cfgForm.access_log_path" placeholder="/var/log/nginx/access.json.log" />
         </el-form-item>
         <template v-if="cfgForm.access_log_mode === 'redis'">
+          <el-form-item v-if="cfgForm.time_based_rollup_enforced" label="大盘数据源">
+            <el-alert
+              type="info"
+              :closable="false"
+              show-icon
+              title="已接 ClickHouse：大盘按时间窗从分钟聚合取数"
+            >
+              ingest 经 Redis；分钟维度由 traffic_rollup_flush 落库。无数据时检查 TRAFFIC_ROLLUP_ENABLED 与定时任务。调试可设
+              TRAFFIC_DASHBOARD_REDIS_FALLBACK=1。
+            </el-alert>
+          </el-form-item>
           <el-form-item label="Redis List Key">
             <el-input v-model="cfgForm.redis_log_key" placeholder="traffic:access:lines" />
           </el-form-item>
-          <el-form-item label="Redis 最大行数">
-            <el-input-number v-model="cfgForm.redis_max_lines" :min="5000" :max="2000000" style="width: 100%" />
-          </el-form-item>
-          <el-form-item label="大盘读取行数上限">
-            <el-input-number
-              v-model="cfgForm.dashboard_fetch_max_lines"
-              :min="5000"
-              :max="500000"
-              style="width: 100%"
-            />
-            <div class="form-hint">
-              每次加载 Traffic 大盘从 Redis List 尾部最多读取的行数（越小越快，图表为抽样）；与上方「Redis 最大行数」不同，后者为 ingest 保留总量。
-            </div>
-          </el-form-item>
+          <div class="form-hint">
+            Redis 列表行数默认<strong>不限制</strong>（后台为 0：ingest 不做 LTRIM，读盘时读全表）。生产环境请自行保证 Redis
+            内存；若需上限可在 Django Admin 中把 <code>redis_max_lines</code> /
+            <code>dashboard_fetch_max_lines</code> 设为正数。
+          </div>
         </template>
         <el-form-item label="日志格式（全局）">
           <el-select v-model="cfgForm.log_format">
@@ -389,8 +438,8 @@ echarts.registerTheme('shark-traffic', {
   },
 })
 
-/** 默认 1H：分钟聚合响应快；长区间同样走聚合库而非全量扫日志 */
-const range = ref('1h')
+/** 默认 10 分钟；长区间走分钟聚合库，Redis 行数默认不限制（后台 0） */
+const range = ref('10m')
 const customTimeRange = ref<[Date, Date] | null>(null)
 const customRangeShortcuts = [
   {
@@ -426,6 +475,12 @@ const slowRows = ref<any[]>([])
 const ipRows = ref<any[]>([])
 const statusPie = ref<any[]>([])
 const traceRows = ref<any[]>([])
+const jaegerConfigured = ref(false)
+const jaegerError = ref('')
+const jaegerUiBase = ref('')
+const jaegerServices = ref<string[]>([])
+const jaegerService = ref('')
+const jaegerDepItems = ref<{ parent: string; child: string; call_count: number }[]>([])
 
 const pathsRowFlash = ref<Record<string, boolean>>({})
 const slowRowFlash = ref<Record<string, boolean>>({})
@@ -448,9 +503,12 @@ const cfgForm = reactive({
   log_format: 'json',
   max_tail_bytes: 5242880,
   redis_log_key: 'traffic:access:lines',
-  redis_max_lines: 200000,
-  dashboard_fetch_max_lines: 35000,
+  redis_max_lines: 0,
+  dashboard_fetch_max_lines: 0,
   redis_env_configured: false,
+  clickhouse_configured: false,
+  time_based_rollup_enforced: false,
+  jaeger_query_configured: false,
   edge_ingest_path: '/api/edge/logs',
   edge_token_env: 'SHARK_EDGE_TOKEN',
   log_sources: [] as TrafficLogSourceRow[],
@@ -993,7 +1051,7 @@ function sigIpRow(row: any) {
 }
 
 function sigTraceRow(row: any) {
-  return `${row.duration_ms}|${row.status}|${row.root_service ?? ''}`
+  return `${row.duration_ms}|${row.status}|${row.root_service ?? ''}|${row.started_at ?? ''}|${row.span_count ?? ''}`
 }
 
 function diffRowFlash(
@@ -1112,12 +1170,51 @@ function onCustomRangePicked() {
   if (range.value === 'custom') void loadAll(false)
 }
 
+function jaegerTraceHref(traceId: string) {
+  const b = (jaegerUiBase.value || '').replace(/\/$/, '')
+  if (!b || !traceId) return '#'
+  return `${b}/trace/${traceId}`
+}
+
+async function onJaegerServiceChange() {
+  await refreshJaegerTraces()
+}
+
 async function refreshJaegerTraces() {
   try {
-    const tr = (await trafficApi.jaegerTraces()) as any
+    const r = range.value
+    const p: { range?: string; start?: string; end?: string; service?: string; limit?: string } = {
+      limit: '30',
+    }
+    if (jaegerService.value) p.service = jaegerService.value
+    if (r === 'custom' && customTimeRange.value && customTimeRange.value.length === 2) {
+      p.start = customTimeRange.value[0].toISOString()
+      p.end = customTimeRange.value[1].toISOString()
+    } else {
+      p.range = r === 'custom' ? '1h' : r
+    }
+    const tr = (await trafficApi.jaegerTraces(p)) as {
+      configured?: boolean
+      error?: string | null
+      traces?: any[]
+      dependencies?: { items?: { parent: string; child: string; call_count: number }[] }
+      services?: string[]
+      service_used?: string
+      jaeger_ui_base?: string
+    }
+    jaegerConfigured.value = !!tr.configured
+    jaegerError.value = tr.configured && tr.error ? tr.error : ''
+    jaegerUiBase.value = (tr.jaeger_ui_base || '').replace(/\/$/, '')
     traceRows.value = tr.traces || []
+    jaegerDepItems.value = (tr.dependencies && tr.dependencies.items) || []
+    jaegerServices.value = tr.services || []
+    if (tr.service_used && !String(jaegerService.value || '').trim()) {
+      jaegerService.value = tr.service_used
+    }
   } catch {
-    /* */
+    jaegerError.value = '请求失败'
+    traceRows.value = []
+    jaegerDepItems.value = []
   }
 }
 
@@ -1194,7 +1291,13 @@ async function saveCfg() {
       ElMessage.error('日志源 ID 不能重复')
       return
     }
-    await trafficApi.saveConfig({ ...cfgForm, log_sources: rows })
+    const {
+      clickhouse_configured: _c,
+      time_based_rollup_enforced: _t,
+      jaeger_query_configured: _j,
+      ...rest
+    } = cfgForm
+    await trafficApi.saveConfig({ ...rest, log_sources: rows })
     ElMessage.success('已保存')
     configOpen.value = false
     await refreshSourceOptions()
@@ -1539,6 +1642,57 @@ onUnmounted(() => {
   width: 40px;
   height: 2px;
   background: linear-gradient(90deg, transparent, #60a5fa, transparent);
+}
+
+.flow-deps-panel {
+  min-height: 200px;
+  padding: 12px 14px 16px;
+  margin-bottom: 16px;
+}
+.dep-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.dep-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+  font-size: 13px;
+  color: #334155;
+}
+.dep-node {
+  font-weight: 600;
+  max-width: 42%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dep-arrow {
+  margin: 0 8px;
+  color: #94a3b8;
+  flex-shrink: 0;
+}
+.link-trace {
+  color: #2563eb;
+  text-decoration: none;
+  word-break: break-all;
+}
+.link-trace:hover {
+  text-decoration: underline;
+}
+.flow-jaeger-link {
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+.flow-jaeger-link a {
+  color: #2563eb;
+}
+.mb-8 {
+  margin-bottom: 8px;
+}
+.mt-8 {
+  margin-top: 8px;
 }
 
 .dark-table {

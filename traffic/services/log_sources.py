@@ -52,11 +52,35 @@ def legacy_redis_key(cfg: TrafficDashboardConfig) -> str:
     return k or "traffic:access:lines"
 
 
+def _effective_source_redis_key(src: Dict[str, Any], cfg: TrafficDashboardConfig) -> str:
+    """Same key resolution as load_records_for_source (Redis)."""
+    return (src.get("redis_key") or "").strip() or legacy_redis_key(cfg)
+
+
+def _redis_read_cap(
+    cfg: TrafficDashboardConfig, redis_line_cap: Optional[int] = None
+) -> int:
+    """Effective max lines to read. 0 in cfg or in redis_line_cap means no line cap (read full list)."""
+    rmax = redis_cap(cfg)
+    if redis_line_cap is None:
+        return rmax
+    d = int(redis_line_cap)
+    if d <= 0 and rmax <= 0:
+        return 0
+    if d <= 0:
+        return rmax
+    if rmax <= 0:
+        return d
+    return min(d, rmax)
+
+
 def redis_cap(cfg: TrafficDashboardConfig) -> int:
     try:
-        n = int(cfg.redis_max_lines or 200_000)
+        n = int(getattr(cfg, "redis_max_lines", 0) or 0)
     except (TypeError, ValueError):
-        n = 200_000
+        n = 0
+    if n <= 0:
+        return 0
     return max(1_000, min(n, 2_000_000))
 
 
@@ -180,10 +204,8 @@ def load_records_for_source(
 ) -> List[Dict[str, Any]]:
     mode = _access_mode(cfg)
     if force_redis or mode == TrafficDashboardConfig.ACCESS_LOG_MODE_REDIS:
-        key = (src.get("redis_key") or "").strip() or legacy_redis_key(cfg)
-        cap = redis_cap(cfg)
-        if redis_line_cap is not None:
-            cap = min(cap, max(1000, redis_line_cap))
+        key = _effective_source_redis_key(src, cfg)
+        cap = _redis_read_cap(cfg, redis_line_cap)
         lines = fetch_tail_lines(key, cap)
         return records_from_lines(lines, effective_log_format(cfg, src))
     path = (src.get("file_path") or "").strip()
@@ -219,6 +241,27 @@ def load_raw_records(
                     cfg, s, redis_line_cap=redis_line_cap, max_tail_bytes_override=max_tail_bytes_override
                 )
             )
+    if not acc and redis_buffer_configured() and _access_mode(
+        cfg
+    ) == TrafficDashboardConfig.ACCESS_LOG_MODE_REDIS:
+        # 未知 stream_key 的 ingest 只写 default list；多站点若每行有独立 redis_key 则初读会全空
+        L = legacy_redis_key(cfg)
+        cap = _redis_read_cap(cfg, redis_line_cap)
+        if sid and sid != "all":
+            src0 = next((s for s in sources if s["id"] == sid), None)
+            if src0 and _effective_source_redis_key(src0, cfg) != L:
+                lines = fetch_tail_lines(L, cap)
+                if lines:
+                    acc = records_from_lines(
+                        lines, effective_log_format(cfg, src0)
+                    )
+        else:
+            if not any(_effective_source_redis_key(s, cfg) == L for s in sources):
+                lines = fetch_tail_lines(L, cap)
+                if lines:
+                    acc = records_from_lines(
+                        lines, effective_log_format(cfg, None)
+                    )
     if not acc and redis_buffer_configured() and _access_mode(
         cfg
     ) == TrafficDashboardConfig.ACCESS_LOG_MODE_FILE and not _has_file_paths_to_read(cfg):

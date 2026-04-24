@@ -31,6 +31,8 @@ from .services.log_sources import (
 )
 from .services.nginx_log import records_from_lines
 from .services.redis_log_buffer import is_configured as redis_buffer_configured, push_raw_lines
+from .services.clickhouse_rollups import clickhouse_configured
+from .services.jaeger_query import fetch_jaeger_flow, jaeger_configured
 from .services.rollup_buffer import rollup_enabled, rollup_ingest_append
 from .services.rollup_query import build_rollups_snapshot
 
@@ -41,20 +43,24 @@ def _access_log_mode(cfg: TrafficDashboardConfig) -> str:
 
 
 def _redis_cap(cfg: TrafficDashboardConfig) -> int:
+    """0 = 不 LTRIM（不限制 Redis 列表长度），与 log_sources.redis_cap 一致。"""
     try:
-        n = int(cfg.redis_max_lines or 200_000)
+        n = int(getattr(cfg, "redis_max_lines", 0) or 0)
     except (TypeError, ValueError):
-        n = 200_000
+        n = 0
+    if n <= 0:
+        return 0
     return max(1_000, min(n, 2_000_000))
 
 
 def _dashboard_fetch_limits(cfg: TrafficDashboardConfig) -> Tuple[int, int]:
-    """UI 拉取上限：行数来自后台配置；文件尾部字节可选环境变量覆盖。"""
+    """UI 拉取：0=不限制行数；文件尾部字节可选环境变量覆盖。"""
     try:
-        rl = int(cfg.dashboard_fetch_max_lines)
+        rl = int(getattr(cfg, "dashboard_fetch_max_lines", 0) or 0)
     except (TypeError, ValueError):
-        rl = 35_000
-    rl = max(5000, min(rl, 500_000))
+        rl = 0
+    if rl > 0:
+        rl = max(1, min(rl, 100_000_000))
     try:
         tb = int(os.environ.get("TRAFFIC_DASHBOARD_MAX_TAIL_BYTES", str(4 * 1024 * 1024)))
     except ValueError:
@@ -96,6 +102,23 @@ def _rollup_snapshot_has_rows(data: dict) -> bool:
         return int(ov.get("rollup_rows") or 0) > 0
     except (TypeError, ValueError):
         return False
+
+
+def _raw_redis_snapshot_fallback_allowed() -> bool:
+    """
+    无 ClickHouse 时允许从 Redis List 尾部抽样补全大盘；已配置 CH 时默认仅按时间用分钟聚合。
+
+    调试旧行为可设：TRAFFIC_DASHBOARD_REDIS_FALLBACK=1
+    """
+    if not clickhouse_configured():
+        return True
+    v = (os.environ.get("TRAFFIC_DASHBOARD_REDIS_FALLBACK") or "").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
+def _time_based_rollup_enforced() -> bool:
+    """与大盘展示一致：有 CH 且未开 Redis 抽样回退时，不在 UI 上要求「行数」配置。"""
+    return bool(clickhouse_configured() and not _raw_redis_snapshot_fallback_allowed())
 
 
 def _attach_traffic_rollup_meta(overview: dict) -> None:
@@ -266,7 +289,7 @@ def traffic_snapshot(request):
     full_data = _parse_full_data(request)
     inspection = InspectionConfig.load()
 
-    # 默认：预设走分钟聚合（PG+ClickHouse）；若库中尚无数据则回退到受控原始抽样，避免大盘全空。
+    # 默认：预设时间走分钟聚合（PG+ClickHouse）。已配 ClickHouse 时不再用 Redis 行数尾读抽样，真实口径按时间 range。
     if not full_data:
         start_dt, end_dt = _preset_window_datetimes(range_key)
         data = build_rollups_snapshot(
@@ -274,12 +297,29 @@ def traffic_snapshot(request):
         )
         data.setdefault("overview", {})
         if not _rollup_snapshot_has_rows(data):
-            _, recs = _load_enriched(source, full_data=False)
-            return Response(
-                _snapshot_payload_from_raw_records(
-                    cfg, recs, range_key, inspection, full_data=False, rollup_fallback=True
+            if _raw_redis_snapshot_fallback_allowed():
+                _, recs = _load_enriched(source, full_data=False)
+                return Response(
+                    _snapshot_payload_from_raw_records(
+                        cfg, recs, range_key, inspection, full_data=False, rollup_fallback=True
+                    )
                 )
-            )
+            data["overview"]["full_data"] = False
+            data["overview"]["minute_rollup"] = True
+            data["overview"]["rollup_empty"] = True
+            if clickhouse_configured():
+                data["overview"]["rollup_empty_hint"] = (
+                    "已配置 ClickHouse：大盘仅按所选时间范围从分钟聚合（PostgreSQL + ClickHouse）读取，"
+                    "不再按行数从 Redis 抽样。请确认 ingest 已写入、TRAFFIC_ROLLUP_ENABLED 与 traffic_rollup_flush；"
+                    "调试可设环境变量 TRAFFIC_DASHBOARD_REDIS_FALLBACK=1 临时恢复 Redis 抽样回退。"
+                )
+            else:
+                data["overview"]["rollup_empty_hint"] = (
+                    "所选区间内分钟聚合无数据。请核对 ingest 与 traffic_rollup_flush、"
+                    "以及数据源与 rollup 的 source_id 是否一致。"
+                )
+            _attach_traffic_rollup_meta(data["overview"])
+            return Response(data)
         data["overview"]["full_data"] = False
         data["overview"]["minute_rollup"] = True
         _attach_traffic_rollup_meta(data["overview"])
@@ -310,39 +350,8 @@ def traffic_blackbox(request):
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
-def traffic_jaeger_traces_mock(request):
-    """Placeholder until Jaeger Query API is wired."""
-    return Response(
-        {
-            "note": "当前为模拟数据，后续接入 Jaeger Query API 替换。",
-            "traces": [
-                {
-                    "trace_id": "7a3f9c2e1d8b4a6f0e5c3d2b1a987654",
-                    "root_service": "shark-gateway",
-                    "span_count": 14,
-                    "duration_ms": 128,
-                    "started_at": "2026-03-30T06:15:00Z",
-                    "status": "ok",
-                },
-                {
-                    "trace_id": "8b4e0d3f2c9a5b7e1f6d4c3b2a098765",
-                    "root_service": "api-core",
-                    "span_count": 22,
-                    "duration_ms": 890,
-                    "started_at": "2026-03-30T06:14:42Z",
-                    "status": "error",
-                },
-                {
-                    "trace_id": "9c5f1e4a3d0b6c8f2e7d5c4b3a109876",
-                    "root_service": "sync-worker",
-                    "span_count": 6,
-                    "duration_ms": 45,
-                    "started_at": "2026-03-30T06:14:30Z",
-                    "status": "ok",
-                },
-            ],
-        }
-    )
+def traffic_jaeger_traces(request):
+    return Response(fetch_jaeger_flow(request))
 
 
 @api_view(["GET", "POST"])
@@ -367,6 +376,9 @@ def traffic_dashboard_config(request):
                 "prometheus_url_override": cfg.prometheus_url_override,
                 "blackbox_promql": cfg.blackbox_promql,
                 "redis_env_configured": redis_buffer_configured(),
+                "clickhouse_configured": clickhouse_configured(),
+                "time_based_rollup_enforced": _time_based_rollup_enforced(),
+                "jaeger_query_configured": jaeger_configured(),
                 "ingest_path": "/api/traffic/ingest",
                 "edge_ingest_path": "/api/edge/logs",
                 "edge_token_env": "SHARK_EDGE_TOKEN",
@@ -384,12 +396,19 @@ def traffic_dashboard_config(request):
         :256
     ]
     try:
-        cfg.redis_max_lines = int(data.get("redis_max_lines", cfg.redis_max_lines))
+        rml = int(data.get("redis_max_lines", cfg.redis_max_lines))
+        if rml <= 0:
+            cfg.redis_max_lines = 0
+        else:
+            cfg.redis_max_lines = max(1000, min(rml, 50_000_000))
     except (TypeError, ValueError):
         pass
     try:
         dml = int(data.get("dashboard_fetch_max_lines", cfg.dashboard_fetch_max_lines))
-        cfg.dashboard_fetch_max_lines = max(5000, min(dml, 500_000))
+        if dml <= 0:
+            cfg.dashboard_fetch_max_lines = 0
+        else:
+            cfg.dashboard_fetch_max_lines = max(1, min(dml, 100_000_000))
     except (TypeError, ValueError):
         pass
     raw_ls = data.get("log_sources", cfg.log_sources)
