@@ -182,41 +182,72 @@ SESSION_SAVE_EVERY_REQUEST = True  # Rolling session timeout
 # For "re-login on service restart", we could use 'cache' backend with locmem,
 # but database is safer for production. 30 mins age is the primary requirement.
 
+# Default WARNING to reduce health/polling/request noise. Override: DJANGO_LOG_LEVEL=INFO
+_dj_log = os.environ.get("DJANGO_LOG_LEVEL", "WARNING").strip().upper()
+if _dj_log not in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
+    _dj_log = "WARNING"
+
 LOGGING = {
-    'version': 1,
-    'disable_existing_loggers': False,
-    'formatters': {
-        'verbose': {
-            'format': '{levelname} {asctime} {module} {message}',
-            'style': '{',
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "verbose": {
+            "format": "{levelname} {asctime} {module} {message}",
+            "style": "{",
         },
-        'simple': {
-            'format': '{levelname} {message}',
-            'style': '{',
-        },
-    },
-    'handlers': {
-        'console': {
-            'level': 'INFO',
-            'class': 'logging.StreamHandler',
-            'formatter': 'verbose',
+        "simple": {
+            "format": "{levelname} {message}",
+            "style": "{",
         },
     },
-    'loggers': {
-        'django': {
-            'handlers': ['console'],
-            'level': 'INFO',
-            'propagate': True,
+    "handlers": {
+        "console": {
+            "level": _dj_log,
+            "class": "logging.StreamHandler",
+            "formatter": "verbose",
         },
-        'monitor': {
-            'handlers': ['console'],
-            'level': 'INFO',
-            'propagate': True,
+    },
+    "loggers": {
+        "": {
+            "handlers": ["console"],
+            "level": _dj_log,
         },
-        'inspection': {
-            'handlers': ['console'],
-            'level': 'INFO',
-            'propagate': True,
+        "django": {
+            "handlers": ["console"],
+            "level": _dj_log,
+            "propagate": False,
+        },
+        # runserver: suppress per-request lines unless DJANGO_LOG_LEVEL=DEBUG/INFO
+        "django.server": {
+            "handlers": ["console"],
+            "level": _dj_log,
+            "propagate": False,
+        },
+        # Only log request exceptions / 5xx handling at ERROR+ (no routine request noise)
+        "django.request": {
+            "handlers": ["console"],
+            "level": "ERROR",
+            "propagate": False,
+        },
+        "django.utils.autoreload": {
+            "handlers": ["console"],
+            "level": _dj_log,
+            "propagate": False,
+        },
+        "monitor": {
+            "handlers": ["console"],
+            "level": _dj_log,
+            "propagate": False,
+        },
+        "inspection": {
+            "handlers": ["console"],
+            "level": _dj_log,
+            "propagate": False,
+        },
+        "whitenoise": {
+            "handlers": ["console"],
+            "level": _dj_log,
+            "propagate": False,
         },
     },
 }

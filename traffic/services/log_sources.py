@@ -20,6 +20,33 @@ def legacy_file_path(cfg: TrafficDashboardConfig) -> str:
     return (cfg.access_log_path or _env_file_path() or "").strip()
 
 
+def effective_log_format(cfg: TrafficDashboardConfig, src: Optional[Dict[str, Any]] = None) -> str:
+    """
+    Per-source optional log_format in log_sources (e.g. go-log-collector stream); falls back to cfg.log_format.
+    Accepts the same values as parse_log_line: json, combined, auto, nginx_json, shark_json.
+    """
+    if src and isinstance(src, dict):
+        lf = (str(src.get("log_format") or "").strip() or "").lower()
+        if lf in ("json", "combined", "auto", "nginx_json", "shark_json"):
+            return lf
+    m = (cfg.log_format or "json").strip().lower()
+    return m if m in ("json", "combined") else "json"
+
+
+def resolve_ingest_log_format(
+    cfg: TrafficDashboardConfig, source_id: str, request_format: str = ""
+) -> str:
+    """Batch log_format (e.g. from go-log-collector) wins; else per-source or global config."""
+    q = (request_format or "").strip().lower()
+    if q in ("json", "combined", "auto", "nginx_json", "shark_json"):
+        return q
+    sid = (source_id or "").strip()
+    for s in normalized_log_sources(cfg):
+        if s.get("id") == sid:
+            return effective_log_format(cfg, s)
+    return effective_log_format(cfg, None)
+
+
 def legacy_redis_key(cfg: TrafficDashboardConfig) -> str:
     k = (cfg.redis_log_key or "traffic:access:lines").strip()
     return k or "traffic:access:lines"
@@ -53,10 +80,19 @@ def normalized_log_sources(cfg: TrafficDashboardConfig) -> List[Dict[str, Any]]:
                     "label": "默认",
                     "file_path": "",
                     "redis_key": legacy_redis_key(cfg),
+                    "log_format": "",
                 }
             ]
         p = legacy_file_path(cfg)
-        return [{"id": "default", "label": "默认", "file_path": p, "redis_key": ""}]
+        return [
+            {
+                "id": "default",
+                "label": "默认",
+                "file_path": p,
+                "redis_key": "",
+                "log_format": "",
+            }
+        ]
 
     out: List[Dict[str, Any]] = []
     for row in raw:
@@ -68,7 +104,16 @@ def normalized_log_sources(cfg: TrafficDashboardConfig) -> List[Dict[str, Any]]:
         label = (str(row.get("label") or sid).strip() or sid)[:128]
         fp = str(row.get("file_path") or "").strip()[:1024]
         rk = str(row.get("redis_key") or "").strip()[:256]
-        out.append({"id": sid[:64], "label": label, "file_path": fp, "redis_key": rk})
+        row_lf = (str(row.get("log_format") or "").strip().lower() or "")[:32]
+        out.append(
+            {
+                "id": sid[:64],
+                "label": label,
+                "file_path": fp,
+                "redis_key": rk,
+                "log_format": row_lf,
+            }
+        )
 
     if not out:
         if _access_mode(cfg) == TrafficDashboardConfig.ACCESS_LOG_MODE_REDIS:
@@ -78,10 +123,19 @@ def normalized_log_sources(cfg: TrafficDashboardConfig) -> List[Dict[str, Any]]:
                     "label": "默认",
                     "file_path": "",
                     "redis_key": legacy_redis_key(cfg),
+                    "log_format": "",
                 }
             ]
         p = legacy_file_path(cfg)
-        return [{"id": "default", "label": "默认", "file_path": p, "redis_key": ""}]
+        return [
+            {
+                "id": "default",
+                "label": "默认",
+                "file_path": p,
+                "redis_key": "",
+                "log_format": "",
+            }
+        ]
     return out
 
 
@@ -99,14 +153,14 @@ def load_records_for_source(
         if redis_line_cap is not None:
             cap = min(cap, max(1000, redis_line_cap))
         lines = fetch_tail_lines(key, cap)
-        return records_from_lines(lines, cfg.log_format)
+        return records_from_lines(lines, effective_log_format(cfg, src))
     path = (src.get("file_path") or "").strip()
     if not path:
         return []
     mtb = cfg.max_tail_bytes
     if max_tail_bytes_override is not None:
         mtb = min(mtb, max(65536, max_tail_bytes_override))
-    return load_records(path, cfg.log_format, mtb)
+    return load_records(path, effective_log_format(cfg, src), mtb)
 
 
 def load_raw_records(

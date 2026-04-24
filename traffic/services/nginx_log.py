@@ -131,7 +131,15 @@ def parse_log_line(line: str, log_format: str) -> Optional[Dict[str, Any]]:
     line = line.strip()
     if not line:
         return None
-    if log_format == "json":
+    lf = (log_format or "json").strip().lower()
+    if lf in ("nginx_json", "shark_json"):
+        lf = "json"
+    if lf == "auto":
+        r = parse_log_line(line, "json")
+        if r is not None:
+            return r
+        return parse_log_line(line, "combined")
+    if lf == "json":
         try:
             obj = json.loads(line)
         except json.JSONDecodeError:

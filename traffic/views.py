@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone as dt_timezone
 from typing import Optional, Tuple
 
 from django.utils.dateparse import parse_datetime
+from django.views.decorators.csrf import csrf_exempt
 
 from rest_framework.decorators import api_view, permission_classes, authentication_classes
 from rest_framework.permissions import IsAuthenticated, AllowAny
@@ -24,6 +25,7 @@ from .services.log_sources import (
     load_raw_records,
     log_source_configured,
     redis_key_for_ingest,
+    resolve_ingest_log_format,
     sources_for_api,
 )
 from .services.nginx_log import records_from_lines
@@ -359,6 +361,8 @@ def traffic_dashboard_config(request):
                 "blackbox_promql": cfg.blackbox_promql,
                 "redis_env_configured": redis_buffer_configured(),
                 "ingest_path": "/api/traffic/ingest",
+                "edge_ingest_path": "/api/edge/logs",
+                "edge_token_env": "SHARK_EDGE_TOKEN",
             }
         )
     data = request.data
@@ -400,6 +404,7 @@ def traffic_dashboard_config(request):
     return Response({"msg": "saved"})
 
 
+@csrf_exempt
 @api_view(["POST"])
 @authentication_classes([])
 @permission_classes([AllowAny])
@@ -407,6 +412,7 @@ def traffic_ingest(request):
     """
     Push NDJSON lines (or JSON {"lines": [...]}) into Redis buffer.
     Auth: Authorization: Bearer <TRAFFIC_INGEST_TOKEN>
+    (CSRF-exempt: machine clients do not use browser session cookies.)
     """
     token = os.environ.get("TRAFFIC_INGEST_TOKEN", "").strip()
     if not token:
@@ -454,9 +460,69 @@ def traffic_ingest(request):
     n = push_raw_lines(lines, key, _redis_cap(cfg))
     if rollup_enabled() and n > 0:
         try:
-            recs = records_from_lines(lines, cfg.log_format)
+            lf = resolve_ingest_log_format(cfg, ingest_source, "")
+            recs = records_from_lines(lines, lf)
             enrich_records(recs, cfg.geoip_db_path)
             rollup_ingest_append(recs, ingest_source or "")
         except Exception:
             pass
     return Response({"accepted": n, "truncated": truncated})
+
+
+def _edge_ingest_token() -> str:
+    return (os.environ.get("SHARK_EDGE_TOKEN") or os.environ.get("TRAFFIC_INGEST_TOKEN") or "").strip()
+
+
+@csrf_exempt
+@api_view(["POST"])
+@authentication_classes([])
+@permission_classes([AllowAny])
+def edge_logs_ingest(request):
+    """
+    go-log-collector: POST JSON with source, lines, stream_key, log_format (optional), source_file (optional).
+    Auth: X-Shark-Edge-Token matches SHARK_EDGE_TOKEN (or TRAFFIC_INGEST_TOKEN if SHARK_EDGE_TOKEN unset).
+    (CSRF-exempt: go-log-collector has no session cookie; token header provides authentication.)
+    """
+    token = _edge_ingest_token()
+    if not token:
+        return Response(
+            {"error": "SHARK_EDGE_TOKEN or TRAFFIC_INGEST_TOKEN must be set"},
+            status=503,
+        )
+    if (request.headers.get("X-Shark-Edge-Token") or "").strip() != token:
+        return Response({"error": "unauthorized"}, status=403)
+
+    try:
+        max_batch = int(os.environ.get("TRAFFIC_INGEST_MAX_BODY_LINES", "20000"))
+    except ValueError:
+        max_batch = 20_000
+    max_batch = max(100, min(max_batch, 100_000))
+
+    body = request.data if isinstance(request.data, dict) else {}
+    raw = body.get("lines")
+    if not isinstance(raw, list):
+        return Response({"error": "lines must be a JSON array"}, status=400)
+    lines = [str(x) for x in raw if x is not None]
+    truncated = False
+    if len(lines) > max_batch:
+        lines = lines[:max_batch]
+        truncated = True
+
+    if not redis_buffer_configured():
+        return Response({"error": "TRAFFIC_REDIS_URL not configured"}, status=503)
+
+    cfg = TrafficDashboardConfig.load()
+    stream_key = (body.get("stream_key") or "default").strip() or "default"
+    batch_lf = (body.get("log_format") or "").strip()
+    lf = resolve_ingest_log_format(cfg, stream_key, batch_lf)
+
+    key = redis_key_for_ingest(cfg, stream_key)
+    n = push_raw_lines(lines, key, _redis_cap(cfg))
+    if rollup_enabled() and n > 0:
+        try:
+            recs = records_from_lines(lines, lf)
+            enrich_records(recs, cfg.geoip_db_path)
+            rollup_ingest_append(recs, stream_key)
+        except Exception:
+            pass
+    return Response({"accepted": n, "truncated": truncated, "stream_key": stream_key})

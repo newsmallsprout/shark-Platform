@@ -5,6 +5,8 @@ export type TrafficLogSourceRow = {
   label: string
   file_path: string
   redis_key: string
+  /** 与 go-log-collector 的每流格式一致；空=用全局「日志格式」 */
+  log_format?: string
 }
 
 export const trafficApi = {

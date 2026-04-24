@@ -252,11 +252,16 @@
         <el-form-item label="采集模式">
           <el-select v-model="cfgForm.access_log_mode" style="width: 100%">
             <el-option label="本地文件（Pod/共享卷）" value="file" />
-            <el-option label="远程推送 → Redis（独立 Nginx）" value="redis" />
+            <el-option label="远程推送 → Redis（go-log-collector / 兼容 ingest）" value="redis" />
           </el-select>
           <div v-if="cfgForm.access_log_mode === 'redis'" class="form-hint">
-            K8s 内设置环境变量 <code>TRAFFIC_REDIS_URL</code>；Nginx 侧用 cron/filebeat 等向
-            <code>POST /api/traffic/ingest</code> 推送 NDJSON（Bearer <code>TRAFFIC_INGEST_TOKEN</code>）。Redis 已连通：
+            需 <code>TRAFFIC_REDIS_URL</code>。推荐
+            <strong>go-log-collector</strong>：<code>POST {{ cfgForm.edge_ingest_path || '/api/edge/logs' }}</code>，请求头
+            <code>X-Shark-Edge-Token: &lt;{{ cfgForm.edge_token_env || 'SHARK_EDGE_TOKEN' }}&gt;</code>（与中心环境变量一致；未设
+            <code>SHARK_EDGE_TOKEN</code> 时可与 <code>TRAFFIC_INGEST_TOKEN</code> 相同）。Body 中
+            <code>stream_key</code> 与下表「多站点」的 <code>id</code> 对应；<code>log_format</code> 与下表每行「行解析」或全局格式一致。兼容旧方式：
+            <code>POST /api/traffic/ingest</code> + Bearer
+            <code>TRAFFIC_INGEST_TOKEN</code>。 Redis：
             <el-tag :type="cfgForm.redis_env_configured ? 'success' : 'danger'" size="small" class="ml-6">
               {{ cfgForm.redis_env_configured ? '已配置' : '未配置 URL' }}
             </el-tag>
@@ -284,11 +289,12 @@
             </div>
           </el-form-item>
         </template>
-        <el-form-item label="日志格式">
+        <el-form-item label="日志格式（全局）">
           <el-select v-model="cfgForm.log_format">
             <el-option label="JSON 行" value="json" />
             <el-option label="Combined" value="combined" />
           </el-select>
+          <div class="form-hint">多站点某行可填「行解析」覆盖；go-log-collector 的 <code>nginx_json</code> 等同 JSON 行。</div>
         </el-form-item>
         <el-form-item v-if="cfgForm.access_log_mode === 'file'" label="尾部读取字节">
           <el-input-number v-model="cfgForm.max_tail_bytes" :min="65536" :max="52428800" />
@@ -296,9 +302,10 @@
         <el-form-item label="多站点 / 域名">
           <div class="form-hint">
             留空表示只用上方「单路径」或「单 Redis Key」。按域名拆日志时添加多行：唯一
-            <code>id</code>、显示名、以及文件模式填 <code>file_path</code>，Redis 模式填 <code>redis_key</code>。
-            远程推送使用 <code>POST /api/traffic/ingest?source=&lt;id&gt;</code> 或请求头
-            <code>X-Traffic-Source: &lt;id&gt;</code>。
+            <code>id</code>（与 go-log-collector 的 <code>stream_key</code> 一致）、显示名、以及文件模式填
+            <code>file_path</code>，Redis 模式填 <code>redis_key</code>。旧版
+            <code>POST /api/traffic/ingest?source=&lt;id&gt;</code> 或
+            <code>X-Traffic-Source: &lt;id&gt;</code> 仍有效。
           </div>
           <el-table :data="cfgForm.log_sources" border size="small" class="log-src-table">
             <el-table-column label="ID" width="120">
@@ -309,6 +316,17 @@
             <el-table-column label="显示名" min-width="120">
               <template #default="{ row }">
                 <el-input v-model="row.label" size="small" placeholder="API" />
+              </template>
+            </el-table-column>
+            <el-table-column label="行解析" width="150">
+              <template #default="{ row }">
+                <el-select v-model="row.log_format" size="small" clearable placeholder="继承全局" style="width: 100%">
+                  <el-option label="继承全局" value="" />
+                  <el-option label="json" value="json" />
+                  <el-option label="nginx_json" value="nginx_json" />
+                  <el-option label="combined" value="combined" />
+                  <el-option label="auto" value="auto" />
+                </el-select>
               </template>
             </el-table-column>
             <el-table-column v-if="cfgForm.access_log_mode === 'file'" label="文件路径" min-width="220">
@@ -453,6 +471,8 @@ const cfgForm = reactive({
   redis_max_lines: 200000,
   dashboard_fetch_max_lines: 35000,
   redis_env_configured: false,
+  edge_ingest_path: '/api/edge/logs',
+  edge_token_env: 'SHARK_EDGE_TOKEN',
   log_sources: [] as TrafficLogSourceRow[],
   geoip_db_path: '',
   use_inspection_prometheus: true,
@@ -959,7 +979,7 @@ async function refreshSourceOptions() {
 }
 
 function addLogSource() {
-  cfgForm.log_sources.push({ id: '', label: '', file_path: '', redis_key: '' })
+  cfgForm.log_sources.push({ id: '', label: '', file_path: '', redis_key: '', log_format: '' })
 }
 
 function removeLogSource(index: number) {
@@ -1176,6 +1196,7 @@ async function onOpenTrafficConfig() {
         label: String(row.label || ''),
         file_path: String(row.file_path || ''),
         redis_key: String(row.redis_key || ''),
+        log_format: String(row.log_format || ''),
       }))
     )
     Object.assign(cfgForm, { ...c, log_sources: cfgForm.log_sources })

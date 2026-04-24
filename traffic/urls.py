@@ -17,4 +17,5 @@ urlpatterns = [
     ),
     path("traffic/config", views.traffic_dashboard_config, name="traffic_dashboard_config"),
     path("traffic/ingest", views.traffic_ingest, name="traffic_ingest"),
+    path("edge/logs", views.edge_logs_ingest, name="edge_logs_ingest"),
 ]

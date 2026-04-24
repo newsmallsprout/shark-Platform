@@ -54,8 +54,9 @@ class TrafficDashboardConfig(models.Model):
     log_sources = models.JSONField(
         default=list,
         blank=True,
-        help_text='Multi-site: [{"id":"api","label":"API","file_path":"/var/log/nginx/access_api.json.log","redis_key":""}, ...]. '
-        "Redis mode: set redis_key per id; push with POST .../ingest?source=<id>. Empty = single legacy path / redis_log_key.",
+        help_text='Multi-site: [{"id":"api","label":"API","file_path":"...","redis_key":"...","log_format":""}]. '
+        "id matches go-log-collector stream_key. Optional log_format: json, nginx_json, combined, auto. "
+        "Redis: POST /api/edge/logs or /api/traffic/ingest?source=<id>. Empty list = single legacy path / redis_log_key.",
     )
     geoip_db_path = models.CharField(
         max_length=1024,

@@ -1,22 +1,10 @@
 """
-Gunicorn access logger: skip high-frequency endpoints so container stdout stays readable.
+Gunicorn: disable per-request access logging (use nginx/gunicorn error at warn if needed for ops).
+Re-enable in entrypoint: pass a standard Logger and --access-logfile - for debugging.
 """
 from gunicorn.glogging import Logger
 
 
-def _quiet_path(path: str) -> bool:
-    if path == "/api/system/health":
-        return True
-    if path.startswith("/api/traffic/ingest"):
-        return True
-    if path.startswith("/api/tasks/status"):
-        return True
-    return False
-
-
 class FilteredAccessLogger(Logger):
     def access(self, resp, req, environ, request_time):
-        path = environ.get("PATH_INFO") or ""
-        if _quiet_path(path):
-            return
-        super().access(resp, req, environ, request_time)
+        return
