@@ -78,6 +78,106 @@ def _peer_line(tg: Dict[str, str]) -> str:
     return ""
 
 
+def _service_of(s: dict, processes: Any) -> str:
+    pid = s.get("processID") or s.get("processId") or "p1"
+    pr = processes.get(pid) if isinstance(processes, dict) else None
+    if not isinstance(pr, dict):
+        return "?"
+    return (pr.get("serviceName") or "?")[:64]
+
+
+def _build_waterfall_payload(by_id: Dict[str, dict], processes: Any) -> Dict[str, Any]:
+    """
+    按调用树前序遍历，一行一个 span，横轴为相对 trace 起点的毫秒，便于用 Gantt/瀑布图人类阅读。
+    """
+    if not by_id:
+        return {"rows": [], "trace_duration_ms": 0.0}
+    t_starts: List[int] = []
+    t_ends: List[int] = []
+    for s in by_id.values():
+        st = int(s.get("startTime", 0) or 0)
+        du = int(s.get("duration", 0) or 0)
+        t_starts.append(st)
+        t_ends.append(st + max(0, du))
+    t_min = min(t_starts) if t_starts else 0
+    t_max = max(t_ends) if t_ends else t_min
+    trace_duration_ms = (t_max - t_min) / 1000.0 if t_max >= t_min else 0.0
+    if trace_duration_ms <= 0 and by_id:
+        trace_duration_ms = max(0.001, max(int(s.get("duration", 0) or 0) for s in by_id.values()) / 1000.0)
+
+    children: Dict[str, List[str]] = {}
+    roots: List[str] = []
+    for sid, s in by_id.items():
+        p = _parent_id(s)
+        if p and p in by_id:
+            children.setdefault(p, []).append(sid)
+        else:
+            roots.append(sid)
+
+    def cstart(x: str) -> int:
+        return int(by_id[x].get("startTime", 0) or 0)
+
+    for p in list(children.keys()):
+        children[p].sort(key=cstart)
+    roots.sort(key=cstart)
+    if not roots:
+        roots = sorted(by_id.keys(), key=cstart)
+
+    rows: List[Dict[str, Any]] = []
+    y_index = 0
+
+    def walk(sid: str, depth: int) -> None:
+        nonlocal y_index
+        s = by_id[sid]
+        op = s.get("operationName") or "span"
+        if len(str(op)) > 120:
+            op = str(op)[:117] + "..."
+        svc = _service_of(s, processes)
+        tg = _tag_map(s)
+        _kind, cat = _infer_category(tg, svc, str(op))
+        peer = _peer_line(tg)
+        dur = int(s.get("duration", 0)) / 1000.0
+        st0 = int(s.get("startTime", 0) or 0)
+        start_ms = (st0 - t_min) / 1000.0
+        end_ms = start_ms + max(0.0, dur)
+        d_show = min(depth, 12)
+        indent = "· " * d_show
+        op_short = (str(op) if len(str(op)) <= 56 else str(op)[:53] + "…")
+        if peer:
+            label = f"{indent}{svc} – {op_short}  ({peer})"
+        else:
+            label = f"{indent}{svc} – {op_short}"
+        if len(label) > 100:
+            label = label[:97] + "…"
+        rows.append(
+            {
+                "y_index": y_index,
+                "depth": depth,
+                "span_id": sid,
+                "start_ms": round(start_ms, 4),
+                "end_ms": round(end_ms, 4),
+                "duration_ms": round(dur, 4),
+                "label": label,
+                "service": svc,
+                "operation": op,
+                "peer": peer,
+                "kind": _kind,
+                "category": cat,
+            }
+        )
+        y_index += 1
+        for c in children.get(sid, []):
+            walk(c, depth + 1)
+
+    for r in roots:
+        walk(r, 0)
+
+    return {
+        "rows": rows,
+        "trace_duration_ms": round(float(trace_duration_ms), 3),
+    }
+
+
 def build_trace_graph_payload(t: dict) -> Dict[str, Any]:
     """
     输入: Jaeger /api/traces/{id} 返回的 trace 单条 (UI JSON，含 processes + spans)
@@ -98,6 +198,7 @@ def build_trace_graph_payload(t: dict) -> Dict[str, Any]:
                 {"name": "other"},
             ],
             "truncated": False,
+            "waterfall": {"rows": [], "trace_duration_ms": 0.0},
         }
 
     if len(spans) > _MAX_NODES:
@@ -178,6 +279,8 @@ def build_trace_graph_payload(t: dict) -> Dict[str, Any]:
         uq.add(k)
         ulinks.append(l)
 
+    wf = _build_waterfall_payload(by_id, processes)
+
     return {
         "nodes": nodes,
         "links": ulinks,
@@ -190,6 +293,7 @@ def build_trace_graph_payload(t: dict) -> Dict[str, Any]:
             {"name": "other"},
         ],
         "truncated": truncated,
+        "waterfall": wf,
     }
 
 

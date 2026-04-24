@@ -304,6 +304,20 @@ def traffic_snapshot(request):
                         cfg, recs, range_key, inspection, full_data=False, rollup_fallback=True
                     )
                 )
+            # 已配 ClickHouse 时默认不抽样 Redis，但若该时间窗在分钟表真无行（短窗+flush 延迟/尚未写入），
+            # 而 Redis 列表里仍有近期日志，则只在这一种「rollup 全空」情况下用尾部补一帧，避免流量趋势全零。
+            if (
+                not full_data
+                and cfg.enabled
+                and redis_buffer_configured()
+            ):
+                _, recs = _load_enriched(source, full_data=False)
+                if recs:
+                    return Response(
+                        _snapshot_payload_from_raw_records(
+                            cfg, recs, range_key, inspection, full_data=False, rollup_fallback=True
+                        )
+                    )
             data["overview"]["full_data"] = False
             data["overview"]["minute_rollup"] = True
             data["overview"]["rollup_empty"] = True
@@ -357,7 +371,7 @@ def traffic_jaeger_traces(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def traffic_jaeger_trace_detail(request, trace_id: str):
-    """单条 trace 的 span 级链路图（ECharts graph / nodes+links）。"""
+    """单条 trace：含 span 级 nodes+links，以及时间线瀑布图 waterfall 数据（前端主视图）。"""
     from .services.jaeger_query import get_trace_by_id, jaeger_configured
     from .services.jaeger_trace_graph import build_trace_graph_payload, sanitize_trace_id
 

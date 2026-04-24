@@ -243,11 +243,12 @@ def get_trace_by_id(trace_id: str) -> Tuple[Optional[dict], Optional[str]]:
     return None, "trace 不存在或已过期"
 
 
-def get_dependencies(end_ts_ms: int, lookback: str) -> List[dict]:
-    """endTs: 毫秒；lookback: Jaeger 如 1h, 10m, 1d。"""
-    # Jaeger: endTs 毫秒, lookback 为 duration 字符串
+def get_dependencies(end_ts_ms: int, lookback_ms: int) -> List[dict]:
+    """endTs: Unix 时间毫秒；lookback: 时间窗长度（毫秒），整型。新版 Query 用 strconv.ParseInt 解析，不接受 \"10m\" 等字符串。"""
+    lookback_ms = max(1, int(lookback_ms))
     j, _ = _get_json(
-        "/api/dependencies", {"endTs": str(int(end_ts_ms)), "lookback": str(lookback)}
+        "/api/dependencies",
+        {"endTs": str(int(end_ts_ms)), "lookback": str(lookback_ms)},
     )
     if not j or not isinstance(j, dict):
         return []
@@ -278,22 +279,12 @@ def get_dependencies(end_ts_ms: int, lookback: str) -> List[dict]:
     return items
 
 
-def _lookback_str_from_delta(d: timedelta) -> str:
-    s = int(d.total_seconds())
-    if s % 3600 == 0 and s >= 3600:
-        h = s // 3600
-        return f"{h}h" if h != 1 else "1h"
-    if s % 60 == 0 and s >= 60:
-        m = s // 60
-        return f"{m}m" if m != 1 else "1m"
-    return f"{s}s"
-
-
 def _window_from_request(
     request: Request,
-) -> Tuple[int, int, str]:
+) -> Tuple[int, int, int]:
     """
-    返回 (start_us, end_us, lookback_str_for_dependencies)。
+    返回 (start_us, end_us, lookback_ms_for_dependencies)。
+    lookback 与 /api/dependencies 要求一致：毫秒时长整数，与 endTs 单位体系配套。
     """
     p = request.query_params
     start_s = (p.get("start") or "").strip()
@@ -309,8 +300,8 @@ def _window_from_request(
                     b = b.replace(tzinfo=timezone.utc)
                 start_us = int(a.timestamp() * 1_000_000)
                 end_us = int(b.timestamp() * 1_000_000)
-                d = b - a
-                return start_us, end_us, _lookback_str_from_delta(d)
+                lookback_ms = max(1, (end_us - start_us) // 1000)
+                return start_us, end_us, lookback_ms
         except Exception:
             pass
     range_key = (p.get("range") or "1h").strip() or "1h"
@@ -319,7 +310,8 @@ def _window_from_request(
     start = end - d
     start_us = int(start.timestamp() * 1_000_000)
     end_us = int(end.timestamp() * 1_000_000)
-    return start_us, end_us, _lookback_str_from_delta(d)
+    lookback_ms = max(1, (end_us - start_us) // 1000)
+    return start_us, end_us, lookback_ms
 
 
 def resolve_service(request: Request, services: List[str]) -> str:
