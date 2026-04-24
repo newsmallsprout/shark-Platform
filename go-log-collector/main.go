@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -66,6 +67,39 @@ func expandPathPatterns(parts []string) []string {
 	return out
 }
 
+var fallbackNoticeOnce sync.Once
+
+// 常见误配：SHARK_AIOPS_LOG_PATHS=access_*.json.log 在宿主机上无匹配，但存在 access.log / shark_access.log
+func applyNginxAccessFallback(pathsRaw string, paths []string) []string {
+	if len(paths) > 0 {
+		return paths
+	}
+	if strings.TrimSpace(pathsRaw) == "" {
+		return paths
+	}
+	candidates := []string{
+		"/var/log/nginx/shark_access.log",
+		"/var/log/nginx/access.log",
+	}
+	seen := make(map[string]struct{})
+	var out []string
+	for _, c := range candidates {
+		if st, err := os.Stat(c); err != nil || st.IsDir() {
+			continue
+		}
+		if _, ok := seen[c]; !ok {
+			seen[c] = struct{}{}
+			out = append(out, c)
+		}
+	}
+	if len(out) > 0 {
+		fallbackNoticeOnce.Do(func() {
+			fmt.Fprintf(os.Stderr, "log-collector: 0 files matched %q; using fallback: %v (or set SHARK_AIOPS_LOG_PATHS explicitly)\n", pathsRaw, out)
+		})
+	}
+	return out
+}
+
 var reAccessJSON = regexp.MustCompile(`(?i)^access_(.+)\.json\.log$`)
 
 // 未设置 SHARK_AIOPS_STREAM_KEY 时，从文件名推导：access_api.json.log -> api，access_web_admin.json.log -> web_admin
@@ -96,6 +130,8 @@ func inferLogFormatForPath(globalLF, filePath string) string {
 }
 
 func main() {
+	// 非 TTY 下 stdout 可能被全缓冲，运维诊断一律写 stderr，docker logs 能立刻看到
+	fmt.Fprintln(os.Stderr, "aiops-log-collector: process boot")
 	center := strings.TrimRight(env("SHARK_AIOPS_CENTER_URL", "http://127.0.0.1:8000"), "/")
 	token := env("SHARK_AIOPS_EDGE_TOKEN", "")
 	source := env("SHARK_AIOPS_LOG_SOURCE", "edge")
@@ -119,6 +155,10 @@ func main() {
 
 	parts := parsePaths(pathsRaw)
 	paths := expandPathPatterns(parts)
+	paths = applyNginxAccessFallback(pathsRaw, paths)
+	globalStream := strings.TrimSpace(env("SHARK_AIOPS_STREAM_KEY", ""))
+	globalLF := strings.TrimSpace(env("SHARK_AIOPS_LOG_FORMAT", ""))
+	printStartupBanner(center, url, pathsRaw, paths, follow, fromEnd, globalStream, globalLF, severity, batch, token != "")
 	hasGlob := false
 	for _, p := range parts {
 		if strings.ContainsAny(p, "*?[") {
@@ -146,9 +186,6 @@ func main() {
 		}
 	}
 
-	globalStream := strings.TrimSpace(env("SHARK_AIOPS_STREAM_KEY", ""))
-	globalLF := strings.TrimSpace(env("SHARK_AIOPS_LOG_FORMAT", ""))
-
 	if follow {
 		lineCh := make(chan tailLine, 4096)
 		active := make(map[string]struct{})
@@ -173,7 +210,8 @@ func main() {
 		if hasGlob {
 			go func() {
 				rescan := func() {
-					for _, p := range expandPathPatterns(parts) {
+					exp := applyNginxAccessFallback(pathsRaw, expandPathPatterns(parts))
+					for _, p := range exp {
 						startTail(p)
 					}
 				}
@@ -191,6 +229,36 @@ func main() {
 	}
 
 	runFilesOnceMulti(paths, source, url, token, client, redactors, severity, batch, globalStream, globalLF)
+}
+
+func printStartupBanner(center, postURL, pathsRaw string, paths []string, follow, fromEnd bool, streamKey, logFormat, severity string, batch int, hasToken bool) {
+	// 全部写 stderr，避免管道全缓冲时 docker logs 长时间空白
+	f := os.Stderr
+	fmt.Fprintln(f, "aiops-log-collector: starting")
+	fmt.Fprintf(f, "  POST %s\n", postURL)
+	fmt.Fprintf(f, "  center: %s\n", center)
+	fmt.Fprintf(f, "  stream_key: %q  log_format: %q  severity: %s  batch: %d\n", streamKey, logFormat, severity, batch)
+	fmt.Fprintf(f, "  X-Shark-Edge-Token set: %v (must match center SHARK_EDGE_TOKEN)\n", hasToken)
+	fmt.Fprintf(f, "  follow: %v  from_end: %v  (set LOG_FROM_END=0 to ship existing tail once)\n", follow, fromEnd)
+	fmt.Fprintf(f, "  SHARK_AIOPS_LOG_PATHS: %q\n", pathsRaw)
+	fmt.Fprintf(f, "  file count (after glob+fallback): %d\n", len(paths))
+	if len(paths) > 0 && len(paths) <= 20 {
+		for _, p := range paths {
+			fmt.Fprintf(f, "    - %s\n", p)
+		}
+	} else if len(paths) > 20 {
+		for i := 0; i < 20; i++ {
+			fmt.Fprintf(f, "    - %s\n", paths[i])
+		}
+		fmt.Fprintln(f, "    ...")
+	}
+	if len(paths) == 0 && pathsRaw != "" {
+		fmt.Fprintln(f, "  NOTE: 0 files — e.g. use /var/log/nginx/access.log or see fallback message above on next rescan (45s).")
+	}
+	if strings.TrimSpace(pathsRaw) == "" {
+		fmt.Fprintln(f, "  mode: no LOG_PATHS -> stdin in non-file mode only")
+	}
+	fmt.Fprintln(f, "aiops-log-collector: 60s stats on stderr; push HTTP errors on stderr")
 }
 
 func parsePaths(raw string) []string {
@@ -305,11 +373,30 @@ func runConsumerMulti(
 	}()
 	defer tick.Stop()
 
+	var nDeq, nFwd, nSev int64
+	go func() {
+		hb := time.NewTicker(60 * time.Second)
+		defer hb.Stop()
+		for range hb.C {
+			d := atomic.SwapInt64(&nDeq, 0)
+			f := atomic.SwapInt64(&nFwd, 0)
+			s := atomic.SwapInt64(&nSev, 0)
+			if d == 0 && f == 0 && s == 0 {
+				fmt.Fprintln(os.Stderr, "aiops-log-collector: last 60s: no log lines (empty glob? or LOG_FROM_END=1 and no new HTTP requests yet)")
+				continue
+			}
+			fmt.Fprintf(os.Stderr, "aiops-log-collector: last 60s dequeued=%d dropped_filter=%d lines_sent_to_buffer=%d\n", d, s, f)
+		}
+	}()
+
 	for tl := range lineCh {
+		atomic.AddInt64(&nDeq, 1)
 		line := processLine(tl.line, redactors, severity)
 		if line == "" {
+			atomic.AddInt64(&nSev, 1)
 			continue
 		}
+		atomic.AddInt64(&nFwd, 1)
 		sk := deriveStreamKey(globalStream, tl.path)
 		lf := inferLogFormatForPath(globalLF, tl.path)
 		sink.pushWithMeta(sk, lf, tl.path, line)
@@ -334,6 +421,7 @@ type batchSink struct {
 	globalSk   string
 	globalLF   string
 	stdinLabel string
+	firstOK    sync.Once
 }
 
 func newBatchSink(sourceTag, url, token string, client *http.Client, batchSize int, globalSk, globalLF, stdinLabel string) *batchSink {
@@ -420,7 +508,12 @@ func (s *batchSink) flushOneUnlocked(streamKey string, b *streamBatch) {
 			msg += "…"
 		}
 		fmt.Fprintf(os.Stderr, "push: HTTP %s %s\n", resp.Status, strings.TrimSpace(msg))
+		return
 	}
+	nLines := len(b.lines)
+	s.firstOK.Do(func() {
+		fmt.Fprintf(os.Stderr, "aiops-log-collector: first batch accepted by center HTTP %s (%d lines, stream_key=%s)\n", resp.Status, nLines, streamKey)
+	})
 }
 
 func (s *batchSink) flushAll() {
@@ -476,7 +569,12 @@ func tailFileForever(path string, startAtEnd bool, out chan<- tailLine) {
 			}
 			sc := bufio.NewScanner(f)
 			sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+			firstLine := true
 			for sc.Scan() {
+				if firstLine {
+					fmt.Fprintf(os.Stderr, "aiops-log-collector: first line from %s\n", path)
+					firstLine = false
+				}
 				out <- tailLine{path: path, line: sc.Text()}
 			}
 			if err := sc.Err(); err != nil {
