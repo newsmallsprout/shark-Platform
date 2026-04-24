@@ -354,6 +354,38 @@ def traffic_jaeger_traces(request):
     return Response(fetch_jaeger_flow(request))
 
 
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def traffic_jaeger_trace_detail(request, trace_id: str):
+    """单条 trace 的 span 级链路图（ECharts graph / nodes+links）。"""
+    from .services.jaeger_query import get_trace_by_id, jaeger_configured
+    from .services.jaeger_trace_graph import build_trace_graph_payload, sanitize_trace_id
+
+    if not jaeger_configured():
+        return Response(
+            {"ok": False, "error": "未配置 JAEGER_QUERY_BASE_URL", "graph": None},
+            status=400,
+        )
+    tid = sanitize_trace_id(trace_id)
+    if not tid:
+        return Response({"ok": False, "error": "trace_id 无效", "graph": None}, status=400)
+    raw, err = get_trace_by_id(tid)
+    if raw is None:
+        return Response(
+            {"ok": False, "error": err or "拉取失败", "graph": None, "trace_id": tid},
+            status=404,
+        )
+    graph = build_trace_graph_payload(raw)
+    return Response(
+        {
+            "ok": True,
+            "error": None,
+            "trace_id": tid,
+            "graph": graph,
+        }
+    )
+
+
 @api_view(["GET", "POST"])
 @permission_classes([IsAuthenticated])
 def traffic_dashboard_config(request):

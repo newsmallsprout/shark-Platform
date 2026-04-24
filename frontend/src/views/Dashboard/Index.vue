@@ -211,7 +211,9 @@
               v-model="jaegerService"
               filterable
               clearable
-              placeholder="服务（与左侧时间范围一致）"
+              allow-create
+              default-first-option
+              placeholder="选择或手输服务名（与左侧时间范围一致）"
               size="small"
               style="width: 100%"
               @change="onJaegerServiceChange"
@@ -223,9 +225,35 @@
         <el-row :gutter="16" class="flow-row mt-8">
           <el-col :xs="24" :lg="16" :md="14">
             <div class="page-panel flow-deps-panel">
-              <div class="chart-title">服务依赖（Jaeger 窗口内）</div>
-              <p v-if="!jaegerDepItems.length" class="ph-desc">本时间窗无依赖边或服务尚无调用数据。</p>
-              <ul v-else class="dep-list">
+              <div class="flow-graph-head">
+                <div class="chart-title">
+                  {{ selectedTraceId ? 'Trace 链路与时延' : '服务级依赖（时间窗内）' }}
+                </div>
+                <el-button
+                  v-if="selectedTraceId"
+                  type="primary"
+                  link
+                  size="small"
+                  @click="clearTraceSelection"
+                  >清除选中</el-button
+                >
+              </div>
+              <p v-if="flowGraphError" class="ph-desc flow-graph-err">{{ flowGraphError }}</p>
+              <div
+                v-show="selectedTraceId && !flowGraphError"
+                v-loading="flowGraphLoading"
+                ref="flowGraphEl"
+                class="flow-graph-echart"
+              />
+              <p
+                v-if="!selectedTraceId && !jaegerDepItems.length"
+                class="ph-desc"
+                style="margin-top: 0"
+              >
+                在右侧点击一行 Trace，将在此按 span 绘制链路与每段时延；支持 Redis、MQ、DB 等子 span/标签展示。
+              </p>
+              <p v-else-if="!selectedTraceId && jaegerDepItems.length" class="ph-desc">本时间窗服务间依赖：</p>
+              <ul v-if="!selectedTraceId && jaegerDepItems.length" class="dep-list">
                 <li v-for="(d, i) in jaegerDepItems" :key="i" class="dep-row">
                   <span class="dep-node">{{ d.parent }}</span>
                   <span class="dep-arrow">→</span>
@@ -238,25 +266,25 @@
           <el-col :xs="24" :lg="8" :md="10">
             <div class="page-panel chart-wrap table-wrap">
               <div class="chart-title">最近 Trace</div>
-              <el-table
-                :data="traceRows"
-                :row-key="rowKeyTrace"
-                :row-class-name="traceTableRowClass"
+              <el-input
+                v-model="traceIdFilter"
+                class="mb-8"
+                clearable
                 size="small"
-                class="dark-table traffic-data-table"
+                placeholder="按 Trace ID 搜索（子串）"
+              />
+              <el-table
+                :data="traceRowsPaged"
+                :row-key="rowKeyTrace"
+                :row-class-name="traceTableRowClassWithSelected"
+                size="small"
+                class="dark-table traffic-data-table traffic-trace-table"
                 max-height="360"
+                @row-click="onTraceTableRowClick"
               >
                 <el-table-column label="Trace ID" min-width="200" show-overflow-tooltip>
                   <template #default="{ row }">
-                    <a
-                      v-if="row.trace_id && jaegerTraceHref(row.trace_id) !== '#'"
-                      :href="jaegerTraceHref(row.trace_id)"
-                      class="link-trace"
-                      target="_blank"
-                      rel="noopener"
-                      >{{ row.trace_id }}</a
-                    >
-                    <span v-else>{{ row.trace_id }}</span>
+                    <span :title="row.trace_id" class="trace-id-cell">{{ row.trace_id }}</span>
                   </template>
                 </el-table-column>
                 <el-table-column prop="root_service" label="Service" width="120" show-overflow-tooltip />
@@ -265,6 +293,16 @@
                 <el-table-column prop="span_count" label="Span" width="64" />
                 <el-table-column prop="status" label="Status" width="64" />
               </el-table>
+              <el-pagination
+                v-model:current-page="tracePage"
+                v-model:page-size="tracePageSize"
+                class="trace-pager"
+                size="small"
+                layout="total, prev, pager, next, sizes"
+                :page-sizes="[10, 20, 50, 100]"
+                :total="traceRowsFiltered.length"
+                background
+              />
             </div>
           </el-col>
         </el-row>
@@ -474,13 +512,34 @@ const pathsRows = ref<any[]>([])
 const slowRows = ref<any[]>([])
 const ipRows = ref<any[]>([])
 const statusPie = ref<any[]>([])
-const traceRows = ref<any[]>([])
+const allTraceRows = ref<any[]>([])
+const traceIdFilter = ref('')
+const tracePage = ref(1)
+const tracePageSize = ref(10)
+const selectedTraceId = ref('')
+const flowGraphEl = ref<HTMLElement | null>(null)
+const flowGraphLoading = ref(false)
+const flowGraphError = ref('')
+let flowGraphChart: echarts.ECharts | null = null
 const jaegerConfigured = ref(false)
 const jaegerError = ref('')
 const jaegerUiBase = ref('')
 const jaegerServices = ref<string[]>([])
 const jaegerService = ref('')
 const jaegerDepItems = ref<{ parent: string; child: string; call_count: number }[]>([])
+
+const traceRowsFiltered = computed(() => {
+  const q = (traceIdFilter.value || '').trim().toLowerCase()
+  const all = allTraceRows.value
+  if (!q) return all
+  return all.filter((r: { trace_id?: string }) => String(r.trace_id || '').toLowerCase().includes(q))
+})
+
+const traceRowsPaged = computed(() => {
+  const list = traceRowsFiltered.value
+  const start = (tracePage.value - 1) * tracePageSize.value
+  return list.slice(start, start + tracePageSize.value)
+})
 
 const pathsRowFlash = ref<Record<string, boolean>>({})
 const slowRowFlash = ref<Record<string, boolean>>({})
@@ -1095,7 +1154,7 @@ function syncTablePrevSigs() {
   prevTableSigs.ip = i
 
   const t: Record<string, string> = {}
-  for (const row of traceRows.value) {
+  for (const row of allTraceRows.value) {
     const k = rowKeyTrace(row)
     if (k) t[k] = sigTraceRow(row)
   }
@@ -1124,7 +1183,7 @@ function applyRowFlashAfterLoad(silent: boolean) {
   pathsRowFlash.value = diffRowFlash(pathsRows.value, prevTableSigs.paths, sigPathRow, rowKeyPath)
   slowRowFlash.value = diffRowFlash(slowRows.value, prevTableSigs.slow, sigSlowRow, rowKeyPath)
   ipRowFlash.value = diffRowFlash(ipRows.value, prevTableSigs.ip, sigIpRow, rowKeyIp)
-  traceRowFlash.value = diffRowFlash(traceRows.value, prevTableSigs.trace, sigTraceRow, rowKeyTrace)
+  traceRowFlash.value = diffRowFlash(allTraceRows.value, prevTableSigs.trace, sigTraceRow, rowKeyTrace)
 
   syncTablePrevSigs()
 
@@ -1158,6 +1217,15 @@ function traceTableRowClass({ row }: { row: any }) {
   return 'traffic-trow'
 }
 
+function traceTableRowClassWithSelected(d: { row: any }) {
+  const base = traceTableRowClass(d)
+  const id = d.row?.trace_id
+  if (id != null && String(id) && String(id) === String(selectedTraceId.value)) {
+    return `${base} traffic-trow--trace-active`.replace(/\s+/g, ' ').trim()
+  }
+  return base
+}
+
 function onRangePresetChange() {
   if (range.value === 'custom' && !customTimeRange.value) {
     const e = new Date()
@@ -1170,21 +1238,129 @@ function onCustomRangePicked() {
   if (range.value === 'custom') void loadAll(false)
 }
 
-function jaegerTraceHref(traceId: string) {
-  const b = (jaegerUiBase.value || '').replace(/\/$/, '')
-  if (!b || !traceId) return '#'
-  return `${b}/trace/${traceId}`
+function disposeFlowGraph() {
+  if (flowGraphChart) {
+    flowGraphChart.dispose()
+    flowGraphChart = null
+  }
+}
+
+function renderFlowGraph(graph: {
+  nodes: { id: string; name: string; category: number; duration_ms: number }[]
+  links: { source: string; target: string; value?: number }[]
+  categories: { name: string }[]
+  truncated?: boolean
+}) {
+  const el = flowGraphEl.value
+  if (!el) {
+    flowGraphError.value = '图表容器未就绪'
+    return
+  }
+  if (!graph?.nodes?.length) {
+    flowGraphError.value = '该 trace 无 span 数据'
+    return
+  }
+  disposeFlowGraph()
+  el.style.width = '100%'
+  el.style.minHeight = '420px'
+  const c = echarts.init(el, 'shark-traffic')
+  const cats = graph.categories || [
+    { name: 'http' },
+    { name: 'db' },
+    { name: 'redis' },
+    { name: 'mongo' },
+    { name: 'mq' },
+    { name: 'other' },
+  ]
+  c.setOption({
+    tooltip: { trigger: 'item' },
+    legend: { data: cats.map((x) => x.name), bottom: 0, type: 'scroll' },
+    series: [
+      {
+        type: 'graph',
+        layout: 'force',
+        categories: cats,
+        data: graph.nodes.map((n) => ({
+          id: n.id,
+          name: n.name,
+          category: n.category,
+          value: n.duration_ms,
+          symbolSize: 12 + Math.min(20, Math.log1p(Number(n.duration_ms) || 0) * 3),
+        })),
+        links: (graph.links || []).map((l) => ({
+          source: l.source,
+          target: l.target,
+        })),
+        label: { show: true, fontSize: 9, lineHeight: 12 },
+        lineStyle: { color: 'source', curveness: 0.15, width: 1.1 },
+        emphasis: { focus: 'adjacency' },
+        force: { repulsion: 240, edgeLength: [50, 200], gravity: 0.1, layoutAnimation: true },
+        roam: true,
+        draggable: true,
+      },
+    ],
+  })
+  flowGraphChart = c
+  c.resize()
+  setTimeout(() => c.resize(), 200)
+  window.addEventListener('resize', onFlowGraphResize)
+}
+
+function onFlowGraphResize() {
+  flowGraphChart?.resize()
 }
 
 async function onJaegerServiceChange() {
   await refreshJaegerTraces()
 }
 
+function clearTraceSelection() {
+  selectedTraceId.value = ''
+  flowGraphError.value = ''
+  window.removeEventListener('resize', onFlowGraphResize)
+  disposeFlowGraph()
+}
+
+async function loadTraceForSelection(tid: string) {
+  if (!tid) return
+  selectedTraceId.value = tid
+  flowGraphError.value = ''
+  flowGraphLoading.value = true
+  window.removeEventListener('resize', onFlowGraphResize)
+  disposeFlowGraph()
+  try {
+    const res = (await trafficApi.jaegerTraceDetail(tid)) as {
+      ok?: boolean
+      error?: string
+      graph?: { nodes: any[]; links: any[]; categories: any[]; truncated?: boolean }
+    }
+    if (res == null || res.ok === false) {
+      flowGraphError.value = res?.error || '加载失败'
+      return
+    }
+    if (!res.graph || !res.graph.nodes?.length) {
+      flowGraphError.value = '该 trace 无 span 数据'
+      return
+    }
+    await nextTick()
+    renderFlowGraph(res.graph)
+  } catch (e: unknown) {
+    const ax = e as { response?: { data?: { error?: string } }; message?: string }
+    flowGraphError.value = ax?.response?.data?.error || ax?.message || '请求失败'
+  } finally {
+    flowGraphLoading.value = false
+  }
+}
+
+function onTraceTableRowClick(row: any) {
+  if (row?.trace_id) void loadTraceForSelection(String(row.trace_id))
+}
+
 async function refreshJaegerTraces() {
   try {
     const r = range.value
     const p: { range?: string; start?: string; end?: string; service?: string; limit?: string } = {
-      limit: '30',
+      limit: '100',
     }
     if (jaegerService.value) p.service = jaegerService.value
     if (r === 'custom' && customTimeRange.value && customTimeRange.value.length === 2) {
@@ -1205,7 +1381,16 @@ async function refreshJaegerTraces() {
     jaegerConfigured.value = !!tr.configured
     jaegerError.value = tr.configured && tr.error ? tr.error : ''
     jaegerUiBase.value = (tr.jaeger_ui_base || '').replace(/\/$/, '')
-    traceRows.value = tr.traces || []
+    const prevSel = selectedTraceId.value
+    allTraceRows.value = tr.traces || []
+    const stillHas =
+      prevSel && allTraceRows.value.some((x: { trace_id?: string }) => String(x.trace_id) === String(prevSel))
+    if (stillHas) {
+      void loadTraceForSelection(String(prevSel))
+    } else {
+      clearTraceSelection()
+    }
+    tracePage.value = 1
     jaegerDepItems.value = (tr.dependencies && tr.dependencies.items) || []
     jaegerServices.value = tr.services || []
     if (tr.service_used && !String(jaegerService.value || '').trim()) {
@@ -1213,8 +1398,9 @@ async function refreshJaegerTraces() {
     }
   } catch {
     jaegerError.value = '请求失败'
-    traceRows.value = []
+    allTraceRows.value = []
     jaegerDepItems.value = []
+    clearTraceSelection()
   }
 }
 
@@ -1318,6 +1504,10 @@ function setupPoll() {
 
 watch(pollSec, setupPoll)
 
+watch(traceIdFilter, () => {
+  tracePage.value = 1
+})
+
 watch(mainTab, (t) => {
   if (t === 'flow') void refreshJaegerTraces()
 })
@@ -1335,6 +1525,8 @@ function onResize() {
 }
 
 onUnmounted(() => {
+  window.removeEventListener('resize', onFlowGraphResize)
+  disposeFlowGraph()
   if (pollId) clearInterval(pollId)
   if (tableFlashClearTimer != null) {
     clearTimeout(tableFlashClearTimer)
@@ -1687,6 +1879,36 @@ onUnmounted(() => {
 }
 .flow-jaeger-link a {
   color: #2563eb;
+}
+.flow-graph-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.flow-graph-echart {
+  width: 100%;
+  min-height: 420px;
+}
+.flow-graph-err {
+  color: #b45309;
+}
+.trace-pager {
+  margin-top: 10px;
+  justify-content: flex-end;
+}
+.traffic-trace-table :deep(tbody tr) {
+  cursor: pointer;
+}
+.traffic-trace-table :deep(tr.traffic-trow--trace-active td.el-table__cell) {
+  background: rgba(59, 130, 246, 0.1) !important;
+  box-shadow: inset 3px 0 0 0 #3b82f6;
+}
+.trace-id-cell {
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  color: #1e40af;
 }
 .mb-8 {
   margin-bottom: 8px;

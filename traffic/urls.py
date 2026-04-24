@@ -15,6 +15,11 @@ urlpatterns = [
         views.traffic_jaeger_traces,
         name="traffic_jaeger_traces",
     ),
+    path(
+        "traffic/jaeger/trace/<str:trace_id>",
+        views.traffic_jaeger_trace_detail,
+        name="traffic_jaeger_trace_detail",
+    ),
     path("traffic/config", views.traffic_dashboard_config, name="traffic_dashboard_config"),
     path("traffic/ingest", views.traffic_ingest, name="traffic_ingest"),
     path("edge/logs", views.edge_logs_ingest, name="edge_logs_ingest"),

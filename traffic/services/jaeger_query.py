@@ -2,16 +2,21 @@
 Jaeger Query HTTP API（与 all-in-one / query 的 :16686 一致）。
 
 环境变量：
-  JAEGER_QUERY_BASE_URL  — 必填（例如 http://jaeger.monitoring:16686），无则本模块返回未配置。
+  JAEGER_QUERY_BASE_URL  — 必填。须能作为 HTTP 访问 Query；可写 http://host:port，或仅 host:port（缺少协议时自
+  动补 http://）。例：http://jaeger-query:16687 或 jaeger-query:16687（同集群 NS 内短名即可）。无则本模块返回未配置。
   JAEGER_QUERY_TOKEN     — 可选，Bearer
   JAEGER_QUERY_TLS_VERIFY — 默认 true；在集群内对 IP 可设为 false
   JAEGER_DEFAULT_SERVICE — 可选，未选 service 且拉服务列表时优先用
   JAEGER_UI_BASE_URL     — 可选，前端「打开 trace」用；未设时复用 Query Base
+
+K8s 中 Query 的 **HTTP/JSON 端口未必是 16687**（常与服务定义有关）：若 /api/services 总为空，可改试
+  http://jaeger-query:80 或 16686（与「打开 Jaeger UI」浏览器地址同源最稳）。
 """
 from __future__ import annotations
 
 import logging
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urljoin
@@ -32,16 +37,26 @@ _RANGE_DELTA = {
 }
 
 
+def _normalize_base_url(raw: str) -> str:
+    """若未带 http:// 或 https://，补全为 http://，避免 requests 报 No connection adapters。"""
+    s = (raw or "").strip()
+    if not s:
+        return ""
+    if "://" not in s:
+        s = "http://" + s
+    return s.rstrip("/")
+
+
 def jaeger_configured() -> bool:
-    return bool((os.environ.get("JAEGER_QUERY_BASE_URL") or "").strip())
+    return bool(_normalize_base_url(os.environ.get("JAEGER_QUERY_BASE_URL", "")))
 
 
 def _base_url() -> str:
-    return (os.environ.get("JAEGER_QUERY_BASE_URL") or "").strip().rstrip("/")
+    return _normalize_base_url(os.environ.get("JAEGER_QUERY_BASE_URL", ""))
 
 
 def _ui_base() -> str:
-    u = (os.environ.get("JAEGER_UI_BASE_URL") or "").strip().rstrip("/")
+    u = _normalize_base_url(os.environ.get("JAEGER_UI_BASE_URL", ""))
     return u or _base_url()
 
 
@@ -80,20 +95,52 @@ def _get_json(path: str, params: Optional[dict] = None) -> Tuple[Optional[dict],
             msg = (r.text or msg)[:500]
         logger.warning("jaeger bad response: %s %s", r.status_code, msg)
         return None, msg
+    raw = r.text or ""
+    if raw.lstrip().startswith("<"):
+        err = (
+            "返回了 HTML 而非 JSON：JAEGER_QUERY_BASE_URL 多半不是 Jaeger Query 的 HTTP 口，"
+            "请与浏览器能打开 Jaeger UI 的地址一致（集群内常见 :80 或 :16686）。"
+        )
+        logger.warning("jaeger %s: %s", url, err[:200])
+        return None, err
     try:
         return r.json(), None
     except Exception as e:
+        logger.warning("jaeger json decode %s: %s body[:120]=%r", url, e, raw[:120])
         return None, str(e)
 
 
-def list_services() -> List[str]:
-    j, _ = _get_json("/api/services")
-    if not j:
+def _data_as_service_list(j: Any) -> List[str]:
+    if j is None:
+        return []
+    if isinstance(j, list):
+        return [str(x) for x in j if x]
+    if not isinstance(j, dict):
         return []
     d = j.get("data")
     if isinstance(d, list):
         return [str(x) for x in d if x]
+    if isinstance(d, dict):
+        for k in ("serviceNames", "services", "items"):
+            v = d.get(k)
+            if isinstance(v, list):
+                return [str(x) for x in v if x]
     return []
+
+
+def list_services() -> Tuple[List[str], Optional[str]]:
+    """(服务名列表, 拉取时的错误信息)。列表允许为空而仍有 HTTP 200。"""
+    j, err = _get_json("/api/services")
+    if j is None:
+        return [], err
+    out = _data_as_service_list(j)
+    if not out and isinstance(j, dict) and not err:
+        logger.info(
+            "jaeger /api/services returned empty or unknown shape: keys=%s data_type=%s",
+            list(j.keys()),
+            type(j.get("data")).__name__,
+        )
+    return out, err
 
 
 def _trace_id_to_str(tid: Any) -> str:
@@ -172,6 +219,28 @@ def search_traces(service: str, start_us: int, end_us: int, limit: int) -> Tuple
         if row:
             out.append(row)
     return out, None
+
+
+def get_trace_by_id(trace_id: str) -> Tuple[Optional[dict], Optional[str]]:
+    """
+    拉取单条 trace（与 Jaeger UI 详情页同源）。
+    See: GET /api/traces/{traceID}
+    """
+    from urllib.parse import quote
+
+    t = re.sub(r"[^0-9a-fA-F]", "", (trace_id or "")).lower()
+    if len(t) < 8 or len(t) > 32:
+        return None, "trace_id 格式无效"
+    path = f"/api/traces/{quote(t, safe='')}"
+    j, err = _get_json(path)
+    if j is None:
+        return None, err
+    d = j.get("data")
+    if isinstance(d, list) and d and isinstance(d[0], dict):
+        return d[0], None
+    if isinstance(d, dict) and (d.get("spans") is not None):
+        return d, None
+    return None, "trace 不存在或已过期"
 
 
 def get_dependencies(end_ts_ms: int, lookback: str) -> List[dict]:
@@ -285,17 +354,27 @@ def fetch_jaeger_flow(request: Request) -> dict:
         limit = 20
     limit = max(1, min(limit, 200))
 
-    services = list_services()
+    services, services_err = list_services()
     service = resolve_service(request, services)
     if not service:
+        if services_err:
+            err_msg = f"无法拉取 Jaeger 服务列表: {services_err}"
+        else:
+            err_msg = (
+                "未指定 service 且从 Query 拉到的服务列表为空。若 Jaeger UI 里已有服务，说明 "
+                "JAEGER_QUERY_BASE_URL 可能连错了端口/服务（请与 UI 同源，多为 http://jaeger-query:80 或 "
+                ":16686，而非 gRPC/其它端口）。也可在本页「服务」下拉手输服务名，或设环境变量 "
+                "JAEGER_DEFAULT_SERVICE。"
+            )
         return {
             "configured": True,
-            "error": "Jaeger 中暂无 service，请往集群写入一条 trace 或在请求中加 ?service= 或设置 JAEGER_DEFAULT_SERVICE",
+            "error": err_msg,
             "traces": [],
             "dependencies": {"items": []},
             "services": services,
             "service_used": "",
             "jaeger_ui_base": _ui_base(),
+            "jaeger_list_error": services_err,
             "note": None,
         }
 
