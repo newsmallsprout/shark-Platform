@@ -24,6 +24,18 @@
         <p v-if="overview.rollup_empty_hint" class="rollup-hint rollup-hint--warn">
           {{ overview.rollup_empty_hint }}
         </p>
+        <p
+          v-else-if="
+            overview.log_configured &&
+            (overview.total_requests === 0 || overview.total_requests == null)
+          "
+          class="rollup-hint rollup-hint--info"
+        >
+          当前时间窗暂无请求样本（与 ai-ops 运营台类似，需有有效访问日志或分钟聚合）。请确认：数据源选
+          <strong>全部</strong> 或某一站点的 <code>id</code> 与 go-log-collector 的
+          <code>stream_key</code> 一致；分钟聚合需 <code>TRAFFIC_ROLLUP_ENABLED</code>、ingest 与
+          <code>traffic_rollup_flush</code> 使用同一 Redis / 数据库。
+        </p>
       </div>
       <div class="header-actions">
         <el-radio-group v-model="range" size="small" class="range-group" @change="onRangePresetChange">

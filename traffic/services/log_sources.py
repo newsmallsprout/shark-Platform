@@ -65,6 +65,28 @@ def _access_mode(cfg: TrafficDashboardConfig) -> str:
     return m if m in ("file", "redis") else "file"
 
 
+def resolve_effective_traffic_source_id(requested: str, cfg: TrafficDashboardConfig) -> str:
+    """
+    Align ?source= with go-log-collector / rollup `source_id` (stream_key).
+
+    - all / 空: 不筛选（多流合并）。
+    - default: 未配置多站点时，rollup 中可能是任意 stream_key，故映射为 all；
+      仅配置一个非 default 的 id 时，将 default 视为该流（与旧「默认」项对齐）。
+    """
+    r = (requested or "").strip()
+    if not r or r == "all":
+        return "all"
+    if r != "default":
+        return r
+    raw = getattr(cfg, "log_sources", None)
+    if not isinstance(raw, list) or len(raw) == 0:
+        return "all"
+    ids = [str(x.get("id") or "").strip() for x in raw if isinstance(x, dict) and (x.get("id") or "").strip()]
+    if len(ids) == 1 and ids[0] and ids[0] != "default":
+        return ids[0]
+    return "default"
+
+
 def normalized_log_sources(cfg: TrafficDashboardConfig) -> List[Dict[str, Any]]:
     raw = getattr(cfg, "log_sources", None)
     if isinstance(raw, str):
@@ -203,7 +225,7 @@ def sources_for_api(cfg: TrafficDashboardConfig) -> List[Dict[str, str]]:
     items = []
     for s in normalized_log_sources(cfg):
         items.append({"id": s["id"], "label": s.get("label") or s["id"]})
-    if len(items) > 1:
+    if items:
         items.insert(0, {"id": "all", "label": "全部"})
     return items
 

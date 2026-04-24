@@ -25,6 +25,7 @@ from .services.log_sources import (
     load_raw_records,
     log_source_configured,
     redis_key_for_ingest,
+    resolve_effective_traffic_source_id,
     resolve_ingest_log_format,
     sources_for_api,
 )
@@ -73,7 +74,8 @@ def _full_data_fetch_limits(cfg: TrafficDashboardConfig) -> Tuple[int, int]:
     return rl, tb
 
 
-def _load_enriched(source_id: str = "", *, full_data: bool = False):
+def _load_enriched(resolved_source_id: str, *, full_data: bool = False):
+    """resolved_source_id: from resolve_effective_traffic_source_id (all / 具体 id)."""
     cfg = TrafficDashboardConfig.load()
     if not cfg.enabled:
         return cfg, []
@@ -82,7 +84,7 @@ def _load_enriched(source_id: str = "", *, full_data: bool = False):
     else:
         rl, tb = _dashboard_fetch_limits(cfg)
     recs = load_raw_records(
-        cfg, source_id, redis_line_cap=rl, max_tail_bytes_override=tb
+        cfg, resolved_source_id, redis_line_cap=rl, max_tail_bytes_override=tb
     )
     enrich_records(recs, cfg.geoip_db_path)
     return cfg, recs
@@ -150,6 +152,12 @@ def _query_source(request) -> str:
     return (request.GET.get("source") or "").strip()
 
 
+def _query_source_effective(request) -> str:
+    """Map legacy default / single-site id to the stream_key used in rollup and Redis."""
+    cfg = TrafficDashboardConfig.load()
+    return resolve_effective_traffic_source_id(_query_source(request), cfg)
+
+
 def _parse_custom_time_bounds(request) -> Tuple[Optional[datetime], Optional[datetime]]:
     """
     Optional ?start=&end= ISO-8601 (UTC or offset). Used for historical charts from TrafficMinuteRollup.
@@ -183,7 +191,7 @@ def _parse_custom_time_bounds(request) -> Tuple[Optional[datetime], Optional[dat
 @permission_classes([IsAuthenticated])
 def traffic_overview(request):
     range_key = request.GET.get("range", "24h")
-    cfg, recs = _load_enriched(_query_source(request), full_data=_parse_full_data(request))
+    cfg, recs = _load_enriched(_query_source_effective(request), full_data=_parse_full_data(request))
     inspection = InspectionConfig.load()
     data = overview_kpis(recs, range_key)
     bb = fetch_blackbox_summary(cfg, inspection)
@@ -199,7 +207,7 @@ def traffic_overview(request):
 @permission_classes([IsAuthenticated])
 def traffic_timeseries(request):
     range_key = request.GET.get("range", "24h")
-    _, recs = _load_enriched(_query_source(request), full_data=_parse_full_data(request))
+    _, recs = _load_enriched(_query_source_effective(request), full_data=_parse_full_data(request))
     return Response(aggregate_timeseries(recs, range_key))
 
 
@@ -209,7 +217,7 @@ def traffic_geo(request):
     range_key = request.GET.get("range", "24h")
     granularity = request.GET.get("granularity", "country")
     country = request.GET.get("country", "")
-    _, recs = _load_enriched(_query_source(request), full_data=_parse_full_data(request))
+    _, recs = _load_enriched(_query_source_effective(request), full_data=_parse_full_data(request))
     return Response(geo_aggregate(recs, range_key, granularity, country))
 
 
@@ -219,7 +227,7 @@ def traffic_top(request):
     range_key = request.GET.get("range", "24h")
     top_type = request.GET.get("type", "paths")
     limit = int(request.GET.get("limit", "10"))
-    _, recs = _load_enriched(_query_source(request), full_data=_parse_full_data(request))
+    _, recs = _load_enriched(_query_source_effective(request), full_data=_parse_full_data(request))
     return Response(top_lists(recs, range_key, top_type, limit))
 
 
@@ -230,10 +238,10 @@ def traffic_snapshot(request):
     一次返回大盘所需数据，只解析 / GeoIP 一遍，避免 7 路并行把 Redis 与 CPU 打满导致 503/超时。
     可选 ?start=&end= ISO8601：从持久化分钟聚合表读取任意区间（需开启 TRAFFIC_ROLLUP_ENABLED 并完成 ingest + traffic_rollup_flush）。
     """
-    source = _query_source(request)
+    cfg = TrafficDashboardConfig.load()
+    source = resolve_effective_traffic_source_id(_query_source(request), cfg)
     start, end = _parse_custom_time_bounds(request)
     if start is not None and end is not None:
-        cfg = TrafficDashboardConfig.load()
         inspection = InspectionConfig.load()
         data = build_rollups_snapshot(start, end, source, cfg, inspection)
         data.setdefault("overview", {})
@@ -256,7 +264,6 @@ def traffic_snapshot(request):
 
     range_key = request.GET.get("range", "24h")
     full_data = _parse_full_data(request)
-    cfg = TrafficDashboardConfig.load()
     inspection = InspectionConfig.load()
 
     # 默认：预设走分钟聚合（PG+ClickHouse）；若库中尚无数据则回退到受控原始抽样，避免大盘全空。
