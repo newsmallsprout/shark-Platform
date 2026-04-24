@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from ..models import TrafficDashboardConfig
 from .nginx_log import load_records, records_from_lines
-from .redis_log_buffer import fetch_tail_lines
+from .redis_log_buffer import fetch_tail_lines, is_configured as redis_buffer_configured
 
 
 def _env_file_path() -> str:
@@ -161,15 +161,25 @@ def normalized_log_sources(cfg: TrafficDashboardConfig) -> List[Dict[str, Any]]:
     return out
 
 
+def _has_file_paths_to_read(cfg: TrafficDashboardConfig) -> bool:
+    if (legacy_file_path(cfg) or "").strip():
+        return True
+    for s in normalized_log_sources(cfg):
+        if (s.get("file_path") or "").strip():
+            return True
+    return False
+
+
 def load_records_for_source(
     cfg: TrafficDashboardConfig,
     src: Dict[str, Any],
     *,
     redis_line_cap: Optional[int] = None,
     max_tail_bytes_override: Optional[int] = None,
+    force_redis: bool = False,
 ) -> List[Dict[str, Any]]:
     mode = _access_mode(cfg)
-    if mode == TrafficDashboardConfig.ACCESS_LOG_MODE_REDIS:
+    if force_redis or mode == TrafficDashboardConfig.ACCESS_LOG_MODE_REDIS:
         key = (src.get("redis_key") or "").strip() or legacy_redis_key(cfg)
         cap = redis_cap(cfg)
         if redis_line_cap is not None:
@@ -198,16 +208,44 @@ def load_raw_records(
         src = next((s for s in sources if s["id"] == sid), None)
         if not src:
             return []
-        return load_records_for_source(
+        acc = load_records_for_source(
             cfg, src, redis_line_cap=redis_line_cap, max_tail_bytes_override=max_tail_bytes_override
         )
-    acc: List[Dict[str, Any]] = []
-    for s in sources:
-        acc.extend(
-            load_records_for_source(
-                cfg, s, redis_line_cap=redis_line_cap, max_tail_bytes_override=max_tail_bytes_override
+    else:
+        acc = []
+        for s in sources:
+            acc.extend(
+                load_records_for_source(
+                    cfg, s, redis_line_cap=redis_line_cap, max_tail_bytes_override=max_tail_bytes_override
+                )
             )
-        )
+    if not acc and redis_buffer_configured() and _access_mode(
+        cfg
+    ) == TrafficDashboardConfig.ACCESS_LOG_MODE_FILE and not _has_file_paths_to_read(cfg):
+        # 仅 go-log-collector/ingest 写 Redis、后台仍「文件模式」且未配可读路径时，改从 Redis 拉取
+        if sid and sid != "all":
+            src2 = next((s for s in sources if s["id"] == sid), None)
+            if not src2:
+                return acc
+            return load_records_for_source(
+                cfg,
+                src2,
+                redis_line_cap=redis_line_cap,
+                max_tail_bytes_override=max_tail_bytes_override,
+                force_redis=True,
+            )
+        acc2: List[Dict[str, Any]] = []
+        for s in sources:
+            acc2.extend(
+                load_records_for_source(
+                    cfg,
+                    s,
+                    redis_line_cap=redis_line_cap,
+                    max_tail_bytes_override=max_tail_bytes_override,
+                    force_redis=True,
+                )
+            )
+        return acc2
     return acc
 
 

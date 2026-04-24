@@ -4,38 +4,6 @@
       <div class="header-info">
         <h2 class="page-title">Traffic Dashboard</h2>
         <p class="page-subtitle">Monitor and analyze traffic trends, latency, error rate and geo distribution</p>
-        <p
-          v-if="overview.rollup_fallback && !overview.rollup_ingest_enabled"
-          class="rollup-hint rollup-hint--warn"
-        >
-          分钟聚合表暂无行，已改为<strong>原始日志抽样</strong>。当前<strong>大盘 API 进程</strong>未检测到环境变量
-          <code>TRAFFIC_ROLLUP_ENABLED</code>（定时任务所在 Pod 单独配置无效）；请在<strong>运行 Django/Gunicorn 的 Deployment</strong>与<strong>写入日志/ingest 的进程</strong>均开启该变量，并定时
-          <code>traffic_rollup_flush</code>。
-        </p>
-        <p v-else-if="overview.rollup_fallback" class="rollup-hint rollup-hint--info">
-          本时间窗内<strong>分钟聚合表暂无数据</strong>，已自动使用原始日志抽样（受「拉取行数」上限）。若已配置
-          <code>TRAFFIC_ROLLUP_ENABLED</code> 与 <code>traffic_rollup_flush</code>，请核对：ingest 与大盘是否<strong>同一 Redis</strong>、flush 是否写入<strong>当前应用连接的数据库</strong>、所选数据源与 rollup 的
-          <code>source_id</code> 是否一致。
-        </p>
-        <p v-else-if="overview.minute_rollup" class="rollup-hint">
-          默认<strong>分钟聚合</strong>（Postgres / ClickHouse），长区间不扫原始日志，避免网关超时。慢接口与 Top IP 仅在开启「原始日志明细」后有数据（该模式可能较慢）。
-          需 <code>TRAFFIC_ROLLUP_ENABLED=1</code> 与定时 <code>traffic_rollup_flush</code>。
-        </p>
-        <p v-if="overview.rollup_empty_hint" class="rollup-hint rollup-hint--warn">
-          {{ overview.rollup_empty_hint }}
-        </p>
-        <p
-          v-else-if="
-            overview.log_configured &&
-            (overview.total_requests === 0 || overview.total_requests == null)
-          "
-          class="rollup-hint rollup-hint--info"
-        >
-          当前时间窗暂无请求样本（与 ai-ops 运营台类似，需有有效访问日志或分钟聚合）。请确认：数据源选
-          <strong>全部</strong> 或某一站点的 <code>id</code> 与 go-log-collector 的
-          <code>stream_key</code> 一致；分钟聚合需 <code>TRAFFIC_ROLLUP_ENABLED</code>、ingest 与
-          <code>traffic_rollup_flush</code> 使用同一 Redis / 数据库。
-        </p>
       </div>
       <div class="header-actions">
         <el-radio-group v-model="range" size="small" class="range-group" @change="onRangePresetChange">
@@ -1320,39 +1288,6 @@ onUnmounted(() => {
   margin: 4px 0 0;
   font-size: 14px;
   color: #64748b;
-}
-.rollup-hint {
-  margin: 8px 0 0;
-  font-size: 12px;
-  color: #64748b;
-  line-height: 1.5;
-  max-width: 720px;
-}
-.rollup-hint code {
-  font-size: 11px;
-  padding: 1px 4px;
-  background: rgba(148, 163, 184, 0.2);
-  border-radius: 4px;
-}
-.rollup-hint--warn {
-  color: #92400e;
-  background: #fffbeb;
-  padding: 8px 10px;
-  border-radius: 8px;
-  border: 1px solid #fcd34d;
-}
-.rollup-hint--warn code {
-  background: rgba(251, 191, 36, 0.25);
-}
-.rollup-hint--info {
-  color: #1e40af;
-  background: #eff6ff;
-  padding: 8px 10px;
-  border-radius: 8px;
-  border: 1px solid #bfdbfe;
-}
-.rollup-hint--info code {
-  background: rgba(59, 130, 246, 0.15);
 }
 .custom-range-picker {
   width: 320px;
