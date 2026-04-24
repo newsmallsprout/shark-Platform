@@ -250,8 +250,9 @@
                 class="ph-desc"
                 style="margin-top: 0"
               >
-                在右侧点击一行 Trace，将在此以「服务/中间件聚合」力导向图展示调用关系与耗时；同服务多
-                span 已收拢为单点，Redis/MQ/DB 等带对端信息的会单独成点。
+                在右侧点击一行 Trace，将按 <strong>父→子 span</strong> 画成
+                <strong>从左到右的调用树</strong>（一条 trace 的完整链路，可点击节点折叠）；力导向的「全连接网」在复杂 trace
+                下会误导，此处不再作为默认视图。
               </p>
               <p v-else-if="!selectedTraceId && jaegerDepItems.length" class="ph-desc">本时间窗服务间依赖：</p>
               <ul v-if="!selectedTraceId && jaegerDepItems.length" class="dep-list">
@@ -1260,11 +1261,96 @@ function disposeFlowGraph() {
   }
 }
 
+const TRACE_TREE_COLORS = ['#2563eb', '#059669', '#c2410c', '#0891b2', '#7c3aed', '#64748b']
+
+type TraceTreeNode = { name: string; value?: number; category?: number; children?: TraceTreeNode[] }
+
+function itemStyleForTraceTree(n: TraceTreeNode): Record<string, unknown> {
+  const c = n.category != null ? TRACE_TREE_COLORS[Math.min(5, Math.max(0, n.category))] : TRACE_TREE_COLORS[5]
+  const { children, ...rest } = n
+  const out: Record<string, unknown> = {
+    ...rest,
+    itemStyle: { color: c, borderColor: c, borderWidth: 1 },
+  }
+  if (children && children.length) {
+    out.children = children.map((ch) => itemStyleForTraceTree(ch))
+  }
+  return out
+}
+
 type TraceGraphPayload = {
+  tree?: { data: TraceTreeNode[] }
   nodes: { id: string; name: string; category: number; duration_ms: number; span_count?: number }[]
   links: { source: string; target: string; value?: number; label?: string }[]
   categories: { name: string }[]
   truncated?: boolean
+}
+
+function renderTraceTree(graph: TraceGraphPayload) {
+  const el = flowGraphEl.value
+  if (!el) {
+    flowGraphError.value = '图表容器未就绪'
+    return
+  }
+  const raw = graph.tree?.data
+  if (!raw || !raw.length) {
+    flowGraphError.value = '该 trace 无 span 数据'
+    return
+  }
+  const data = raw.map((n) => itemStyleForTraceTree(n)) as unknown[]
+  el.style.minHeight = '480px'
+  el.style.maxHeight = '75vh'
+  const c = echarts.init(el, 'shark-traffic')
+  const cats = graph.categories || [
+    { name: 'http' },
+    { name: 'db' },
+    { name: 'redis' },
+    { name: 'mongo' },
+    { name: 'mq' },
+    { name: 'other' },
+  ]
+  c.setOption(
+    {
+      animationDuration: 220,
+      tooltip: { trigger: 'item', confine: true, triggerOn: 'mousemove' },
+      legend: { data: cats.map((x) => x.name), bottom: 2, type: 'scroll' },
+      series: [
+        {
+          type: 'tree',
+          data,
+          top: 10,
+          left: 60,
+          right: 100,
+          bottom: 40,
+          layout: 'orthogonal',
+          orient: 'LR',
+          symbol: 'roundRect',
+          symbolSize: 8,
+          initialTreeDepth: 16,
+          expandAndCollapse: true,
+          edgeShape: 'polyline',
+          lineStyle: { color: '#cbd5e1', width: 1.1 },
+          label: {
+            position: 'left',
+            align: 'right',
+            verticalAlign: 'middle',
+            fontSize: 9,
+            lineHeight: 12,
+            color: '#334155',
+            width: 200,
+            overflow: 'truncate',
+          },
+          leaves: { label: { position: 'right', align: 'left', verticalAlign: 'middle' } },
+          emphasis: { focus: 'descendant' },
+        },
+      ],
+    },
+    { notMerge: true }
+  )
+  flowGraphChart = c
+  c.resize()
+  setTimeout(() => c.resize(), 100)
+  window.addEventListener('resize', onFlowGraphResize)
 }
 
 function renderTraceForceGraph(graph: TraceGraphPayload) {
@@ -1346,12 +1432,17 @@ function renderFlowGraph(graph: TraceGraphPayload) {
     flowGraphError.value = '图表容器未就绪'
     return
   }
-  if (!graph?.nodes?.length) {
+  const hasTree = graph.tree && Array.isArray(graph.tree.data) && graph.tree.data.length > 0
+  if (!hasTree && !graph?.nodes?.length) {
     flowGraphError.value = '该 trace 无 span 数据'
     return
   }
   disposeFlowGraph()
-  renderTraceForceGraph(graph)
+  if (hasTree) {
+    renderTraceTree(graph)
+  } else {
+    renderTraceForceGraph(graph)
+  }
 }
 
 function onFlowGraphResize() {
@@ -1380,13 +1471,15 @@ async function loadTraceForSelection(tid: string) {
     const res = (await trafficApi.jaegerTraceDetail(tid)) as {
       ok?: boolean
       error?: string
-      graph?: { nodes: any[]; links: any[]; categories: any[]; truncated?: boolean }
+      graph?: { tree?: { data: unknown[] }; nodes: any[]; links: any[]; categories: any[]; truncated?: boolean }
     }
     if (res == null || res.ok === false) {
       flowGraphError.value = res?.error || '加载失败'
       return
     }
-    if (!res.graph || !res.graph.nodes?.length) {
+    const g = res.graph
+    const hasTree = g?.tree && Array.isArray(g.tree.data) && g.tree.data.length > 0
+    if (!g || (!hasTree && !g?.nodes?.length)) {
       flowGraphError.value = '该 trace 无 span 数据'
       return
     }

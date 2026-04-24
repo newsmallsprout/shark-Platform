@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections import defaultdict
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
@@ -14,6 +15,7 @@ logger = logging.getLogger(__name__)
 _MAX_SPANS_IN = 400
 _MAX_GRAPH_NODES = 80
 _MAX_GRAPH_LINKS = 200
+_MAX_TREE_NODES = 260
 
 
 def _tag_map(sp: dict) -> Dict[str, str]:
@@ -202,14 +204,105 @@ def _build_collapsed_graph(
     return nodes_list, ulinks
 
 
+def _build_children_map(by_id: Dict[str, dict]) -> Dict[str, List[str]]:
+    ch: Dict[str, List[str]] = defaultdict(list)
+    for sid, s in by_id.items():
+        p = _parent_id(s)
+        if p and p in by_id:
+            ch[p].append(sid)
+    for p in ch:
+        ch[p].sort(key=lambda x: int(by_id[x].get("startTime", 0) or 0))
+    return dict(ch)
+
+
+def _tree_roots(by_id: Dict[str, dict]) -> List[str]:
+    roots: List[str] = []
+    for sid, s in by_id.items():
+        p = _parent_id(s)
+        if not p or p not in by_id:
+            roots.append(sid)
+    roots.sort(key=lambda x: int(by_id[x].get("startTime", 0) or 0))
+    if not roots and by_id:
+        roots = [min(by_id.keys(), key=lambda x: int(by_id[x].get("startTime", 0) or 0))]
+    return roots
+
+
+def _span_tree_node(
+    sid: str,
+    by_id: Dict[str, dict],
+    processes: Any,
+    children_map: Dict[str, List[str]],
+    state: Dict[str, int],
+) -> Dict[str, Any]:
+    """
+    每个 span 树上一格，严格父子顺序 = 整条调用链路；与力导向「全连接」不同。
+    """
+    if state["n"] >= _MAX_TREE_NODES:
+        return {
+            "name": f"… 已截断（>{_MAX_TREE_NODES} 点）",
+            "value": 0.0,
+            "category": 5,
+        }
+    state["n"] += 1
+    s = by_id[sid]
+    svc = _service_of(s, processes)
+    op = str(s.get("operationName") or "")
+    if len(op) > 72:
+        op = op[:69] + "…"
+    dur = int(s.get("duration", 0)) / 1000.0
+    tg = _tag_map(s)
+    _, cat = _infer_category(tg, svc, op)
+    peer = _peer_line(tg)
+    line1 = svc
+    if peer:
+        line1 = f"{svc} → {peer[:40]}"
+    name = f"{line1}\n{op}\n{round(dur, 3)} ms"
+    node: Dict[str, Any] = {
+        "name": name,
+        "value": round(dur, 4),
+        "category": int(cat),
+    }
+    kids = children_map.get(sid) or []
+    if not kids:
+        return node
+    children: List[Dict[str, Any]] = []
+    for cid in kids:
+        children.append(_span_tree_node(cid, by_id, processes, children_map, state))
+    node["children"] = children
+    return node
+
+
+def _build_trace_tree_data(by_id: Dict[str, dict], processes: Any) -> List[Dict[str, Any]]:
+    if not by_id:
+        return []
+    cm = _build_children_map(by_id)
+    roots = _tree_roots(by_id)
+    state = {"n": 0}
+    if len(roots) == 1:
+        return [_span_tree_node(roots[0], by_id, processes, cm, state)]
+    ch: List[Dict[str, Any]] = []
+    for r in roots:
+        ch.append(_span_tree_node(r, by_id, processes, cm, state))
+    return [
+        {
+            "name": f"本 Trace\n({len(roots)} 个根 span)",
+            "value": 0.0,
+            "category": 5,
+            "children": ch,
+        }
+    ]
+
+
 def build_trace_graph_payload(t: dict) -> Dict[str, Any]:
     """
-    输出: { nodes, links, categories, truncated } — 力导向蛛网，节点已按服务/中间件聚合。
+    主视图: tree.data = ECharts tree，按 span 父子一条链式展开，易读。
+    另附 nodes/links 为服务聚合简图（可选/兼容）；前端优先画树。
     """
     processes = t.get("processes") or {}
     spans = t.get("spans") or []
     if not isinstance(spans, list) or not spans:
         return {
+            "tree": {"data": []},
             "nodes": [],
             "links": [],
             "categories": [
@@ -236,9 +329,10 @@ def build_trace_graph_payload(t: dict) -> Dict[str, Any]:
             continue
         by_id[sid] = s
 
+    tree_data = _build_trace_tree_data(by_id, processes)
     nodes, ulinks = _build_collapsed_graph(by_id, processes, list(by_id.values()))
-
     return {
+        "tree": {"data": tree_data},
         "nodes": nodes,
         "links": ulinks,
         "categories": [
