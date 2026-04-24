@@ -1,7 +1,7 @@
 """
-从 Jaeger UI JSON 的一条 Trace 构造成「(span 为节点、父子为边)」的链路图数据，供 ECharts graph 使用。
+从 Jaeger UI JSON 的一条 Trace 构造成 ECharts graph（力导向）数据。
 
-中间件（Redis、各类 DB、MQ 等）通常体现为子 span 或带 db.system / peer 等 tag，会单独成节点并归类着色。
+节点按「服务 + 中间件/对端」聚合成少量点，同服务多 span 收拢；DB/Redis/MQ 等带 peer 的 span 单独成点，避免蛛网爆炸。
 """
 from __future__ import annotations
 
@@ -11,7 +11,9 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
-_MAX_NODES = 400
+_MAX_SPANS_IN = 400
+_MAX_GRAPH_NODES = 80
+_MAX_GRAPH_LINKS = 200
 
 
 def _tag_map(sp: dict) -> Dict[str, str]:
@@ -86,102 +88,123 @@ def _service_of(s: dict, processes: Any) -> str:
     return (pr.get("serviceName") or "?")[:64]
 
 
-def _build_waterfall_payload(by_id: Dict[str, dict], processes: Any) -> Dict[str, Any]:
+def _graph_node_id(s: dict, processes: Any) -> Tuple[str, int, str]:
     """
-    按调用树前序遍历，一行一个 span，横轴为相对 trace 起点的毫秒，便于用 Gantt/瀑布图人类阅读。
+    聚合同一服务为单点；中间件/存储用 peer 拆成独立点，便于蛛网可读。
+    返回 (node_id, category, 展示名多行).
     """
-    if not by_id:
-        return {"rows": [], "trace_duration_ms": 0.0}
-    t_starts: List[int] = []
-    t_ends: List[int] = []
-    for s in by_id.values():
-        st = int(s.get("startTime", 0) or 0)
-        du = int(s.get("duration", 0) or 0)
-        t_starts.append(st)
-        t_ends.append(st + max(0, du))
-    t_min = min(t_starts) if t_starts else 0
-    t_max = max(t_ends) if t_ends else t_min
-    trace_duration_ms = (t_max - t_min) / 1000.0 if t_max >= t_min else 0.0
-    if trace_duration_ms <= 0 and by_id:
-        trace_duration_ms = max(0.001, max(int(s.get("duration", 0) or 0) for s in by_id.values()) / 1000.0)
-
-    children: Dict[str, List[str]] = {}
-    roots: List[str] = []
-    for sid, s in by_id.items():
-        p = _parent_id(s)
-        if p and p in by_id:
-            children.setdefault(p, []).append(sid)
-        else:
-            roots.append(sid)
-
-    def cstart(x: str) -> int:
-        return int(by_id[x].get("startTime", 0) or 0)
-
-    for p in list(children.keys()):
-        children[p].sort(key=cstart)
-    roots.sort(key=cstart)
-    if not roots:
-        roots = sorted(by_id.keys(), key=cstart)
-
-    rows: List[Dict[str, Any]] = []
-    y_index = 0
-
-    def walk(sid: str, depth: int) -> None:
-        nonlocal y_index
-        s = by_id[sid]
-        op = s.get("operationName") or "span"
-        if len(str(op)) > 120:
-            op = str(op)[:117] + "..."
-        svc = _service_of(s, processes)
-        tg = _tag_map(s)
-        _kind, cat = _infer_category(tg, svc, str(op))
-        peer = _peer_line(tg)
-        dur = int(s.get("duration", 0)) / 1000.0
-        st0 = int(s.get("startTime", 0) or 0)
-        start_ms = (st0 - t_min) / 1000.0
-        end_ms = start_ms + max(0.0, dur)
-        d_show = min(depth, 12)
-        indent = "· " * d_show
-        op_short = (str(op) if len(str(op)) <= 56 else str(op)[:53] + "…")
+    svc = _service_of(s, processes)
+    op = str(s.get("operationName") or "")
+    if len(op) > 80:
+        op = op[:77] + "..."
+    tg = _tag_map(s)
+    kind, cat = _infer_category(tg, svc, op)
+    peer = _peer_line(tg)
+    if kind in ("db", "redis", "mongo", "mq"):
         if peer:
-            label = f"{indent}{svc} – {op_short}  ({peer})"
+            nid = f"ext:{kind}:{peer[:72]}"
+            name = f"{peer}\n{kind}"
         else:
-            label = f"{indent}{svc} – {op_short}"
-        if len(label) > 100:
-            label = label[:97] + "…"
-        rows.append(
-            {
-                "y_index": y_index,
-                "depth": depth,
-                "span_id": sid,
-                "start_ms": round(start_ms, 4),
-                "end_ms": round(end_ms, 4),
+            nid = f"{svc}::{kind}"
+            name = f"{svc}\n({kind})"
+        return nid, cat, name
+    nid = f"srv:{svc}"
+    return nid, cat, svc
+
+
+def _build_collapsed_graph(
+    by_id: Dict[str, dict], processes: Any, spans: List[dict]
+) -> Tuple[List[dict], List[dict]]:
+    """同服务/同对端合并为少量节点与边；边上累计调用次数与最大子 span 耗时。"""
+    node_acc: Dict[str, Dict[str, Any]] = {}
+    for s in spans:
+        if not isinstance(s, dict):
+            continue
+        sid = str(s.get("spanID", ""))
+        if not sid:
+            continue
+        nid, cat, label = _graph_node_id(s, processes)
+        dur = int(s.get("duration", 0)) / 1000.0
+        if nid not in node_acc:
+            node_acc[nid] = {
+                "id": nid,
+                "name": label,
+                "category": int(cat),
                 "duration_ms": round(dur, 4),
+                "span_count": 1,
+            }
+        else:
+            a = node_acc[nid]
+            a["duration_ms"] = round(max(float(a["duration_ms"]), dur), 4)
+            a["span_count"] = int(a["span_count"]) + 1
+
+    link_m: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for s in spans:
+        if not isinstance(s, dict):
+            continue
+        p = _parent_id(s)
+        if not p or p not in by_id:
+            continue
+        k1 = _graph_node_id(by_id[p], processes)[0]
+        k2 = _graph_node_id(s, processes)[0]
+        if k1 == k2:
+            continue
+        dur = int(s.get("duration", 0)) / 1000.0
+        t = (k1, k2)
+        if t not in link_m:
+            link_m[t] = {"max_ms": dur, "count": 1, "sum_ms": dur}
+        else:
+            lm = link_m[t]
+            lm["count"] = int(lm["count"]) + 1
+            lm["max_ms"] = max(float(lm["max_ms"]), dur)
+            lm["sum_ms"] = float(lm["sum_ms"]) + dur
+
+    # 截断：边数优先截断（按 max_ms 降序保留）
+    link_items = sorted(link_m.items(), key=lambda x: -x[1]["max_ms"])
+    if len(link_items) > _MAX_GRAPH_LINKS:
+        link_items = link_items[:_MAX_GRAPH_LINKS]
+    used_ids: Set[str] = set()
+    ulinks: List[dict] = []
+    for (a, b), lm in link_items:
+        used_ids.add(a)
+        used_ids.add(b)
+        cnt = int(lm["count"])
+        mx = round(float(lm["max_ms"]), 3)
+        sm = round(float(lm["sum_ms"]), 2)
+        label = f"{cnt}× max {mx}ms"
+        if cnt > 1:
+            label += f"\nΣ {sm}ms"
+        ulinks.append(
+            {
+                "source": a,
+                "target": b,
+                "value": mx,
                 "label": label,
-                "service": svc,
-                "operation": op,
-                "peer": peer,
-                "kind": _kind,
-                "category": cat,
             }
         )
-        y_index += 1
-        for c in children.get(sid, []):
-            walk(c, depth + 1)
 
-    for r in roots:
-        walk(r, 0)
+    nodes_list = list(node_acc.values())
+    nodes_list.sort(
+        key=lambda x: -float(x.get("duration_ms", 0) or 0) * max(1, int(x.get("span_count", 1) or 1))
+    )
+    if len(nodes_list) > _MAX_GRAPH_NODES:
+        keep = {n["id"] for n in nodes_list[:_MAX_GRAPH_NODES]}
+        nodes_list = [n for n in node_acc.values() if n["id"] in keep]
+        ulinks = [x for x in ulinks if x["source"] in keep and x["target"] in keep]
 
-    return {
-        "rows": rows,
-        "trace_duration_ms": round(float(trace_duration_ms), 3),
-    }
+    for n in nodes_list:
+        sc = int(n.get("span_count") or 1)
+        if sc > 1:
+            n["name"] = f"{n['name']}\n{sc} spans · max {n['duration_ms']} ms"
+        else:
+            n["name"] = f"{n['name']}\n{n['duration_ms']} ms"
+
+    return nodes_list, ulinks
 
 
 def build_trace_graph_payload(t: dict) -> Dict[str, Any]:
     """
-    输入: Jaeger /api/traces/{id} 返回的 trace 单条 (UI JSON，含 processes + spans)
-    输出: { nodes: [...], links: [...], categories: [...] }
+    输出: { nodes, links, categories, truncated } — 力导向蛛网，节点已按服务/中间件聚合。
     """
     processes = t.get("processes") or {}
     spans = t.get("spans") or []
@@ -190,22 +213,19 @@ def build_trace_graph_payload(t: dict) -> Dict[str, Any]:
             "nodes": [],
             "links": [],
             "categories": [
-                {"name": "http"},
-                {"name": "db"},
+                {"name": "http/rpc"},
+                {"name": "db/sql"},
                 {"name": "redis"},
                 {"name": "mongo"},
                 {"name": "mq"},
                 {"name": "other"},
             ],
             "truncated": False,
-            "waterfall": {"rows": [], "trace_duration_ms": 0.0},
         }
 
-    if len(spans) > _MAX_NODES:
-        spans = spans[:_MAX_NODES]
-        truncated = True
-    else:
-        truncated = False
+    truncated = len(spans) > _MAX_SPANS_IN
+    if truncated:
+        spans = spans[:_MAX_SPANS_IN]
 
     by_id: Dict[str, dict] = {}
     for s in spans:
@@ -216,70 +236,7 @@ def build_trace_graph_payload(t: dict) -> Dict[str, Any]:
             continue
         by_id[sid] = s
 
-    def svc_of(s: dict) -> str:
-        pid = s.get("processID") or s.get("processId") or "p1"
-        pr = processes.get(pid) if isinstance(processes, dict) else None
-        if not isinstance(pr, dict):
-            return "?"
-        return (pr.get("serviceName") or "?")[:64]
-
-    nodes: List[dict] = []
-    links: List[dict] = []
-    seen: Set[str] = set()
-
-    for s in spans:
-        if not isinstance(s, dict):
-            continue
-        sid = str(s.get("spanID", ""))
-        if not sid or sid in seen:
-            continue
-        seen.add(sid)
-        op = s.get("operationName") or "span"
-        if len(str(op)) > 100:
-            op = str(op)[:97] + "..."
-        svc = svc_of(s)
-        tg = _tag_map(s)
-        _kind, cat = _infer_category(tg, svc, str(op))
-        peer = _peer_line(tg)
-        dur = int(s.get("duration", 0)) / 1000.0
-        title = f"{svc}"
-        if peer:
-            title = f"{svc} → {peer}"
-        name_lines = f"{title}\n{op}\n{round(dur, 3)} ms"
-        nodes.append(
-            {
-                "id": sid,
-                "name": name_lines,
-                "title": title,
-                "operation": op,
-                "service": svc,
-                "peer": peer,
-                "duration_ms": round(dur, 4),
-                "kind": _kind,
-                "category": cat,
-            }
-        )
-        p = _parent_id(s)
-        if p and p in by_id:
-            links.append(
-                {
-                    "source": p,
-                    "target": sid,
-                    "value": round(dur, 4),
-                }
-            )
-
-    # 去重边
-    uq = set()
-    ulinks = []
-    for l in links:
-        k = (l["source"], l["target"])
-        if k in uq:
-            continue
-        uq.add(k)
-        ulinks.append(l)
-
-    wf = _build_waterfall_payload(by_id, processes)
+    nodes, ulinks = _build_collapsed_graph(by_id, processes, list(by_id.values()))
 
     return {
         "nodes": nodes,
@@ -293,7 +250,6 @@ def build_trace_graph_payload(t: dict) -> Dict[str, Any]:
             {"name": "other"},
         ],
         "truncated": truncated,
-        "waterfall": wf,
     }
 
 

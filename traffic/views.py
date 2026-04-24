@@ -371,7 +371,7 @@ def traffic_jaeger_traces(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def traffic_jaeger_trace_detail(request, trace_id: str):
-    """单条 trace：含 span 级 nodes+links，以及时间线瀑布图 waterfall 数据（前端主视图）。"""
+    """单条 trace：服务/中间件聚合的力导向图 nodes+links（前端主视图）。"""
     from .services.jaeger_query import get_trace_by_id, jaeger_configured
     from .services.jaeger_trace_graph import build_trace_graph_payload, sanitize_trace_id
 

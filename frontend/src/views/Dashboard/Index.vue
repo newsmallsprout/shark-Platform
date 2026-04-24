@@ -181,7 +181,7 @@
         </el-row>
       </el-tab-pane>
 
-      <el-tab-pane label="请求流转" name="flow">
+      <el-tab-pane label="请求流转" name="flow" lazy>
         <el-alert
           v-if="jaegerError"
           type="warning"
@@ -239,14 +239,6 @@
                 >
               </div>
               <p v-if="flowGraphError" class="ph-desc flow-graph-err">{{ flowGraphError }}</p>
-              <p
-                v-else-if="selectedTraceId"
-                class="ph-desc flow-waterfall-hint"
-                style="margin: 0 0 6px; font-size: 12px; color: #64748b"
-              >
-                时间轴 = 自本 trace 最早 span 起算的毫秒；自上而下为「父 → 子」调用；横条长度 = 该
-                span 自身耗时。可拖动下方/侧方缩放条、框选放大。颜色表示类型（同图例）。
-              </p>
               <div
                 v-show="selectedTraceId && !flowGraphError"
                 v-loading="flowGraphLoading"
@@ -258,8 +250,8 @@
                 class="ph-desc"
                 style="margin-top: 0"
               >
-                在右侧点击一行 Trace，将在此以「时间线瀑布图」展示每段 span
-                的先后与自身耗时，不再使用难读的力导向网；支持 Redis、MQ、DB 等子 span/标签展示。
+                在右侧点击一行 Trace，将在此以「服务/中间件聚合」力导向图展示调用关系与耗时；同服务多
+                span 已收拢为单点，Redis/MQ/DB 等带对端信息的会单独成点。
               </p>
               <p v-else-if="!selectedTraceId && jaegerDepItems.length" class="ph-desc">本时间窗服务间依赖：</p>
               <ul v-if="!selectedTraceId && jaegerDepItems.length" class="dep-list">
@@ -858,9 +850,23 @@ async function ensureMapChart(soft: boolean, anim: number) {
   }
 }
 
+/** 热力地图依赖 GeoJSON，放到 idle 再画，避免阻塞首屏与其它图表。 */
+function scheduleMapRender(soft: boolean, anim: number) {
+  const run = () => {
+    void ensureMapChart(soft, anim)
+  }
+  const ric = (window as unknown as { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number })
+    .requestIdleCallback
+  if (typeof ric === 'function') {
+    ric(run, { timeout: 500 })
+  } else {
+    window.setTimeout(run, 80)
+  }
+}
+
 async function renderMainCharts(opts?: { soft?: boolean }) {
   const soft = opts?.soft === true
-  const anim = soft ? 120 : 320
+  const anim = soft ? 100 : 220
   if (!soft) {
     disposeMainChartsOnly()
   }
@@ -1035,7 +1041,7 @@ async function renderMainCharts(opts?: { soft?: boolean }) {
     )
   }
 
-  await ensureMapChart(soft, anim)
+  scheduleMapRender(soft, anim)
 }
 
 function updateKpiText() {
@@ -1254,152 +1260,11 @@ function disposeFlowGraph() {
   }
 }
 
-const WF_COLORS = ['#2563eb', '#059669', '#c2410c', '#0891b2', '#7c3aed', '#64748b']
-
 type TraceGraphPayload = {
-  nodes: { id: string; name: string; category: number; duration_ms: number }[]
-  links: { source: string; target: string; value?: number }[]
+  nodes: { id: string; name: string; category: number; duration_ms: number; span_count?: number }[]
+  links: { source: string; target: string; value?: number; label?: string }[]
   categories: { name: string }[]
   truncated?: boolean
-  waterfall?: {
-    rows: {
-      y_index: number
-      start_ms: number
-      end_ms: number
-      duration_ms: number
-      label: string
-      service: string
-      operation: string
-      category: number
-      span_id: string
-      peer: string
-    }[]
-    trace_duration_ms: number
-  }
-}
-
-function renderTraceWaterfall(graph: TraceGraphPayload) {
-  const el = flowGraphEl.value
-  if (!el) {
-    flowGraphError.value = '图表容器未就绪'
-    return
-  }
-  const w = graph.waterfall
-  if (!w?.rows?.length) {
-    flowGraphError.value = '该 trace 无 span 数据'
-    return
-  }
-  const rows = w.rows
-  const labels = rows.map((r) => r.label)
-  const data = rows.map((r) => [r.y_index, r.start_ms, r.end_ms, r.duration_ms, r.category, r.service, r.operation, r.span_id, r.peer || ''])
-  const n = rows.length
-  const h = Math.min(Math.max(380, 20 * n + 120), 12000)
-  el.style.width = '100%'
-  el.style.minHeight = `${h}px`
-  const xmax = Math.max(
-    w.trace_duration_ms || 0,
-    ...rows.map((r) => r.end_ms)
-  ) * 1.04 + 0.05
-  const cats = graph.categories || [
-    { name: 'http' },
-    { name: 'db' },
-    { name: 'redis' },
-    { name: 'mongo' },
-    { name: 'mq' },
-    { name: 'other' },
-  ]
-  const c = echarts.init(el, 'shark-traffic')
-  c.setOption(
-    {
-      color: WF_COLORS,
-      tooltip: {
-        confine: true,
-        enterable: true,
-        trigger: 'item',
-        formatter(t: { dataIndex?: number }): string {
-          const r = t.dataIndex != null ? rows[t.dataIndex] : undefined
-          if (!r) return ''
-          const peer = r.peer ? `<div class="tt-peer">对端: ${escapeHtml(r.peer)}</div>` : ''
-          return [
-            `<div class="tt-svc" style="font-weight:600">${escapeHtml(r.service)}</div>`,
-            `<div class="tt-op">${escapeHtml(r.operation)}</div>`,
-            peer,
-            `<div style="margin-top:4px;opacity:0.9">自身耗时: <b>${Number(r.duration_ms).toFixed(3)}</b> ms &nbsp;·&nbsp; span: <code style="font-size:11px">${escapeHtml(r.span_id)}</code></div>`,
-          ].join('')
-        },
-      },
-      legend: { data: cats.map((x) => x.name), bottom: 4, type: 'scroll' },
-      dataZoom: [
-        { type: 'inside', xAxisIndex: 0, filterMode: 'none' },
-        { type: 'slider', xAxisIndex: 0, height: 20, bottom: 36, filterMode: 'none' },
-        { type: 'inside', yAxisIndex: 0, filterMode: 'none' },
-        { type: 'slider', yAxisIndex: 0, width: 18, right: 10, filterMode: 'filter' },
-      ],
-      grid: { left: 4, right: 34, top: 28, bottom: 100, containLabel: true },
-      xAxis: {
-        type: 'value',
-        name: '相对 trace 起点的毫秒 (ms)',
-        nameTextStyle: { fontSize: 11, color: '#64748b' },
-        min: 0,
-        max: Math.max(0.2, xmax),
-        splitLine: { show: true, lineStyle: { type: 'dashed', opacity: 0.35 } },
-        axisLabel: { fontSize: 10 },
-      },
-      yAxis: {
-        type: 'category',
-        data: labels,
-        inverse: true,
-        triggerEvent: true,
-        axisLine: { show: false },
-        axisTick: { show: false },
-        splitLine: { show: true, lineStyle: { type: 'dashed', opacity: 0.2 } },
-        axisLabel: { fontSize: 10, lineHeight: 16, color: '#475569', width: 280, overflow: 'truncate' },
-      },
-      series: [
-        {
-          type: 'custom',
-          name: 'spans',
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          renderItem: (_p: any, api: any) => {
-            const i = Number(api.value(0))
-            const t0 = Number(api.value(1))
-            let t1 = Number(api.value(2))
-            if (!(t1 > t0)) t1 = t0 + 0.05
-            const cat = Math.min(5, Math.max(0, Math.floor(Number(api.value(4)) || 0)))
-            const s0 = api.coord([t0, i])
-            const s1 = api.coord([t1, i])
-            if (!s0 || !s1) {
-              return { type: 'group', children: [] }
-            }
-            const barH = 12
-            const x = s0[0]
-            const yc = s0[1]
-            const wpx = Math.max(1, s1[0] - s0[0])
-            return {
-              type: 'rect',
-              shape: { x, y: yc - barH / 2, width: wpx, height: barH, r: 1 },
-              style: { fill: WF_COLORS[cat], opacity: 0.92 },
-            }
-          },
-          dimensions: ['y', 't0', 't1', 'ms', 'cat', 'svc', 'op', 'id', 'peer'],
-          data: data,
-        },
-      ],
-    },
-    { notMerge: true }
-  )
-  flowGraphChart = c
-  c.resize()
-  setTimeout(() => c.resize(), 200)
-  window.addEventListener('resize', onFlowGraphResize)
-}
-
-function escapeHtml(s: string) {
-  return (s || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
 }
 
 function renderTraceForceGraph(graph: TraceGraphPayload) {
@@ -1413,6 +1278,7 @@ function renderTraceForceGraph(graph: TraceGraphPayload) {
     return
   }
   el.style.minHeight = '420px'
+  el.style.maxHeight = '72vh'
   const c = echarts.init(el, 'shark-traffic')
   const cats = graph.categories || [
     { name: 'http' },
@@ -1423,6 +1289,7 @@ function renderTraceForceGraph(graph: TraceGraphPayload) {
     { name: 'other' },
   ]
   c.setOption({
+    animationDuration: 200,
     tooltip: { trigger: 'item' },
     legend: { data: cats.map((x) => x.name), bottom: 0, type: 'scroll' },
     series: [
@@ -1435,16 +1302,33 @@ function renderTraceForceGraph(graph: TraceGraphPayload) {
           name: n.name,
           category: n.category,
           value: n.duration_ms,
-          symbolSize: 12 + Math.min(20, Math.log1p(Number(n.duration_ms) || 0) * 3),
+          symbolSize: 16 + Math.min(28, Math.log1p(Number(n.duration_ms) || 0) * 4),
         })),
         links: (graph.links || []).map((l) => ({
           source: l.source,
           target: l.target,
+          value: l.value,
+          lineStyle: {
+            width: 1.2 + Math.min(4, Math.log1p(Number(l.value) || 0) / 2),
+            curveness: 0.12,
+          },
+          label: {
+            show: (graph.nodes?.length || 0) < 35,
+            fontSize: 9,
+            color: '#64748b',
+            formatter: l.label || '',
+          },
         })),
-        label: { show: true, fontSize: 9, lineHeight: 12 },
-        lineStyle: { color: 'source', curveness: 0.15, width: 1.1 },
-        emphasis: { focus: 'adjacency' },
-        force: { repulsion: 240, edgeLength: [50, 200], gravity: 0.1, layoutAnimation: true },
+        label: { show: true, fontSize: 10, lineHeight: 13, color: '#334155' },
+        lineStyle: { color: 'source', curveness: 0.12, opacity: 0.75 },
+        emphasis: { focus: 'adjacency', scale: true },
+        force: {
+          repulsion: 320,
+          edgeLength: [64, 220],
+          gravity: 0.12,
+          friction: 0.62,
+          layoutAnimation: false,
+        },
         roam: true,
         draggable: true,
       },
@@ -1452,7 +1336,7 @@ function renderTraceForceGraph(graph: TraceGraphPayload) {
   })
   flowGraphChart = c
   c.resize()
-  setTimeout(() => c.resize(), 200)
+  setTimeout(() => c.resize(), 100)
   window.addEventListener('resize', onFlowGraphResize)
 }
 
@@ -1467,11 +1351,7 @@ function renderFlowGraph(graph: TraceGraphPayload) {
     return
   }
   disposeFlowGraph()
-  if (graph.waterfall && graph.waterfall.rows && graph.waterfall.rows.length > 0) {
-    renderTraceWaterfall(graph)
-  } else {
-    renderTraceForceGraph(graph)
-  }
+  renderTraceForceGraph(graph)
 }
 
 function onFlowGraphResize() {
@@ -1528,7 +1408,7 @@ async function refreshJaegerTraces() {
   try {
     const r = range.value
     const p: { range?: string; start?: string; end?: string; service?: string; limit?: string } = {
-      limit: '100',
+      limit: '40',
     }
     if (jaegerService.value) p.service = jaegerService.value
     if (r === 'custom' && customTimeRange.value && customTimeRange.value.length === 2) {
@@ -1606,7 +1486,17 @@ async function loadAll(silent = false) {
     updateKpiText()
     await nextTick()
     updateKpiCharts(silent)
-    await renderMainCharts({ soft: silent })
+    if (typeof requestAnimationFrame === 'function') {
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            void renderMainCharts({ soft: silent }).then(() => resolve())
+          })
+        })
+      })
+    } else {
+      await renderMainCharts({ soft: silent })
+    }
   } catch {
     /* request interceptor */
   } finally {
@@ -1678,6 +1568,9 @@ watch(traceIdFilter, () => {
 
 watch(mainTab, (t) => {
   if (t === 'flow') void refreshJaegerTraces()
+  if (t === 'trend') {
+    void nextTick(() => onResize())
+  }
 })
 
 onMounted(async () => {
