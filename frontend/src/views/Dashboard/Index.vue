@@ -250,9 +250,8 @@
                 class="ph-desc"
                 style="margin-top: 0"
               >
-                在右侧点击一行 Trace，将按 <strong>父→子 span</strong> 画成
-                <strong>从左到右的调用树</strong>（一条 trace 的完整链路，可点击节点折叠）；力导向的「全连接网」在复杂 trace
-                下会误导，此处不再作为默认视图。
+                点选 trace 后显示 <strong>向下展开的调用树</strong>；默认只展开
+                2 层，点节点再展开，悬停看完整 op。可<strong>拖动画布/滚轮缩放</strong>。图上仅一行标签，减少叠字。
               </p>
               <p v-else-if="!selectedTraceId && jaegerDepItems.length" class="ph-desc">本时间窗服务间依赖：</p>
               <ul v-if="!selectedTraceId && jaegerDepItems.length" class="dep-list">
@@ -326,7 +325,7 @@
             <strong>go-log-collector</strong>：<code>POST {{ cfgForm.edge_ingest_path || '/api/edge/logs' }}</code>，请求头
             <code>X-Shark-Edge-Token: &lt;{{ cfgForm.edge_token_env || 'SHARK_EDGE_TOKEN' }}&gt;</code>（与中心环境变量一致；未设
             <code>SHARK_EDGE_TOKEN</code> 时可与 <code>TRAFFIC_INGEST_TOKEN</code> 相同）。Body 中
-            <code>stream_key</code> 与下表「多站点」的 <code>id</code> 对应；<code>log_format</code> 与下表每行「行解析」或全局格式一致。兼容旧方式：
+            <code>stream_key</code> 会出现在大盘数据源中（自动发现，无需在下方逐行配齐）；<code>log_format</code> 与下表每行「行解析」或全局格式一致。兼容旧方式：
             <code>POST /api/traffic/ingest</code> + Bearer
             <code>TRAFFIC_INGEST_TOKEN</code>。 Redis：
             <el-tag :type="cfgForm.redis_env_configured ? 'success' : 'danger'" size="small" class="ml-6">
@@ -368,12 +367,12 @@
         <el-form-item v-if="cfgForm.access_log_mode === 'file'" label="尾部读取字节">
           <el-input-number v-model="cfgForm.max_tail_bytes" :min="65536" :max="52428800" />
         </el-form-item>
-        <el-form-item label="多站点 / 域名">
+        <el-form-item label="多站点 / 域名（可选）">
           <div class="form-hint">
-            留空表示只用上方「单路径」或「单 Redis Key」。按域名拆日志时添加多行：唯一
-            <code>id</code>（与 go-log-collector 的 <code>stream_key</code> 一致）、显示名、以及文件模式填
-            <code>file_path</code>，Redis 模式填 <code>redis_key</code>。旧版
-            <code>POST /api/traffic/ingest?source=&lt;id&gt;</code> 或
+            一般<strong>留空</strong>即可：ingest 与分钟聚合会登记 <code>stream_key</code>，大盘下拉与 Redis List 键
+            <code>&lt;redis_log_key&gt;:&lt;id&gt;</code>（<code>TRAFFIC_REDIS_STREAM_LAYOUT=single</code> 时共用一个键）自动对齐。需要<strong>覆写</strong>某流的显示名、行解析、自定义
+            <code>file_path</code> / <code>redis_key</code> 时再在此添加行。旧版
+            <code>POST /api/traffic/ingest?source=&lt;id&gt;</code> 与
             <code>X-Traffic-Source: &lt;id&gt;</code> 仍有效。
           </div>
           <el-table :data="cfgForm.log_sources" border size="small" class="log-src-table">
@@ -1263,7 +1262,13 @@ function disposeFlowGraph() {
 
 const TRACE_TREE_COLORS = ['#2563eb', '#059669', '#c2410c', '#0891b2', '#7c3aed', '#64748b']
 
-type TraceTreeNode = { name: string; value?: number; category?: number; children?: TraceTreeNode[] }
+type TraceTreeNode = {
+  name: string
+  value?: number
+  category?: number
+  op_detail?: string
+  children?: TraceTreeNode[]
+}
 
 function itemStyleForTraceTree(n: TraceTreeNode): Record<string, unknown> {
   const c = n.category != null ? TRACE_TREE_COLORS[Math.min(5, Math.max(0, n.category))] : TRACE_TREE_COLORS[5]
@@ -1298,8 +1303,10 @@ function renderTraceTree(graph: TraceGraphPayload) {
     return
   }
   const data = raw.map((n) => itemStyleForTraceTree(n)) as unknown[]
-  el.style.minHeight = '480px'
-  el.style.maxHeight = '75vh'
+  el.style.minHeight = 'min(80vh, 640px)'
+  el.style.maxHeight = '80vh'
+  el.style.minWidth = '100%'
+  el.style.overflow = 'auto'
   const c = echarts.init(el, 'shark-traffic')
   const cats = graph.categories || [
     { name: 'http' },
@@ -1311,36 +1318,65 @@ function renderTraceTree(graph: TraceGraphPayload) {
   ]
   c.setOption(
     {
-      animationDuration: 220,
-      tooltip: { trigger: 'item', confine: true, triggerOn: 'mousemove' },
+      animationDuration: 180,
+      tooltip: {
+        trigger: 'item',
+        confine: true,
+        extraCssText: 'max-width:min(90vw,480px);white-space:pre-wrap;',
+        formatter: (p: { data?: { op_detail?: string; name?: string; value?: number } }) => {
+          const d = p.data as { op_detail?: string; name?: string; value?: number } | undefined
+          const t = d?.op_detail
+          const head = String(d?.name || '')
+          if (t) {
+            const body = String(t)
+              .replace(/&/g, '&amp;')
+              .replace(/</g, '&lt;')
+              .replace(/>/g, '&gt;')
+              .replace(/\n/g, '<br/>')
+            return (
+              '<div style="font-weight:600;margin-bottom:6px">' +
+              head.replace(/</g, '&lt;') +
+              '</div><div style="opacity:0.92;font-size:12px;line-height:1.45">' +
+              body +
+              '</div>'
+            )
+          }
+          return head.replace(/</g, '&lt;')
+        },
+      },
       legend: { data: cats.map((x) => x.name), bottom: 2, type: 'scroll' },
       series: [
         {
           type: 'tree',
           data,
-          top: 10,
-          left: 60,
-          right: 100,
-          bottom: 40,
+          top: 28,
+          left: 24,
+          right: 24,
+          bottom: 32,
           layout: 'orthogonal',
-          orient: 'LR',
-          symbol: 'roundRect',
-          symbolSize: 8,
-          initialTreeDepth: 16,
+          // TB: 子调用在下方、兄弟向左右排开，比 LR+竖向长串叠字可读得多
+          orient: 'TB',
+          symbol: 'emptyCircle',
+          symbolSize: 6,
+          initialTreeDepth: 2,
           expandAndCollapse: true,
+          roam: true,
+          nodeScaleRatio: 0.35,
           edgeShape: 'polyline',
-          lineStyle: { color: '#cbd5e1', width: 1.1 },
+          lineStyle: { color: '#94a3b8', width: 1.05 },
           label: {
-            position: 'left',
-            align: 'right',
-            verticalAlign: 'middle',
-            fontSize: 9,
-            lineHeight: 12,
-            color: '#334155',
-            width: 200,
+            position: 'top',
+            distance: 6,
+            fontSize: 10,
+            lineHeight: 13,
+            color: '#1e293b',
+            width: 320,
             overflow: 'truncate',
+            rotate: 0,
           },
-          leaves: { label: { position: 'right', align: 'left', verticalAlign: 'middle' } },
+          leaves: {
+            label: { position: 'right', align: 'left', fontSize: 10 },
+          },
           emphasis: { focus: 'descendant' },
         },
       ],

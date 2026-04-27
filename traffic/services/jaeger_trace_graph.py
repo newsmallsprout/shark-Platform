@@ -235,32 +235,42 @@ def _span_tree_node(
     state: Dict[str, int],
 ) -> Dict[str, Any]:
     """
-    每个 span 树上一格，严格父子顺序 = 整条调用链路；与力导向「全连接」不同。
+    每个 span 一格；name 只一行（ECharts 树在 LR 时兄弟节点会竖向塞满，故 name 要短，详情给前端 tooltip）。
     """
     if state["n"] >= _MAX_TREE_NODES:
         return {
             "name": f"… 已截断（>{_MAX_TREE_NODES} 点）",
             "value": 0.0,
             "category": 5,
+            "op_detail": "",
         }
     state["n"] += 1
     s = by_id[sid]
     svc = _service_of(s, processes)
     op = str(s.get("operationName") or "")
-    if len(op) > 72:
-        op = op[:69] + "…"
+    if len(op) > 200:
+        op = op[:197] + "…"
     dur = int(s.get("duration", 0)) / 1000.0
     tg = _tag_map(s)
     _, cat = _infer_category(tg, svc, op)
     peer = _peer_line(tg)
-    line1 = svc
+    if peer and len(svc) + len(peer) < 50:
+        short_head = f"{svc} → {peer[:36]}"
+    else:
+        short_head = (svc[:40] + "…") if len(svc) > 40 else svc
+    # 图上只一行：服务/对端 + 耗时，避免叠字
+    name = f"{short_head}  ·  {round(dur, 2)}ms"
+    if len(name) > 64:
+        name = name[:61] + "…"
+    detail_lines = [f"service: {svc}", f"op: {op}"]
     if peer:
-        line1 = f"{svc} → {peer[:40]}"
-    name = f"{line1}\n{op}\n{round(dur, 3)} ms"
+        detail_lines.append(f"peer: {peer}")
+    detail = "\n".join(detail_lines)
     node: Dict[str, Any] = {
         "name": name,
         "value": round(dur, 4),
         "category": int(cat),
+        "op_detail": detail,
     }
     kids = children_map.get(sid) or []
     if not kids:
@@ -285,9 +295,10 @@ def _build_trace_tree_data(by_id: Dict[str, dict], processes: Any) -> List[Dict[
         ch.append(_span_tree_node(r, by_id, processes, cm, state))
     return [
         {
-            "name": f"本 Trace\n({len(roots)} 个根 span)",
+            "name": f"根入口 ({len(roots)} 个)  ·  展开子树",
             "value": 0.0,
             "category": 5,
+            "op_detail": "多个无父链路的根 span，已收拢在虚拟根下。",
             "children": ch,
         }
     ]

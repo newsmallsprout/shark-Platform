@@ -1,13 +1,23 @@
 """
 Normalize multi-site log sources (per-domain files or Redis lists).
+
+未在 DB 中配置多站点时，仍可根据：
+  - 分钟聚合表 TrafficMinuteRollup.source_id
+  - Redis 集合 traffic:known_stream_keys（ingest 时写入）
+自动出现在大盘数据源下界；Redis 键名约定见 default_redis_key_for_stream_id。
 """
 from __future__ import annotations
 
 import json
+import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
-from ..models import TrafficDashboardConfig
+from ..models import TrafficDashboardConfig, TrafficMinuteRollup
+
+logger = logging.getLogger(__name__)
+
+KNOWN_STREAMS_REDIS_KEY = "traffic:known_stream_keys"
 from .nginx_log import load_records, records_from_lines
 from .redis_log_buffer import fetch_tail_lines, is_configured as redis_buffer_configured
 
@@ -41,7 +51,7 @@ def resolve_ingest_log_format(
     if q in ("json", "combined", "auto", "nginx_json", "shark_json"):
         return q
     sid = (source_id or "").strip()
-    for s in normalized_log_sources(cfg):
+    for s in effective_log_sources(cfg):
         if s.get("id") == sid:
             return effective_log_format(cfg, s)
     return effective_log_format(cfg, None)
@@ -50,11 +60,6 @@ def resolve_ingest_log_format(
 def legacy_redis_key(cfg: TrafficDashboardConfig) -> str:
     k = (cfg.redis_log_key or "traffic:access:lines").strip()
     return k or "traffic:access:lines"
-
-
-def _effective_source_redis_key(src: Dict[str, Any], cfg: TrafficDashboardConfig) -> str:
-    """Same key resolution as load_records_for_source (Redis)."""
-    return (src.get("redis_key") or "").strip() or legacy_redis_key(cfg)
 
 
 def _redis_read_cap(
@@ -185,6 +190,119 @@ def normalized_log_sources(cfg: TrafficDashboardConfig) -> List[Dict[str, Any]]:
     return out
 
 
+def default_redis_key_for_stream_id(cfg: TrafficDashboardConfig, stream_id: str) -> str:
+    """
+    未在「多站点」表里写 redis_key 时，按 TRAFFIC_REDIS_STREAM_LAYOUT 生成 List 键。
+    suffix（默认）: {redis_log_key}:{stream_id}，如 traffic:access:lines:api
+    single: 所有流共用一个键（旧行为，不适合多流并行）
+    """
+    sid = (stream_id or "").strip() or "default"
+    if sid == "default":
+        return legacy_redis_key(cfg)
+    layout = (os.environ.get("TRAFFIC_REDIS_STREAM_LAYOUT", "suffix") or "suffix").strip().lower()
+    if layout in ("single", "legacy", "one"):
+        return legacy_redis_key(cfg)
+    base = legacy_redis_key(cfg).strip()
+    if not base:
+        return f"traffic:access:lines:{sid}"
+    return f"{base}:{sid}"
+
+
+def _effective_source_redis_key(src: Dict[str, Any], cfg: TrafficDashboardConfig) -> str:
+    """Explicit redis_key in config; empty means per-id default list key (suffix), not only legacy base."""
+    explicit = (src.get("redis_key") or "").strip()
+    if explicit:
+        return explicit
+    sid = (str(src.get("id") or "").strip() or "default")
+    return default_redis_key_for_stream_id(cfg, sid)
+
+
+def _stream_keys_from_redis() -> Set[str]:
+    out: Set[str] = set()
+    try:
+        from .redis_log_buffer import traffic_redis_client
+
+        r = traffic_redis_client()
+        if not r:
+            return out
+        for k in r.sscan_iter(KNOWN_STREAMS_REDIS_KEY, count=256):
+            if k and str(k).strip():
+                out.add(str(k).strip())
+    except Exception as e:
+        logger.debug("stream_keys_from_redis: %s", e)
+    return out
+
+
+def discovered_stream_ids(cfg: TrafficDashboardConfig) -> List[str]:
+    s: Set[str] = set()
+    s.update(_stream_keys_from_redis())
+    try:
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        since = timezone.now() - timedelta(days=30)
+        for x in (
+            TrafficMinuteRollup.objects.filter(bucket_start__gte=since)
+            .values_list("source_id", flat=True)
+            .distinct()[:500]
+        ):
+            if x:
+                t = str(x).strip()
+                if t:
+                    s.add(t)
+    except Exception as e:
+        logger.debug("discovered_stream_ids rollup: %s", e)
+    return sorted(s)
+
+
+def _human_label(stream_id: str) -> str:
+    sid = (stream_id or "").strip()
+    if not sid:
+        return sid
+    if "_" in sid and sid.replace("_", "").isalnum():
+        return sid.replace("_", " ").title()
+    return sid
+
+
+def effective_log_sources(cfg: TrafficDashboardConfig) -> List[Dict[str, Any]]:
+    """
+    手动配置行 + 自动发现的 stream_key；后者带 auto_discovered=True，读 Redis 时用约定键。
+    """
+    manual = normalized_log_sources(cfg)
+    known = {str(s.get("id") or "").strip() for s in manual if s.get("id")}
+    extra: List[Dict[str, Any]] = []
+    for sid in discovered_stream_ids(cfg):
+        if not sid or sid in known:
+            continue
+        extra.append(
+            {
+                "id": sid[:64],
+                "label": _human_label(sid)[:128],
+                "file_path": "",
+                "redis_key": default_redis_key_for_stream_id(cfg, sid),
+                "log_format": "",
+                "auto_discovered": True,
+            }
+        )
+    return manual + extra
+
+
+def register_stream_key_observed(stream_key: str) -> None:
+    """ingest 成功后登记，便于尚无 rollup 时也能在下拉里出现。"""
+    sk = (stream_key or "").strip() or "default"
+    if len(sk) > 128:
+        sk = sk[:128]
+    try:
+        from .redis_log_buffer import traffic_redis_client
+
+        r = traffic_redis_client()
+        if r:
+            r.sadd(KNOWN_STREAMS_REDIS_KEY, sk)
+    except Exception as e:
+        logger.debug("register_stream_key_observed: %s", e)
+
+
 def _has_file_paths_to_read(cfg: TrafficDashboardConfig) -> bool:
     if (legacy_file_path(cfg) or "").strip():
         return True
@@ -224,7 +342,7 @@ def load_raw_records(
     redis_line_cap: Optional[int] = None,
     max_tail_bytes_override: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
-    sources = normalized_log_sources(cfg)
+    sources = effective_log_sources(cfg)
     sid = (source_id or "").strip()
     if sid and sid != "all":
         src = next((s for s in sources if s["id"] == sid), None)
@@ -293,18 +411,19 @@ def load_raw_records(
 
 
 def redis_key_for_ingest(cfg: TrafficDashboardConfig, source_id: str) -> str:
-    q = (source_id or "").strip()
-    if not q:
-        return legacy_redis_key(cfg)
+    q = (source_id or "").strip() or "default"
     for s in normalized_log_sources(cfg):
         if s["id"] == q:
-            return (s.get("redis_key") or "").strip() or legacy_redis_key(cfg)
-    return legacy_redis_key(cfg)
+            explicit = (s.get("redis_key") or "").strip()
+            if explicit:
+                return explicit
+            return default_redis_key_for_stream_id(cfg, q)
+    return default_redis_key_for_stream_id(cfg, q)
 
 
 def sources_for_api(cfg: TrafficDashboardConfig) -> List[Dict[str, str]]:
     items = []
-    for s in normalized_log_sources(cfg):
+    for s in effective_log_sources(cfg):
         items.append({"id": s["id"], "label": s.get("label") or s["id"]})
     if items:
         items.insert(0, {"id": "all", "label": "全部"})

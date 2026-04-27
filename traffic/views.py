@@ -24,6 +24,7 @@ from .services.geoip_lookup import enrich_records
 from .services.log_sources import (
     load_raw_records,
     log_source_configured,
+    register_stream_key_observed,
     redis_key_for_ingest,
     resolve_effective_traffic_source_id,
     resolve_ingest_log_format,
@@ -530,6 +531,8 @@ def traffic_ingest(request):
     )
     key = redis_key_for_ingest(cfg, ingest_source)
     n = push_raw_lines(lines, key, _redis_cap(cfg))
+    if n > 0:
+        register_stream_key_observed(ingest_source or "default")
     if rollup_enabled() and n > 0:
         try:
             lf = resolve_ingest_log_format(cfg, ingest_source, "")
@@ -590,6 +593,8 @@ def edge_logs_ingest(request):
 
     key = redis_key_for_ingest(cfg, stream_key)
     n = push_raw_lines(lines, key, _redis_cap(cfg))
+    if n > 0:
+        register_stream_key_observed(stream_key)
     if rollup_enabled() and n > 0:
         try:
             recs = records_from_lines(lines, lf)
