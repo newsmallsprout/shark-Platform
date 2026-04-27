@@ -81,32 +81,6 @@
                 <div class="kpi-label">{{ card.label }}</div>
                 <div class="kpi-value">{{ card.value }}</div>
                 <div class="kpi-src">{{ card.source }}</div>
-                <div v-if="card.key === 'err' && errDetail" class="kpi-err-detail">
-                  <template v-if="errDetail.n_err === 0">
-                    <div class="kpi-err-zero">本窗口无 4xx / 5xx</div>
-                  </template>
-                  <template v-else>
-                    <div class="kpi-err-split">
-                      <div>
-                        4xx <em>{{ fmtNum(errDetail.n_4xx) }}</em>
-                        <span class="kpi-err-pct">占全量 {{ errDetail.pct_4xx }}%</span>
-                      </div>
-                      <div>
-                        5xx <em>{{ fmtNum(errDetail.n_5xx) }}</em>
-                        <span class="kpi-err-pct">占全量 {{ errDetail.pct_5xx }}%</span>
-                      </div>
-                    </div>
-                    <div v-if="errDetail.rollup_no_path_errors" class="kpi-err-hint">
-                      分钟聚合无逐路径错误分布；路径级 5xx 见下方「Top 请求路径」。开启「原始明细」可在此看 Top 错误路径。
-                    </div>
-                    <ul v-else-if="errDetail.top_error_paths?.length" class="kpi-err-paths">
-                      <li v-for="(p, i) in errDetail.top_error_paths" :key="i">
-                        <code>{{ p.path }}</code>
-                        <span class="kpi-err-n">×{{ p.errors }}</span>
-                      </li>
-                    </ul>
-                  </template>
-                </div>
               </div>
               <div :ref="(el) => setKpiRef(card.key, el)" class="kpi-spark" />
             </div>
@@ -164,6 +138,53 @@
                 <el-table-column prop="errors_5xx" label="5xx" width="60" />
                 <el-table-column prop="share_pct" label="%" width="60" />
               </el-table>
+            </div>
+          </el-col>
+        </el-row>
+
+        <el-row v-if="errDetail" :gutter="16" class="err-detail-row">
+          <el-col :span="24">
+            <div class="page-panel chart-wrap err-detail-panel">
+              <div class="chart-title">错误详情</div>
+              <div v-if="errDetail.n_err === 0" class="err-detail-empty">本窗口无 4xx / 5xx</div>
+              <template v-else>
+                <div class="err-detail-stats">
+                  <div class="err-stat-tile err-stat-4xx">
+                    <span class="err-stat-label">4xx</span>
+                    <span class="err-stat-num">{{ fmtNum(errDetail.n_4xx) }}</span>
+                    <span class="err-stat-pct">占全量 {{ errDetail.pct_4xx }}%</span>
+                  </div>
+                  <div class="err-stat-tile err-stat-5xx">
+                    <span class="err-stat-label">5xx</span>
+                    <span class="err-stat-num">{{ fmtNum(errDetail.n_5xx) }}</span>
+                    <span class="err-stat-pct">占全量 {{ errDetail.pct_5xx }}%</span>
+                  </div>
+                </div>
+                <el-alert
+                  v-if="errDetail.rollup_no_path_errors"
+                  type="info"
+                  :closable="false"
+                  class="err-detail-alert"
+                  show-icon
+                >
+                  分钟聚合无逐路径错误统计；路径级 5xx 见下方「Top 请求路径」。开启「原始明细」可展示路径级错误分布。
+                </el-alert>
+                <el-table
+                  v-else
+                  :data="errDetail.top_error_paths || []"
+                  size="small"
+                  class="dark-table traffic-data-table err-detail-table"
+                  max-height="240"
+                  empty-text="无路径级错误"
+                >
+                  <el-table-column prop="path" label="Path" min-width="220" show-overflow-tooltip>
+                    <template #default="{ row }">
+                      <code class="err-path-code">{{ row.path }}</code>
+                    </template>
+                  </el-table-column>
+                  <el-table-column prop="errors" label="错误次数" width="100" align="right" />
+                </el-table>
+              </template>
             </div>
           </el-col>
         </el-row>
@@ -1979,59 +2000,73 @@ onUnmounted(() => {
   height: 40px;
   flex-shrink: 0;
 }
-.kpi-card:has(.kpi-err-detail) {
-  min-height: auto;
+
+.err-detail-row {
+  margin-bottom: 0;
 }
-.kpi-err-detail {
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid rgba(203, 213, 225, 0.65);
-  max-width: min(100%, 240px);
+.err-detail-panel {
+  margin-bottom: 16px;
 }
-.kpi-err-split {
+.err-detail-empty {
+  font-size: 13px;
+  color: #94a3b8;
+  padding: 4px 0 2px;
+}
+.err-detail-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.err-stat-tile {
+  flex: 1;
+  min-width: 160px;
+  max-width: 280px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid #e2e8f0;
+  background: linear-gradient(180deg, #f8fafc 0%, #fff 100%);
   display: flex;
   flex-direction: column;
   gap: 4px;
-  font-size: 11px;
-  color: #475569;
-  line-height: 1.35;
 }
-.kpi-err-split em {
-  font-style: normal;
+.err-stat-4xx {
+  border-color: rgba(234, 179, 8, 0.35);
+}
+.err-stat-5xx {
+  border-color: rgba(239, 68, 68, 0.35);
+}
+.err-stat-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
+  letter-spacing: 0.02em;
+}
+.err-stat-num {
+  font-size: 22px;
   font-weight: 600;
   color: #0f172a;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
 }
-.kpi-err-pct {
-  color: #94a3b8;
-  margin-left: 4px;
-  font-size: 10px;
-}
-.kpi-err-zero {
-  font-size: 11px;
+.err-stat-pct {
+  font-size: 12px;
   color: #94a3b8;
 }
-.kpi-err-hint {
-  font-size: 10px;
-  color: #94a3b8;
-  line-height: 1.35;
-  margin-top: 6px;
+.err-detail-alert {
+  margin-bottom: 12px;
 }
-.kpi-err-paths {
-  margin: 6px 0 0;
-  padding-left: 14px;
-  font-size: 10px;
-  color: #64748b;
-  line-height: 1.4;
-  max-height: 72px;
-  overflow-y: auto;
+.err-detail-alert :deep(.el-alert__content) {
+  font-size: 12px;
+  color: #475569;
 }
-.kpi-err-paths code {
-  font-size: 10px;
+.err-detail-table {
+  margin-top: 0;
+}
+.err-path-code {
+  font-size: 12px;
+  color: #334155;
   word-break: break-all;
-}
-.kpi-err-n {
-  margin-left: 6px;
-  color: #dc2626;
 }
 
 .chart-wrap {
