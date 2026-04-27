@@ -150,40 +150,78 @@
               <template v-else>
                 <div class="err-detail-stats">
                   <div class="err-stat-tile err-stat-4xx">
-                    <span class="err-stat-label">4xx</span>
+                    <span class="err-stat-label">4xx 合计</span>
                     <span class="err-stat-num">{{ fmtNum(errDetail.n_4xx) }}</span>
                     <span class="err-stat-pct">占全量 {{ errDetail.pct_4xx }}%</span>
                   </div>
                   <div class="err-stat-tile err-stat-5xx">
-                    <span class="err-stat-label">5xx</span>
+                    <span class="err-stat-label">5xx 合计</span>
                     <span class="err-stat-num">{{ fmtNum(errDetail.n_5xx) }}</span>
                     <span class="err-stat-pct">占全量 {{ errDetail.pct_5xx }}%</span>
                   </div>
                 </div>
                 <el-alert
-                  v-if="errDetail.rollup_no_path_errors"
+                  v-if="errDetail.rollup_no_status_breakdown"
                   type="info"
                   :closable="false"
                   class="err-detail-alert"
                   show-icon
                 >
-                  分钟聚合无逐路径错误统计；路径级 5xx 见下方「Top 请求路径」。开启「原始明细」可展示路径级错误分布。
+                  分钟聚合只存 2xx/4xx/5xx 汇总，无法按 401、404、502 等具体状态码拆分，也无法做逐路径错误统计。请开启「原始明细」后刷新。
                 </el-alert>
-                <el-table
-                  v-else
-                  :data="errDetail.top_error_paths || []"
-                  size="small"
-                  class="dark-table traffic-data-table err-detail-table"
-                  max-height="240"
-                  empty-text="无路径级错误"
-                >
-                  <el-table-column prop="path" label="Path" min-width="220" show-overflow-tooltip>
-                    <template #default="{ row }">
-                      <code class="err-path-code">{{ row.path }}</code>
-                    </template>
-                  </el-table-column>
-                  <el-table-column prop="errors" label="错误次数" width="100" align="right" />
-                </el-table>
+                <template v-else>
+                  <div
+                    v-if="(errDetail.by_status || []).length"
+                    class="err-detail-subtitle"
+                  >
+                    状态码明细（4xx / 5xx）
+                  </div>
+                  <el-table
+                    v-if="(errDetail.by_status || []).length"
+                    :data="errDetail.by_status"
+                    size="small"
+                    row-key="code"
+                    class="dark-table traffic-data-table err-detail-table"
+                    max-height="200"
+                  >
+                    <el-table-column label="状态码" width="110" align="center">
+                      <template #default="{ row }">
+                        <el-tag
+                          :type="row.code >= 500 ? 'danger' : 'warning'"
+                          size="small"
+                          effect="plain"
+                        >
+                          {{ row.code }}
+                        </el-tag>
+                      </template>
+                    </el-table-column>
+                    <el-table-column prop="count" label="次数" width="100" align="right" />
+                    <el-table-column label="占全量" width="100" align="right">
+                      <template #default="{ row }">{{ row.pct }}%</template>
+                    </el-table-column>
+                  </el-table>
+                  <div
+                    v-if="!errDetail.rollup_no_path_errors && (errDetail.top_error_paths || []).length"
+                    class="err-detail-subtitle err-detail-subtitle--path"
+                  >
+                    路径 Top（4xx+5xx）
+                  </div>
+                  <el-table
+                    v-if="!errDetail.rollup_no_path_errors"
+                    :data="errDetail.top_error_paths || []"
+                    size="small"
+                    class="dark-table traffic-data-table err-detail-table"
+                    max-height="240"
+                    empty-text="无路径级错误"
+                  >
+                    <el-table-column prop="path" label="Path" min-width="220" show-overflow-tooltip>
+                      <template #default="{ row }">
+                        <code class="err-path-code">{{ row.path }}</code>
+                      </template>
+                    </el-table-column>
+                    <el-table-column prop="errors" label="错误次数" width="100" align="right" />
+                  </el-table>
+                </template>
               </template>
             </div>
           </el-col>
@@ -2006,6 +2044,15 @@ onUnmounted(() => {
 }
 .err-detail-panel {
   margin-bottom: 16px;
+}
+.err-detail-subtitle {
+  margin: 12px 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #475569;
+}
+.err-detail-subtitle--path {
+  margin-top: 16px;
 }
 .err-detail-empty {
   font-size: 13px;

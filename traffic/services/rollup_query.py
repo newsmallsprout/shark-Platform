@@ -214,9 +214,11 @@ def _overview_from_merged(
             "n_err": err,
             "pct_4xx": round(s4 / total * 100, 3) if total else 0.0,
             "pct_5xx": round(s5 / total * 100, 3) if total else 0.0,
+            "by_status": [],
             "top_error_paths": [],
             "rollup": True,
             "rollup_no_path_errors": True,
+            "rollup_no_status_breakdown": True,
         },
     }
 
@@ -309,9 +311,11 @@ def build_rollups_snapshot(
                 "n_err": 0,
                 "pct_4xx": 0.0,
                 "pct_5xx": 0.0,
+                "by_status": [],
                 "top_error_paths": [],
                 "rollup": True,
                 "rollup_no_path_errors": True,
+                "rollup_no_status_breakdown": True,
             },
         }
     else:
