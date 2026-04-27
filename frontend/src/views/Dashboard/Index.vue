@@ -81,6 +81,32 @@
                 <div class="kpi-label">{{ card.label }}</div>
                 <div class="kpi-value">{{ card.value }}</div>
                 <div class="kpi-src">{{ card.source }}</div>
+                <div v-if="card.key === 'err' && errDetail" class="kpi-err-detail">
+                  <template v-if="errDetail.n_err === 0">
+                    <div class="kpi-err-zero">本窗口无 4xx / 5xx</div>
+                  </template>
+                  <template v-else>
+                    <div class="kpi-err-split">
+                      <div>
+                        4xx <em>{{ fmtNum(errDetail.n_4xx) }}</em>
+                        <span class="kpi-err-pct">占全量 {{ errDetail.pct_4xx }}%</span>
+                      </div>
+                      <div>
+                        5xx <em>{{ fmtNum(errDetail.n_5xx) }}</em>
+                        <span class="kpi-err-pct">占全量 {{ errDetail.pct_5xx }}%</span>
+                      </div>
+                    </div>
+                    <div v-if="errDetail.rollup_no_path_errors" class="kpi-err-hint">
+                      分钟聚合无逐路径错误分布；路径级 5xx 见下方「Top 请求路径」。开启「原始明细」可在此看 Top 错误路径。
+                    </div>
+                    <ul v-else-if="errDetail.top_error_paths?.length" class="kpi-err-paths">
+                      <li v-for="(p, i) in errDetail.top_error_paths" :key="i">
+                        <code>{{ p.path }}</code>
+                        <span class="kpi-err-n">×{{ p.errors }}</span>
+                      </li>
+                    </ul>
+                  </template>
+                </div>
               </div>
               <div :ref="(el) => setKpiRef(card.key, el)" class="kpi-spark" />
             </div>
@@ -507,6 +533,7 @@ const trafficSource = ref('all')
 const sourceOptions = ref<{ id: string; label: string }[]>([])
 
 const overview = ref<any>({ series: { qps: [], error_rate: [] }, log_configured: true })
+const errDetail = computed(() => overview.value?.error_detail ?? null)
 const timeseries = ref<any>({})
 const geoItems = ref<any[]>([])
 const pathsRows = ref<any[]>([])
@@ -1951,6 +1978,60 @@ onUnmounted(() => {
   width: 88px;
   height: 40px;
   flex-shrink: 0;
+}
+.kpi-card:has(.kpi-err-detail) {
+  min-height: auto;
+}
+.kpi-err-detail {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(203, 213, 225, 0.65);
+  max-width: min(100%, 240px);
+}
+.kpi-err-split {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: #475569;
+  line-height: 1.35;
+}
+.kpi-err-split em {
+  font-style: normal;
+  font-weight: 600;
+  color: #0f172a;
+}
+.kpi-err-pct {
+  color: #94a3b8;
+  margin-left: 4px;
+  font-size: 10px;
+}
+.kpi-err-zero {
+  font-size: 11px;
+  color: #94a3b8;
+}
+.kpi-err-hint {
+  font-size: 10px;
+  color: #94a3b8;
+  line-height: 1.35;
+  margin-top: 6px;
+}
+.kpi-err-paths {
+  margin: 6px 0 0;
+  padding-left: 14px;
+  font-size: 10px;
+  color: #64748b;
+  line-height: 1.4;
+  max-height: 72px;
+  overflow-y: auto;
+}
+.kpi-err-paths code {
+  font-size: 10px;
+  word-break: break-all;
+}
+.kpi-err-n {
+  margin-left: 6px;
+  color: #dc2626;
 }
 
 .chart-wrap {

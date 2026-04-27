@@ -207,6 +207,17 @@ def _overview_from_merged(
         "error_rate_pct": round(err_rate, 3),
         "availability_pct": round(100.0 - min(err_rate, 100.0), 3),
         "series": {"qps": spark_qps, "error_rate": spark_err[-len(spark_qps) :]},
+        "error_detail": {
+            "n_2xx": s2,
+            "n_4xx": s4,
+            "n_5xx": s5,
+            "n_err": err,
+            "pct_4xx": round(s4 / total * 100, 3) if total else 0.0,
+            "pct_5xx": round(s5 / total * 100, 3) if total else 0.0,
+            "top_error_paths": [],
+            "rollup": True,
+            "rollup_no_path_errors": True,
+        },
     }
 
 
@@ -291,6 +302,17 @@ def build_rollups_snapshot(
             "error_rate_pct": 0.0,
             "availability_pct": 100.0,
             "series": {"qps": [], "error_rate": []},
+            "error_detail": {
+                "n_2xx": 0,
+                "n_4xx": 0,
+                "n_5xx": 0,
+                "n_err": 0,
+                "pct_4xx": 0.0,
+                "pct_5xx": 0.0,
+                "top_error_paths": [],
+                "rollup": True,
+                "rollup_no_path_errors": True,
+            },
         }
     else:
         ts = _timeseries_from_merged(merged, range_label)

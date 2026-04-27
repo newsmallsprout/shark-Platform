@@ -122,6 +122,42 @@ def _empty_ts(start: float, end: float, bs: int) -> Dict[str, Any]:
     }
 
 
+def error_detail_from_records(recs: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """4xx/5xx 计数与按路径的 Top 错误（仅全量原始记录路径可用）。"""
+    n2 = n4 = n5 = 0
+    err_by_path: Dict[str, int] = defaultdict(int)
+    for r in recs:
+        try:
+            st = int(r.get("status") or 0)
+        except (TypeError, ValueError):
+            st = 0
+        uri = str(r.get("request_uri") or "/")
+        if 200 <= st < 400:
+            n2 += 1
+        elif 400 <= st < 500:
+            n4 += 1
+            err_by_path[uri] += 1
+        elif st >= 500:
+            n5 += 1
+            err_by_path[uri] += 1
+    n_err = n4 + n5
+    total = len(recs) or 1
+    top_paths = [
+        {"path": p, "errors": c}
+        for p, c in sorted(err_by_path.items(), key=lambda x: -x[1])[:8]
+    ]
+    return {
+        "n_2xx": n2,
+        "n_4xx": n4,
+        "n_5xx": n5,
+        "n_err": n_err,
+        "pct_4xx": round(n4 / total * 100, 3),
+        "pct_5xx": round(n5 / total * 100, 3),
+        "top_error_paths": top_paths,
+        "rollup": False,
+    }
+
+
 def overview_kpis(records: List[Dict[str, Any]], range_key: str) -> Dict[str, Any]:
     start, end = window_bounds(range_key)
     recs = filter_records(records, start, end)
@@ -166,6 +202,7 @@ def overview_kpis(records: List[Dict[str, Any]], range_key: str) -> Dict[str, An
         "error_rate_pct": round(err_rate, 3),
         "availability_pct": round(100.0 - min(err_rate, 100.0), 3),
         "series": {"qps": spark_qps, "error_rate": err_spark[-len(spark_qps) :]},
+        "error_detail": error_detail_from_records(recs),
     }
 
 
