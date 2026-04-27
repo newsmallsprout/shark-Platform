@@ -148,18 +148,6 @@
               <div class="chart-title">错误详情</div>
               <div v-if="errDetail.n_err === 0" class="err-detail-empty">本窗口无 4xx / 5xx</div>
               <template v-else>
-                <div class="err-detail-stats">
-                  <div class="err-stat-tile err-stat-4xx">
-                    <span class="err-stat-label">4xx 合计</span>
-                    <span class="err-stat-num">{{ fmtNum(errDetail.n_4xx) }}</span>
-                    <span class="err-stat-pct">占全量 {{ errDetail.pct_4xx }}%</span>
-                  </div>
-                  <div class="err-stat-tile err-stat-5xx">
-                    <span class="err-stat-label">5xx 合计</span>
-                    <span class="err-stat-num">{{ fmtNum(errDetail.n_5xx) }}</span>
-                    <span class="err-stat-pct">占全量 {{ errDetail.pct_5xx }}%</span>
-                  </div>
-                </div>
                 <el-alert
                   v-if="errDetail.rollup_no_status_breakdown"
                   type="info"
@@ -167,61 +155,40 @@
                   class="err-detail-alert"
                   show-icon
                 >
-                  分钟聚合只存 2xx/4xx/5xx 汇总，无法按 401、404、502 等具体状态码拆分，也无法做逐路径错误统计。请开启「原始明细」后刷新。
+                  分钟聚合只存 2xx/4xx/5xx 汇总，无法按「路径 + 具体状态码」展示。请开启「原始明细」后刷新。
                 </el-alert>
-                <template v-else>
-                  <div
-                    v-if="(errDetail.by_status || []).length"
-                    class="err-detail-subtitle"
-                  >
-                    状态码明细（4xx / 5xx）
-                  </div>
-                  <el-table
-                    v-if="(errDetail.by_status || []).length"
-                    :data="errDetail.by_status"
-                    size="small"
-                    row-key="code"
-                    class="dark-table traffic-data-table err-detail-table"
-                    max-height="200"
-                  >
-                    <el-table-column label="状态码" width="110" align="center">
-                      <template #default="{ row }">
+                <el-table
+                  v-else
+                  :data="errDetail.path_code_breakdown || []"
+                  size="small"
+                  row-key="path"
+                  class="dark-table traffic-data-table err-detail-table"
+                  max-height="420"
+                  empty-text="无路径级数据"
+                >
+                  <el-table-column prop="path" label="Path" min-width="200" show-overflow-tooltip>
+                    <template #default="{ row }">
+                      <code class="err-path-code">{{ row.path }}</code>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="状态码（4xx / 5xx）" min-width="280">
+                    <template #default="{ row }">
+                      <span class="err-code-tag-wrap">
                         <el-tag
-                          :type="row.code >= 500 ? 'danger' : 'warning'"
+                          v-for="(c, i) in row.codes || []"
+                          :key="`${row.path}-${c.code}-${i}`"
+                          :type="c.code >= 500 ? 'danger' : 'warning'"
                           size="small"
                           effect="plain"
+                          class="err-code-tag"
                         >
-                          {{ row.code }}
+                          {{ c.code }} ×{{ c.count }}
                         </el-tag>
-                      </template>
-                    </el-table-column>
-                    <el-table-column prop="count" label="次数" width="100" align="right" />
-                    <el-table-column label="占全量" width="100" align="right">
-                      <template #default="{ row }">{{ row.pct }}%</template>
-                    </el-table-column>
-                  </el-table>
-                  <div
-                    v-if="!errDetail.rollup_no_path_errors && (errDetail.top_error_paths || []).length"
-                    class="err-detail-subtitle err-detail-subtitle--path"
-                  >
-                    路径 Top（4xx+5xx）
-                  </div>
-                  <el-table
-                    v-if="!errDetail.rollup_no_path_errors"
-                    :data="errDetail.top_error_paths || []"
-                    size="small"
-                    class="dark-table traffic-data-table err-detail-table"
-                    max-height="240"
-                    empty-text="无路径级错误"
-                  >
-                    <el-table-column prop="path" label="Path" min-width="220" show-overflow-tooltip>
-                      <template #default="{ row }">
-                        <code class="err-path-code">{{ row.path }}</code>
-                      </template>
-                    </el-table-column>
-                    <el-table-column prop="errors" label="错误次数" width="100" align="right" />
-                  </el-table>
-                </template>
+                      </span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column prop="total_errors" label="合计" width="90" align="right" />
+                </el-table>
               </template>
             </div>
           </el-col>
@@ -2045,60 +2012,20 @@ onUnmounted(() => {
 .err-detail-panel {
   margin-bottom: 16px;
 }
-.err-detail-subtitle {
-  margin: 12px 0 8px;
-  font-size: 13px;
-  font-weight: 600;
-  color: #475569;
-}
-.err-detail-subtitle--path {
-  margin-top: 16px;
-}
 .err-detail-empty {
   font-size: 13px;
   color: #94a3b8;
   padding: 4px 0 2px;
 }
-.err-detail-stats {
+.err-code-tag-wrap {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
-  margin-bottom: 12px;
+  gap: 6px;
+  align-items: center;
+  line-height: 1.5;
 }
-.err-stat-tile {
-  flex: 1;
-  min-width: 160px;
-  max-width: 280px;
-  padding: 12px 14px;
-  border-radius: 10px;
-  border: 1px solid #e2e8f0;
-  background: linear-gradient(180deg, #f8fafc 0%, #fff 100%);
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.err-stat-4xx {
-  border-color: rgba(234, 179, 8, 0.35);
-}
-.err-stat-5xx {
-  border-color: rgba(239, 68, 68, 0.35);
-}
-.err-stat-label {
-  font-size: 12px;
-  font-weight: 600;
-  color: #64748b;
-  letter-spacing: 0.02em;
-}
-.err-stat-num {
-  font-size: 22px;
-  font-weight: 600;
-  color: #0f172a;
-  line-height: 1.2;
-  font-variant-numeric: tabular-nums;
-}
-.err-stat-pct {
-  font-size: 12px;
-  color: #94a3b8;
+.err-code-tag {
+  margin: 0 !important;
 }
 .err-detail-alert {
   margin-bottom: 12px;

@@ -123,10 +123,9 @@ def _empty_ts(start: float, end: float, bs: int) -> Dict[str, Any]:
 
 
 def error_detail_from_records(recs: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """4xx/5xx 计数、各具体状态码条数、按路径 Top 错误（仅原始记录可用）。"""
+    """4xx/5xx 汇总 + 按路径拆分各状态码（仅原始记录可用）。"""
     n2 = n4 = n5 = 0
-    err_by_path: Dict[str, int] = defaultdict(int)
-    by_code: Dict[int, int] = defaultdict(int)
+    path_codes: Dict[str, Dict[int, int]] = defaultdict(lambda: defaultdict(int))
     for r in recs:
         try:
             st = int(r.get("status") or 0)
@@ -137,26 +136,30 @@ def error_detail_from_records(recs: List[Dict[str, Any]]) -> Dict[str, Any]:
             n2 += 1
         elif 400 <= st < 500:
             n4 += 1
-            by_code[st] += 1
-            err_by_path[uri] += 1
+            path_codes[uri][st] += 1
         elif st >= 500:
             n5 += 1
-            by_code[st] += 1
-            err_by_path[uri] += 1
+            path_codes[uri][st] += 1
     n_err = n4 + n5
     total = len(recs) or 1
-    top_paths = [
-        {"path": p, "errors": c}
-        for p, c in sorted(err_by_path.items(), key=lambda x: -x[1])[:8]
-    ]
-    by_status = [
-        {
-            "code": code,
-            "count": cnt,
-            "pct": round(cnt / total * 100, 3),
-        }
-        for code, cnt in sorted(by_code.items(), key=lambda x: x[0])
-    ]
+
+    path_items: List[Dict[str, Any]] = []
+    for path, cmap in path_codes.items():
+        tot_path = sum(cmap.values())
+        codes = [
+            {
+                "code": c,
+                "count": n,
+                "pct_path": round(n / tot_path * 100, 1) if tot_path else 0.0,
+            }
+            for c, n in sorted(cmap.items(), key=lambda x: x[0])
+        ]
+        path_items.append(
+            {"path": path, "total_errors": tot_path, "codes": codes}
+        )
+    path_items.sort(key=lambda x: -x["total_errors"])
+    path_code_breakdown = path_items[:50]
+
     return {
         "n_2xx": n2,
         "n_4xx": n4,
@@ -164,10 +167,10 @@ def error_detail_from_records(recs: List[Dict[str, Any]]) -> Dict[str, Any]:
         "n_err": n_err,
         "pct_4xx": round(n4 / total * 100, 3),
         "pct_5xx": round(n5 / total * 100, 3),
-        "by_status": by_status,
-        "top_error_paths": top_paths,
+        "path_code_breakdown": path_code_breakdown,
         "rollup": False,
         "rollup_no_status_breakdown": False,
+        "rollup_no_path_errors": False,
     }
 
 
