@@ -6,18 +6,20 @@ pressure when the dashboard polls every few seconds with the same range/source.
 
 Key includes TrafficDashboardConfig.updated_at and Inspection Prometheus URL so
 config / blackbox source changes invalidate promptly.
+
+Cache stores JSON text to avoid holding duplicate deepcopies of large nested dicts in RAM.
 """
 from __future__ import annotations
 
-import copy
+import json
 import os
 import threading
 import time
 from typing import Any, Callable, Dict, Optional, Tuple
 
 _lock = threading.Lock()
-_store: Dict[str, Tuple[float, Dict[str, Any]]] = {}
-_MAX_ENTRIES = 96
+_store: Dict[str, Tuple[float, str]] = {}
+_MAX_ENTRIES = 12
 
 
 def cache_ttl_seconds() -> float:
@@ -43,6 +45,10 @@ def rollup_cache_key(
     return f"rs|{source_id}|p|{range_key}|{cfg_updated_ts:.6f}|{sig}"
 
 
+def _freeze(payload: Dict[str, Any]) -> str:
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str)
+
+
 def get_or_set_rollup(key: str, factory: Callable[[], Dict[str, Any]]) -> Dict[str, Any]:
     ttl = cache_ttl_seconds()
     if ttl <= 0:
@@ -51,12 +57,11 @@ def get_or_set_rollup(key: str, factory: Callable[[], Dict[str, Any]]) -> Dict[s
     with _lock:
         ent = _store.get(key)
         if ent and ent[0] > now:
-            return copy.deepcopy(ent[1])
+            return json.loads(ent[1])
     payload = factory()
-    to_store = copy.deepcopy(payload)
+    frozen = _freeze(payload)
     with _lock:
         if len(_store) >= _MAX_ENTRIES:
-            # drop expiring / arbitrary trim
             cutoff = now
             dead = [k for k, (exp, _) in _store.items() if exp <= cutoff]
             for k in dead[:32]:
@@ -64,7 +69,7 @@ def get_or_set_rollup(key: str, factory: Callable[[], Dict[str, Any]]) -> Dict[s
             if len(_store) >= _MAX_ENTRIES:
                 for k in list(_store.keys())[:32]:
                     _store.pop(k, None)
-        _store[key] = (now + ttl, to_store)
+        _store[key] = (now + ttl, frozen)
     return payload
 
 

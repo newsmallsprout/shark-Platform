@@ -23,7 +23,7 @@ if not User.objects.filter(username='admin').exists():
 # Start Gunicorn (Backend) on port 8001
 # 1 worker is REQUIRED（TaskManager 进程内状态）。并发靠线程；可用 GUNICORN_THREADS 调大（IO/GeoIP 友好）。
 echo "Starting Gunicorn on port 8001..."
-GUNICORN_THREADS="${GUNICORN_THREADS:-6}"
+GUNICORN_THREADS="${GUNICORN_THREADS:-4}"
 gunicorn shark_platform.wsgi:application --bind 127.0.0.1:8001 --workers 1 --timeout 600 \
   --threads "$GUNICORN_THREADS" \
   --logger-class shark_platform.gunicorn_logger.FilteredAccessLogger \

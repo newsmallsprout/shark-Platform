@@ -54,9 +54,9 @@ spec:
           failureThreshold: 5
         readinessProbe:
           httpGet:
-            path: /
+            path: /api/system/health
             port: 8000
-          initialDelaySeconds: 15
+          initialDelaySeconds: 20
           periodSeconds: 10
           timeoutSeconds: 5
           failureThreshold: 6
