@@ -21,9 +21,11 @@ if not User.objects.filter(username='admin').exists():
 "
 
 # Start Gunicorn (Backend) on port 8001
-# 1 worker is REQUIRED because TaskManager uses in-memory state (threads).
+# 1 worker is REQUIRED（TaskManager 进程内状态）。并发靠线程；可用 GUNICORN_THREADS 调大（IO/GeoIP 友好）。
 echo "Starting Gunicorn on port 8001..."
-gunicorn shark_platform.wsgi:application --bind 127.0.0.1:8001 --workers 1 --timeout 600 --threads 4 \
+GUNICORN_THREADS="${GUNICORN_THREADS:-6}"
+gunicorn shark_platform.wsgi:application --bind 127.0.0.1:8001 --workers 1 --timeout 600 \
+  --threads "$GUNICORN_THREADS" \
   --logger-class shark_platform.gunicorn_logger.FilteredAccessLogger \
   --log-level warning --access-logfile /dev/null --error-logfile - --capture-output &
 

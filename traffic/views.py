@@ -36,6 +36,18 @@ from .services.clickhouse_rollups import clickhouse_configured
 from .services.jaeger_query import fetch_jaeger_flow, jaeger_configured
 from .services.rollup_buffer import rollup_enabled, rollup_ingest_append
 from .services.rollup_query import build_rollups_snapshot
+from .services.snapshot_cache import (
+    blackbox_cache_sig,
+    get_or_set_rollup,
+    rollup_cache_key,
+)
+
+
+def _traffic_cfg_revision(cfg: TrafficDashboardConfig) -> float:
+    try:
+        return float(cfg.updated_at.timestamp()) if cfg.updated_at else 0.0
+    except Exception:
+        return 0.0
 
 
 def _access_log_mode(cfg: TrafficDashboardConfig) -> str:
@@ -267,7 +279,18 @@ def traffic_snapshot(request):
     start, end = _parse_custom_time_bounds(request)
     if start is not None and end is not None:
         inspection = InspectionConfig.load()
-        data = build_rollups_snapshot(start, end, source, cfg, inspection)
+        bb_sig = blackbox_cache_sig(inspection)
+        ck = rollup_cache_key(
+            source_id=source,
+            range_key="_",
+            cfg_updated_ts=_traffic_cfg_revision(cfg),
+            blackbox_sig=bb_sig,
+            start_ts=start.timestamp(),
+            end_ts=end.timestamp(),
+        )
+        data = get_or_set_rollup(
+            ck, lambda: build_rollups_snapshot(start, end, source, cfg, inspection)
+        )
         data.setdefault("overview", {})
         data["overview"]["full_data"] = False
         data["overview"]["minute_rollup"] = True
@@ -293,8 +316,18 @@ def traffic_snapshot(request):
     # 默认：预设时间走分钟聚合（PG+ClickHouse）。已配 ClickHouse 时不再用 Redis 行数尾读抽样，真实口径按时间 range。
     if not full_data:
         start_dt, end_dt = _preset_window_datetimes(range_key)
-        data = build_rollups_snapshot(
-            start_dt, end_dt, source, cfg, inspection, preset_range=range_key
+        bb_sig = blackbox_cache_sig(inspection)
+        ck = rollup_cache_key(
+            source_id=source,
+            range_key=range_key,
+            cfg_updated_ts=_traffic_cfg_revision(cfg),
+            blackbox_sig=bb_sig,
+        )
+        data = get_or_set_rollup(
+            ck,
+            lambda: build_rollups_snapshot(
+                start_dt, end_dt, source, cfg, inspection, preset_range=range_key
+            ),
         )
         data.setdefault("overview", {})
         if not _rollup_snapshot_has_rows(data):

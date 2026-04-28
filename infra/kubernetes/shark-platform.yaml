@@ -43,18 +43,23 @@ spec:
           limits:
             memory: "1Gi"
             cpu: "500m"
+        # 由 Nginx 直接应答 /api/system/health，不经过 Gunicorn（见仓库 nginx.conf）
         livenessProbe:
           httpGet:
             path: /api/system/health
             port: 8000
-          initialDelaySeconds: 30
-          periodSeconds: 10
+          initialDelaySeconds: 60
+          periodSeconds: 15
+          timeoutSeconds: 5
+          failureThreshold: 5
         readinessProbe:
           httpGet:
-            path: /api/system/health
+            path: /
             port: 8000
-          initialDelaySeconds: 10
-          periodSeconds: 5
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 6
       volumes:
       - name: app-state
         persistentVolumeClaim:
