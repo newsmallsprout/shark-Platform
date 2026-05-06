@@ -441,6 +441,37 @@ func timeseriesBucketSecFromMap(ts map[string]any) int {
 	return timeseriesRollupBS
 }
 
+func sumMergedRequestsOverlapping(merged []mergedMinutePy, winStart, winEnd time.Time, bucketDur time.Duration) uint64 {
+	winStart = winStart.UTC()
+	winEnd = winEnd.UTC()
+	var sum uint64
+	for _, b := range merged {
+		bs := b.BucketStart.UTC()
+		be := bs.Add(bucketDur)
+		if be.After(winStart) && bs.Before(winEnd) {
+			sum += b.Requests
+		}
+	}
+	return sum
+}
+
+// qpsFromMergedNearNow 对齐 Django overview_kpis：先按墙钟近 60s；若无重叠（MV 延迟 / 区间末端空桶），再以最新聚合桶为锚取近 60s。
+func qpsFromMergedNearNow(merged []mergedMinutePy, now time.Time, bucketSec int) float64 {
+	if len(merged) == 0 || bucketSec <= 0 {
+		return 0
+	}
+	bucketDur := time.Duration(bucketSec) * time.Second
+	now = now.UTC()
+	win := 60 * time.Second
+	s := sumMergedRequestsOverlapping(merged, now.Add(-win), now, bucketDur)
+	if s == 0 {
+		last := merged[len(merged)-1].BucketStart.UTC()
+		dataEnd := last.Add(bucketDur)
+		s = sumMergedRequestsOverlapping(merged, dataEnd.Add(-win), dataEnd, bucketDur)
+	}
+	return roundPy(float64(s)/60.0, 4)
+}
+
 func overviewFromMergedPy(merged []mergedMinutePy, rangeLabel string, ts map[string]any) map[string]any {
 	refreshed := iso8601ZMicro(time.Now().UTC())
 	if len(merged) == 0 {
@@ -532,8 +563,7 @@ func overviewFromMergedPy(merged []mergedMinutePy, rangeLabel string, ts map[str
 		sparkErr = sparkErr[len(sparkErr)-len(sparkQPS):]
 	}
 
-	last := merged[len(merged)-1]
-	qpsNow := roundPy(float64(last.Requests)/float64(bucketSec), 4)
+	qpsNow := qpsFromMergedNearNow(merged, time.Now(), bucketSec)
 
 	return map[string]any{
 		"range":                    rangeLabel,

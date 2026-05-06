@@ -178,8 +178,17 @@ def overview_kpis(records: List[Dict[str, Any]], range_key: str) -> Dict[str, An
     start, end = window_bounds(range_key)
     recs = filter_records(records, start, end)
     now = datetime.now(timezone.utc).timestamp()
+    # 先按服务器时钟取「真实近 60s」；若日志时间相对服务器滞后（跨时区、队列延迟），墙钟窗口为空但尾部仍有流量，
+    # 则退化为「以样本中最新的请求时刻为锚」的近 60s，避免 KPI 卡死在 0 而图表仍有柱。
     window_60 = [r for r in recs if r["ts"] >= now - 60]
-    qps = len(window_60) / 60.0 if window_60 else 0.0
+    if window_60:
+        qps = len(window_60) / 60.0
+    elif recs:
+        newest = max(r["ts"] for r in recs)
+        tail = [r for r in recs if r["ts"] >= newest - 60]
+        qps = len(tail) / 60.0 if tail else 0.0
+    else:
+        qps = 0.0
 
     total = len(recs)
     err = sum(1 for r in recs if r["status"] >= 400)

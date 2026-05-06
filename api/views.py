@@ -210,23 +210,26 @@ def system_stats(request):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def me(request):
-    # Collect all permissions from user's groups
+    from django.contrib.auth import get_user_model
+
+    User = get_user_model()
+    user = User.objects.prefetch_related("groups__permissions").get(pk=request.user.pk)
     perms = set()
-    if request.user.is_superuser:
-        perms.add('all')
+    if user.is_superuser:
+        perms.add("all")
     else:
-        for group in request.user.groups.all().prefetch_related('permissions'):
+        for group in user.groups.all():
             for p in group.permissions.all():
                 perms.add(p.codename)
-                
+
     return Response({
-        "id": request.user.id,
-        "username": request.user.username,
-        "email": request.user.email,
-        "is_staff": request.user.is_staff,
-        "is_superuser": request.user.is_superuser,
-        "groups": [g.name for g in request.user.groups.all()],
-        "permissions": list(perms)
+        "id": user.id,
+        "username": user.username,
+        "email": user.email,
+        "is_staff": user.is_staff,
+        "is_superuser": user.is_superuser,
+        "groups": [g.name for g in user.groups.all()],
+        "permissions": list(perms),
     })
 
 @api_view(['GET', 'POST'])
