@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta
+
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
@@ -7,23 +9,36 @@ import json
 from .models import InspectionConfig, InspectionReport
 from .engine import inspection_engine
 
+
+def _redact_inspection_config(cfg: InspectionConfig) -> dict:
+    key = (cfg.ark_api_key or "").strip()
+    return {
+        "prometheus_url": cfg.prometheus_url,
+        "ark_base_url": cfg.ark_base_url,
+        "ark_api_key": "",
+        "ark_api_key_set": bool(key),
+        "ark_model_id": cfg.ark_model_id,
+    }
+
+
+def _apply_inspection_config(data: dict, cfg: InspectionConfig) -> None:
+    for k, v in data.items():
+        if k == "ark_api_key" and (v is None or str(v).strip() == ""):
+            continue
+        if hasattr(cfg, k):
+            setattr(cfg, k, v)
+
+
 @api_view(['GET', 'POST'])
 @permission_classes([HasRolePermission])
 def inspection_config(request):
     if request.method == 'GET':
         cfg = InspectionConfig.load()
-        return Response({
-            "prometheus_url": cfg.prometheus_url,
-            "ark_base_url": cfg.ark_base_url,
-            "ark_api_key": cfg.ark_api_key,
-            "ark_model_id": cfg.ark_model_id
-        })
+        return Response(_redact_inspection_config(cfg))
     elif request.method == 'POST':
         data = request.data
         cfg = InspectionConfig.load()
-        for k, v in data.items():
-            if hasattr(cfg, k):
-                setattr(cfg, k, v)
+        _apply_inspection_config(data, cfg)
         cfg.save()
         return Response({"msg": "saved"})
 
@@ -34,9 +49,7 @@ def run_inspection(request):
     data = request.data
     if data:
         cfg = InspectionConfig.load()
-        for k, v in data.items():
-            if hasattr(cfg, k):
-                setattr(cfg, k, v)
+        _apply_inspection_config(data, cfg)
         cfg.save()
         # Refresh engine config
         inspection_engine.config = cfg

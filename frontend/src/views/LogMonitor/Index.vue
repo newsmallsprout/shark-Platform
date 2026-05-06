@@ -65,7 +65,12 @@
                   </el-row>
 
                   <el-form-item label="Kubeconfig (YAML)">
-                    <el-input v-model="form.k8s_kubeconfig" type="textarea" :rows="4" placeholder="Leave empty to use in-cluster config" />
+                    <el-input
+                      v-model="form.k8s_kubeconfig"
+                      type="textarea"
+                      :rows="4"
+                      :placeholder="form.k8s_kubeconfig_set ? '凭据已保存：留空表示不修改；更换请粘贴完整 kubeconfig' : '留空则使用集群内 ServiceAccount（in-cluster）'"
+                    />
                   </el-form-item>
 
                   <el-divider>Alert Rules</el-divider>
@@ -567,6 +572,9 @@ const selectTask = (task: MonitorTask) => {
   selectedTaskId.value = task.id!
   selectedTask.value = { ...task }
   form.value = { ...task }
+  if (task.k8s_kubeconfig_set) {
+    form.value.k8s_kubeconfig = ''
+  }
   fetchSavedLogs(1)
   // if (task.k8s_namespace) fetchPods() // Removed
 }
@@ -575,6 +583,9 @@ const openConfig = (task: MonitorTask) => {
     form.value = { ...task }
     if (form.value.s3_secret_key === undefined || form.value.s3_secret_key === null) {
       form.value.s3_secret_key = ''
+    }
+    if (task.k8s_kubeconfig_set) {
+      form.value.k8s_kubeconfig = ''
     }
     showConfigDialog.value = true
 }
@@ -585,6 +596,7 @@ const createNewTask = () => {
     name: 'New Monitor Task', 
     enabled: true,
     k8s_namespace: 'default',
+    k8s_kubeconfig: '',
     alert_keywords: ['ERROR'],
     immediate_keywords: [],
     ignore_keywords: [],

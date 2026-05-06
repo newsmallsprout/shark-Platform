@@ -17,6 +17,7 @@ export const useSystemStore = defineStore('system', () => {
     prometheus_url: '',
     ark_base_url: '',
     ark_api_key: '',
+    ark_api_key_set: false,
     ark_model_id: ''
   })
   
@@ -121,7 +122,7 @@ export const useSystemStore = defineStore('system', () => {
     try {
       await systemApi.saveInspectionConfig(config)
       ElMessage.success('Configuration saved')
-      inspectionConfig.value = config
+      await fetchInspectionConfig()
     } catch (e) {
       console.error(e)
     }

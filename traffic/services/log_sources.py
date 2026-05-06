@@ -1,9 +1,7 @@
 """
 Normalize multi-site log sources (per-domain files or Redis lists).
 
-未在 DB 中配置多站点时，仍可根据：
-  - 分钟聚合表 TrafficMinuteRollup.source_id
-  - Redis 集合 traffic:known_stream_keys（ingest 时写入）
+未在 DB 中配置多站点时，仍可根据 Redis 集合 traffic:known_stream_keys（ingest 时写入）
 自动出现在大盘数据源下界；Redis 键名约定见 default_redis_key_for_stream_id。
 """
 from __future__ import annotations
@@ -13,7 +11,7 @@ import logging
 import os
 from typing import Any, Dict, List, Optional, Set
 
-from ..models import TrafficDashboardConfig, TrafficMinuteRollup
+from ..models import TrafficDashboardConfig
 
 logger = logging.getLogger(__name__)
 
@@ -236,23 +234,6 @@ def _stream_keys_from_redis() -> Set[str]:
 def discovered_stream_ids(cfg: TrafficDashboardConfig) -> List[str]:
     s: Set[str] = set()
     s.update(_stream_keys_from_redis())
-    try:
-        from datetime import timedelta
-
-        from django.utils import timezone
-
-        since = timezone.now() - timedelta(days=30)
-        for x in (
-            TrafficMinuteRollup.objects.filter(bucket_start__gte=since)
-            .values_list("source_id", flat=True)
-            .distinct()[:500]
-        ):
-            if x:
-                t = str(x).strip()
-                if t:
-                    s.add(t)
-    except Exception as e:
-        logger.debug("discovered_stream_ids rollup: %s", e)
     return sorted(s)
 
 
@@ -289,7 +270,7 @@ def effective_log_sources(cfg: TrafficDashboardConfig) -> List[Dict[str, Any]]:
 
 
 def register_stream_key_observed(stream_key: str) -> None:
-    """ingest 成功后登记，便于尚无 rollup 时也能在下拉里出现。"""
+    """ingest 成功后登记，便于数据源下拉中出现尚未配置的配置项。"""
     sk = (stream_key or "").strip() or "default"
     if len(sk) > 128:
         sk = sk[:128]

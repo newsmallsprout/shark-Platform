@@ -20,11 +20,19 @@ if not User.objects.filter(username='admin').exists():
     print('Superuser admin created')
 "
 
-# Start Gunicorn (Backend) on port 8001
-# 1 worker is REQUIRED（TaskManager 进程内状态）。并发靠线程；可用 GUNICORN_THREADS 调大（IO/GeoIP 友好）。
+# Gunicorn: default 1 worker if Normal sync runs in-process (TaskManager threads).
+# For SHARK_SYNC_NORMAL_MODE=supervisor, set GUNICORN_WORKERS>1 and run the supervisor below.
 echo "Starting Gunicorn on port 8001..."
 GUNICORN_THREADS="${GUNICORN_THREADS:-4}"
-gunicorn shark_platform.wsgi:application --bind 127.0.0.1:8001 --workers 1 --timeout 600 \
+GUNICORN_WORKERS="${GUNICORN_WORKERS:-1}"
+if [ "$GUNICORN_WORKERS" != "1" ] && [ "${SHARK_SYNC_NORMAL_MODE:-inprocess}" != "supervisor" ]; then
+  echo "WARN: GUNICORN_WORKERS>1 without SHARK_SYNC_NORMAL_MODE=supervisor: Normal sync tasks are unsafe across workers; see docs/MULTI_WORKER_REFACTOR.md" >&2
+fi
+if [ "${SHARK_SYNC_NORMAL_MODE:-inprocess}" = "supervisor" ]; then
+  echo "Starting sync_supervisor (Normal sync in dedicated process)..."
+  python manage.py sync_supervisor &
+fi
+gunicorn shark_platform.wsgi:application --bind 127.0.0.1:8001 --workers "$GUNICORN_WORKERS" --timeout 600 \
   --threads "$GUNICORN_THREADS" \
   --logger-class shark_platform.gunicorn_logger.FilteredAccessLogger \
   --log-level warning --access-logfile /dev/null --error-logfile - --capture-output &

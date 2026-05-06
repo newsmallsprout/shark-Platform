@@ -83,6 +83,7 @@ def _redact_task_dict(d: dict) -> dict:
     out = dict(d)
     ak = out.get('s3_access_key') or ''
     sk = out.get('s3_secret_key') or ''
+    kc = out.get('k8s_kubeconfig') or ''
     if ak:
         out['s3_access_key'] = f"****{ak[-4:]}" if len(ak) >= 4 else "****"
     if sk:
@@ -90,6 +91,11 @@ def _redact_task_dict(d: dict) -> dict:
         out['s3_secret_key_set'] = True
     else:
         out['s3_secret_key_set'] = False
+    if kc:
+        out['k8s_kubeconfig'] = ""
+        out['k8s_kubeconfig_set'] = True
+    else:
+        out['k8s_kubeconfig_set'] = False
     return out
 
 @api_view(['GET', 'POST'])
@@ -145,6 +151,9 @@ def monitor_task_detail(request, pk):
         if 's3_secret_key' in data and (data.get('s3_secret_key') == '' or data.get('s3_secret_key') is None):
             data = dict(data)
             data.pop('s3_secret_key', None)
+        if 'k8s_kubeconfig' in data and (data.get('k8s_kubeconfig') == '' or data.get('k8s_kubeconfig') is None):
+            data = dict(data)
+            data.pop('k8s_kubeconfig', None)
         for field in [
             "name", "enabled", "k8s_namespace", "k8s_kubeconfig", 
             "s3_archive_enabled", "s3_bucket", "s3_region", "s3_access_key", "s3_secret_key", "s3_endpoint",

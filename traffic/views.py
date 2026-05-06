@@ -17,7 +17,6 @@ from .services.aggregator import (
     geo_aggregate,
     overview_kpis,
     top_lists,
-    window_bounds,
 )
 from .services.blackbox import fetch_blackbox_summary
 from .services.geoip_lookup import enrich_records
@@ -27,27 +26,10 @@ from .services.log_sources import (
     register_stream_key_observed,
     redis_key_for_ingest,
     resolve_effective_traffic_source_id,
-    resolve_ingest_log_format,
     sources_for_api,
 )
-from .services.nginx_log import records_from_lines
-from .services.redis_log_buffer import is_configured as redis_buffer_configured, push_raw_lines
-from .services.clickhouse_rollups import clickhouse_configured
 from .services.jaeger_query import fetch_jaeger_flow, jaeger_configured
-from .services.rollup_buffer import rollup_enabled, rollup_ingest_append
-from .services.rollup_query import build_rollups_snapshot
-from .services.snapshot_cache import (
-    blackbox_cache_sig,
-    get_or_set_rollup,
-    rollup_cache_key,
-)
-
-
-def _traffic_cfg_revision(cfg: TrafficDashboardConfig) -> float:
-    try:
-        return float(cfg.updated_at.timestamp()) if cfg.updated_at else 0.0
-    except Exception:
-        return 0.0
+from .services.redis_log_buffer import is_configured as redis_buffer_configured, push_raw_lines
 
 
 def _access_log_mode(cfg: TrafficDashboardConfig) -> str:
@@ -109,36 +91,6 @@ def _load_enriched(resolved_source_id: str, *, full_data: bool = False):
     return cfg, recs
 
 
-def _rollup_snapshot_has_rows(data: dict) -> bool:
-    ov = data.get("overview") or {}
-    try:
-        return int(ov.get("rollup_rows") or 0) > 0
-    except (TypeError, ValueError):
-        return False
-
-
-def _raw_redis_snapshot_fallback_allowed() -> bool:
-    """
-    无 ClickHouse 时允许从 Redis List 尾部抽样补全大盘；已配置 CH 时默认仅按时间用分钟聚合。
-
-    调试旧行为可设：TRAFFIC_DASHBOARD_REDIS_FALLBACK=1
-    """
-    if not clickhouse_configured():
-        return True
-    v = (os.environ.get("TRAFFIC_DASHBOARD_REDIS_FALLBACK") or "").strip().lower()
-    return v in ("1", "true", "yes", "on")
-
-
-def _time_based_rollup_enforced() -> bool:
-    """与大盘展示一致：有 CH 且未开 Redis 抽样回退时，不在 UI 上要求「行数」配置。"""
-    return bool(clickhouse_configured() and not _raw_redis_snapshot_fallback_allowed())
-
-
-def _attach_traffic_rollup_meta(overview: dict) -> None:
-    """当前 API 进程是否检测到 TRAFFIC_ROLLUP_ENABLED（与定时任务/ingest 所在进程可能不同）。"""
-    overview["rollup_ingest_enabled"] = rollup_enabled()
-
-
 def _snapshot_payload_from_raw_records(
     cfg: TrafficDashboardConfig,
     recs: list,
@@ -160,7 +112,7 @@ def _snapshot_payload_from_raw_records(
     ov["minute_rollup"] = False
     if rollup_fallback:
         ov["rollup_fallback"] = True
-    _attach_traffic_rollup_meta(ov)
+    ov["rollup_ingest_enabled"] = False
     return {
         "overview": ov,
         "timeseries": aggregate_timeseries(recs, range_key),
@@ -176,14 +128,6 @@ def _parse_full_data(request) -> bool:
     return request.GET.get("full_data", "").strip().lower() in ("1", "true", "yes", "on")
 
 
-def _preset_window_datetimes(range_key: str) -> Tuple[datetime, datetime]:
-    ws, we = window_bounds(range_key)
-    return (
-        datetime.fromtimestamp(ws, tz=dt_timezone.utc),
-        datetime.fromtimestamp(we, tz=dt_timezone.utc),
-    )
-
-
 def _query_source(request) -> str:
     return (request.GET.get("source") or "").strip()
 
@@ -196,7 +140,7 @@ def _query_source_effective(request) -> str:
 
 def _parse_custom_time_bounds(request) -> Tuple[Optional[datetime], Optional[datetime]]:
     """
-    Optional ?start=&end= ISO-8601 (UTC or offset). Used for historical charts from TrafficMinuteRollup.
+    Optional ?start=&end= ISO-8601 (UTC or offset). Used only to detect custom-range requests for snapshot routing.
     Max span 90 days. End must not be more than 5 minutes in the future.
     """
     start_s = (request.GET.get("start") or "").strip()
@@ -271,112 +215,28 @@ def traffic_top(request):
 @permission_classes([IsAuthenticated])
 def traffic_snapshot(request):
     """
-    一次返回大盘所需数据，只解析 / GeoIP 一遍，避免 7 路并行把 Redis 与 CPU 打满导致 503/超时。
-    可选 ?start=&end= ISO8601：从持久化分钟聚合表读取任意区间（需开启 TRAFFIC_ROLLUP_ENABLED 并完成 ingest + traffic_rollup_flush）。
+    一次返回大盘所需数据（Redis/文件 tail 原始日志聚合）。
+    自定义 ?start=&end= 区间由 traffic-service-go + ClickHouse 提供；请将前端或网关指向 Go 服务 /api/traffic/snapshot。
     """
     cfg = TrafficDashboardConfig.load()
     source = resolve_effective_traffic_source_id(_query_source(request), cfg)
     start, end = _parse_custom_time_bounds(request)
     if start is not None and end is not None:
-        inspection = InspectionConfig.load()
-        bb_sig = blackbox_cache_sig(inspection)
-        ck = rollup_cache_key(
-            source_id=source,
-            range_key="_",
-            cfg_updated_ts=_traffic_cfg_revision(cfg),
-            blackbox_sig=bb_sig,
-            start_ts=start.timestamp(),
-            end_ts=end.timestamp(),
+        return Response(
+            {
+                "error": "custom_time_range_not_supported_in_django",
+                "message": "请使用 traffic-service-go GET /api/traffic/snapshot?start=&end=（ClickHouse 分钟聚合）。",
+            },
+            status=501,
         )
-        data = get_or_set_rollup(
-            ck, lambda: build_rollups_snapshot(start, end, source, cfg, inspection)
-        )
-        data.setdefault("overview", {})
-        data["overview"]["full_data"] = False
-        data["overview"]["minute_rollup"] = True
-        if not _rollup_snapshot_has_rows(data):
-            data["overview"]["rollup_empty"] = True
-            if rollup_enabled():
-                data["overview"]["rollup_empty_hint"] = (
-                    "所选区间内分钟聚合表无行。请核对：ingest 与大盘是否同一 Redis、"
-                    "traffic_rollup_flush 是否写入当前 Django 使用的数据库，以及数据源与 rollup 的 source_id 是否一致。"
-                )
-            else:
-                data["overview"]["rollup_empty_hint"] = (
-                    "所选区间内分钟聚合无数据。当前大盘 API 进程未检测到环境变量 TRAFFIC_ROLLUP_ENABLED；"
-                    "请在写入 rollup 缓冲的 ingest 进程同样开启，并执行 traffic_rollup_flush。"
-                )
-        _attach_traffic_rollup_meta(data["overview"])
-        return Response(data)
 
     range_key = request.GET.get("range", "24h")
     full_data = _parse_full_data(request)
     inspection = InspectionConfig.load()
-
-    # 默认：预设时间走分钟聚合（PG+ClickHouse）。已配 ClickHouse 时不再用 Redis 行数尾读抽样，真实口径按时间 range。
-    if not full_data:
-        start_dt, end_dt = _preset_window_datetimes(range_key)
-        bb_sig = blackbox_cache_sig(inspection)
-        ck = rollup_cache_key(
-            source_id=source,
-            range_key=range_key,
-            cfg_updated_ts=_traffic_cfg_revision(cfg),
-            blackbox_sig=bb_sig,
-        )
-        data = get_or_set_rollup(
-            ck,
-            lambda: build_rollups_snapshot(
-                start_dt, end_dt, source, cfg, inspection, preset_range=range_key
-            ),
-        )
-        data.setdefault("overview", {})
-        if not _rollup_snapshot_has_rows(data):
-            if _raw_redis_snapshot_fallback_allowed():
-                _, recs = _load_enriched(source, full_data=False)
-                return Response(
-                    _snapshot_payload_from_raw_records(
-                        cfg, recs, range_key, inspection, full_data=False, rollup_fallback=True
-                    )
-                )
-            # 已配 ClickHouse 时默认不抽样 Redis，但若该时间窗在分钟表真无行（短窗+flush 延迟/尚未写入），
-            # 而 Redis 列表里仍有近期日志，则只在这一种「rollup 全空」情况下用尾部补一帧，避免流量趋势全零。
-            if (
-                not full_data
-                and cfg.enabled
-                and redis_buffer_configured()
-            ):
-                _, recs = _load_enriched(source, full_data=False)
-                if recs:
-                    return Response(
-                        _snapshot_payload_from_raw_records(
-                            cfg, recs, range_key, inspection, full_data=False, rollup_fallback=True
-                        )
-                    )
-            data["overview"]["full_data"] = False
-            data["overview"]["minute_rollup"] = True
-            data["overview"]["rollup_empty"] = True
-            if clickhouse_configured():
-                data["overview"]["rollup_empty_hint"] = (
-                    "已配置 ClickHouse：大盘仅按所选时间范围从分钟聚合（PostgreSQL + ClickHouse）读取，"
-                    "不再按行数从 Redis 抽样。请确认 ingest 已写入、TRAFFIC_ROLLUP_ENABLED 与 traffic_rollup_flush；"
-                    "调试可设环境变量 TRAFFIC_DASHBOARD_REDIS_FALLBACK=1 临时恢复 Redis 抽样回退。"
-                )
-            else:
-                data["overview"]["rollup_empty_hint"] = (
-                    "所选区间内分钟聚合无数据。请核对 ingest 与 traffic_rollup_flush、"
-                    "以及数据源与 rollup 的 source_id 是否一致。"
-                )
-            _attach_traffic_rollup_meta(data["overview"])
-            return Response(data)
-        data["overview"]["full_data"] = False
-        data["overview"]["minute_rollup"] = True
-        _attach_traffic_rollup_meta(data["overview"])
-        return Response(data)
-
-    cfg, recs = _load_enriched(source, full_data=True)
+    cfg, recs = _load_enriched(source, full_data=full_data)
     return Response(
         _snapshot_payload_from_raw_records(
-            cfg, recs, range_key, inspection, full_data=True, rollup_fallback=False
+            cfg, recs, range_key, inspection, full_data=full_data, rollup_fallback=False
         )
     )
 
@@ -456,8 +316,8 @@ def traffic_dashboard_config(request):
                 "prometheus_url_override": cfg.prometheus_url_override,
                 "blackbox_promql": cfg.blackbox_promql,
                 "redis_env_configured": redis_buffer_configured(),
-                "clickhouse_configured": clickhouse_configured(),
-                "time_based_rollup_enforced": _time_based_rollup_enforced(),
+                "clickhouse_configured": bool((os.environ.get("CLICKHOUSE_HOST") or "").strip()),
+                "time_based_rollup_enforced": False,
                 "jaeger_query_configured": jaeger_configured(),
                 "ingest_path": "/api/traffic/ingest",
                 "edge_ingest_path": "/api/edge/logs",
@@ -566,14 +426,6 @@ def traffic_ingest(request):
     n = push_raw_lines(lines, key, _redis_cap(cfg))
     if n > 0:
         register_stream_key_observed(ingest_source or "default")
-    if rollup_enabled() and n > 0:
-        try:
-            lf = resolve_ingest_log_format(cfg, ingest_source, "")
-            recs = records_from_lines(lines, lf)
-            enrich_records(recs, cfg.geoip_db_path)
-            rollup_ingest_append(recs, ingest_source or "")
-        except Exception:
-            pass
     return Response({"accepted": n, "truncated": truncated})
 
 
@@ -621,18 +473,9 @@ def edge_logs_ingest(request):
 
     cfg = TrafficDashboardConfig.load()
     stream_key = (body.get("stream_key") or "default").strip() or "default"
-    batch_lf = (body.get("log_format") or "").strip()
-    lf = resolve_ingest_log_format(cfg, stream_key, batch_lf)
 
     key = redis_key_for_ingest(cfg, stream_key)
     n = push_raw_lines(lines, key, _redis_cap(cfg))
     if n > 0:
         register_stream_key_observed(stream_key)
-    if rollup_enabled() and n > 0:
-        try:
-            recs = records_from_lines(lines, lf)
-            enrich_records(recs, cfg.geoip_db_path)
-            rollup_ingest_append(recs, stream_key)
-        except Exception:
-            pass
     return Response({"accepted": n, "truncated": truncated, "stream_key": stream_key})

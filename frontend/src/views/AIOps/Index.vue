@@ -180,7 +180,12 @@
           <el-input v-model="configForm.api_base" />
         </el-form-item>
         <el-form-item label="API Key">
-          <el-input v-model="configForm.api_key" type="password" show-password />
+          <el-input
+            v-model="configForm.api_key"
+            type="password"
+            show-password
+            :placeholder="configForm.api_key_set ? '已保存密钥：留空表示不修改' : '必填以启用模型调用'"
+          />
         </el-form-item>
         <el-form-item label="Model Name">
           <el-input v-model="configForm.model" placeholder="e.g. gpt-4, deepseek-chat" />
@@ -255,6 +260,7 @@ const configForm = reactive({
   provider: 'openai',
   api_base: '',
   api_key: '',
+  api_key_set: false,
   model: '',
   max_tokens: 2000,
   temperature: 0.7,
@@ -269,6 +275,7 @@ const openConfig = async () => {
   try {
     const res = await aiOpsApi.getConfig() as any
     Object.assign(configForm, res)
+    configForm.api_key = ''
     configVisible.value = true
   } catch (error) {
     ElMessage.error('Failed to load config')
@@ -280,6 +287,9 @@ const saveConfig = async () => {
     await aiOpsApi.updateConfig(configForm)
     ElMessage.success('Configuration saved')
     configVisible.value = false
+    const res = await aiOpsApi.getConfig() as any
+    Object.assign(configForm, res)
+    configForm.api_key = ''
   } catch (error) {
     ElMessage.error('Failed to save config')
   }

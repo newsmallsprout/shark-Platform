@@ -40,31 +40,35 @@ def get_alert_fingerprint(alert):
     return hashlib.md5(label_str.encode("utf-8")).hexdigest()
 
 
+def _redact_ai_config(config: AIConfig) -> dict:
+    return {
+        "provider": config.provider,
+        "api_base": config.api_base,
+        "api_key": "",
+        "api_key_set": bool((config.api_key or "").strip()),
+        "model": config.model,
+        "max_tokens": config.max_tokens,
+        "temperature": config.temperature,
+        "prompt_template": config.prompt_template,
+        "final_prompt_template": config.final_prompt_template,
+        "enable_ai_analysis": config.enable_ai_analysis,
+        "max_agent_iterations": config.max_agent_iterations,
+        "max_tool_calls_per_incident": config.max_tool_calls_per_incident,
+    }
+
+
 @api_view(["GET", "POST"])
 @permission_classes([IsAuthenticated])
 def ai_config(request):
     if request.method == "GET":
         config = AIConfig.get_active_config()
-        return Response(
-            {
-                "provider": config.provider,
-                "api_base": config.api_base,
-                "api_key": config.api_key,
-                "model": config.model,
-                "max_tokens": config.max_tokens,
-                "temperature": config.temperature,
-                "prompt_template": config.prompt_template,
-                "final_prompt_template": config.final_prompt_template,
-                "enable_ai_analysis": config.enable_ai_analysis,
-                "max_agent_iterations": config.max_agent_iterations,
-                "max_tool_calls_per_incident": config.max_tool_calls_per_incident,
-            }
-        )
+        return Response(_redact_ai_config(config))
     config = AIConfig.get_active_config()
     data = request.data
     config.provider = data.get("provider", config.provider)
     config.api_base = data.get("api_base", config.api_base)
-    config.api_key = data.get("api_key", config.api_key)
+    if "api_key" in data and (data.get("api_key") or "").strip():
+        config.api_key = data.get("api_key", "")
     config.model = data.get("model", config.model)
     config.max_tokens = int(data.get("max_tokens", config.max_tokens))
     config.temperature = float(data.get("temperature", config.temperature))

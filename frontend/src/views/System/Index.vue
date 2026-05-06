@@ -199,7 +199,12 @@
             <el-input v-model="configForm.ark_base_url" placeholder="https://ark.cn-beijing.volces.com/api/v3" />
           </el-form-item>
           <el-form-item label="Ark API Key">
-            <el-input v-model="configForm.ark_api_key" type="password" show-password />
+            <el-input
+              v-model="configForm.ark_api_key"
+              type="password"
+              show-password
+              :placeholder="configForm.ark_api_key_set ? '已保存密钥：留空表示不修改' : '可选'"
+            />
           </el-form-item>
           <el-form-item label="Ark Model Endpoint ID">
             <el-input v-model="configForm.ark_model_id" placeholder="ep-202xxxxxxxx-xxxxx" />
@@ -358,6 +363,7 @@ const configForm = ref({
   prometheus_url: '',
   ark_base_url: '',
   ark_api_key: '',
+  ark_api_key_set: false,
   ark_model_id: ''
 })
 

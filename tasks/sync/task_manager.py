@@ -9,6 +9,11 @@ from core.logging import log
 from .worker import SyncWorker
 from .turbo_runner import TurboPodRunner
 
+
+def _normal_supervisor_mode() -> bool:
+    return (os.environ.get("SHARK_SYNC_NORMAL_MODE") or "inprocess").strip().lower() == "supervisor"
+
+
 class TaskManager:
     def __init__(self):
         self._lock = threading.Lock()
@@ -39,7 +44,7 @@ class TaskManager:
     def start(self, cfg: SyncTaskRequest):
         save_task_config(cfg)
 
-        # Update status in DB and route execution mode.
+        defer_to_supervisor = False
         try:
             t = SyncTask.objects.get(task_id=cfg.task_id)
             self._apply_turbo_fields(t, cfg)
@@ -55,13 +60,15 @@ class TaskManager:
             t.turbo_phase = None
             t.status = "running"
             t.save()
+            defer_to_supervisor = _normal_supervisor_mode()
         except SyncTask.DoesNotExist:
             pass
 
-        w = SyncWorker(cfg)
-        with self._lock:
-            self._tasks[cfg.task_id] = w
-        threading.Thread(target=w.run, daemon=True).start()
+        if defer_to_supervisor:
+            log(cfg.task_id, "Normal sync: DB updated; supervisor process runs worker")
+            return
+
+        self._start_inprocess_worker(cfg)
 
     def start_by_id(self, task_id: str):
         try:
@@ -192,13 +199,25 @@ class TaskManager:
         except SyncTask.DoesNotExist:
             return None
 
+    def _start_inprocess_worker(self, cfg: SyncTaskRequest):
+        with self._lock:
+            if cfg.task_id in self._tasks:
+                return
+            w = SyncWorker(cfg)
+            self._tasks[cfg.task_id] = w
+        threading.Thread(target=w.run, daemon=True).start()
+
     def restore_from_disk(self):
-        # Restore from DB
         tasks = SyncTask.objects.filter(status="running")
         for t in tasks:
             try:
-                cfg = SyncTaskRequest(**t.config)
-                self.start(cfg)
+                cfg = SyncTaskRequest(**(t.config or {}))
+                if t.turbo_enabled:
+                    self.start(cfg)
+                elif _normal_supervisor_mode():
+                    self._start_inprocess_worker(cfg)
+                else:
+                    self.start(cfg)
             except Exception as e:
                 log("startup", f"restore failed {t.task_id}: {e}")
 

@@ -6,6 +6,8 @@ export interface MonitorTask {
   enabled: boolean
   k8s_namespace: string
   k8s_kubeconfig: string
+  /** Present on API responses when kubeconfig is stored server-side; plaintext is never returned. */
+  k8s_kubeconfig_set?: boolean
   s3_archive_enabled: boolean
   s3_bucket: string
   s3_region: string

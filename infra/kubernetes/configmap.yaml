@@ -7,14 +7,3 @@ data:
   DEBUG: "False"
   ALLOWED_HOSTS: "*"
   CSRF_TRUSTED_ORIGINS: "http://localhost,http://127.0.0.1"
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: shark-platform-secrets
-  namespace: default
-type: Opaque
-data:
-  DJANGO_SECRET_KEY: ZGphbmdvLWluc2VjdXJlLTY9MWdvKGsjKnAtKTdyZyluNip0aD13djFza2g9M280K14yXiFtPTU2ZHJvOGorM28x
-  MYSQL_PASSWORD: cm9vdA==
-  MONGO_PASSWORD: cm9vdA==
