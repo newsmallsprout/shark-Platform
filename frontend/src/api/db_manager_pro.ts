@@ -46,16 +46,24 @@ export const dbManagerProApi = {
     return request.get('db/sql/completion/', { params: { instance_id, database, keyword } })
   },
   explainSql(instance_id: number, database: string, sql: string) {
-    return request.post('db/sql/explain/', { instance_id, database, sql, execute_mode: 'explain' })
+    return request.post(
+      'db/sql/explain/',
+      { instance_id, database, sql, execute_mode: 'explain' },
+      { timeout: 120000 },
+    )
   },
   reviewSql(instance_id: number, database: string, sql: string) {
-    return request.post('db/sql/ai-review/', { instance_id, database, sql, review_mode: 'full' })
+    return request.post(
+      'db/sql/ai-review/',
+      { instance_id, database, sql, review_mode: 'full' },
+      { timeout: 180000 },
+    )
   },
   listApprovalApplicants() {
     return request.get('db/sql/approval-applicants/')
   },
   createJob(data: Record<string, any>) {
-    return request.post('db/sql/jobs/create/', data)
+    return request.post('db/sql/jobs/create/', data, { timeout: 180000 })
   },
   listJobs(params?: Record<string, any>) {
     return request.get('db/sql/jobs/', { params })

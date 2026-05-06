@@ -296,6 +296,10 @@ def _cleanup_s3_backups(plan: BackupPlan):
 
 
 def _should_use_celery():
+    """配置了 Broker 即走 Celery；若 Worker 未启动作业会一直 queued。
+    可设环境变量 DB_MANAGER_USE_THREAD_EXECUTOR=1 强制用进程内线程执行 SQL。"""
+    if os.environ.get("DB_MANAGER_USE_THREAD_EXECUTOR", "").strip().lower() in ("1", "true", "yes", "on"):
+        return False
     return bool(getattr(settings, "CELERY_BROKER_URL", "") or os.environ.get("CELERY_BROKER_URL"))
 
 
@@ -721,6 +725,8 @@ def _run_sql_job(job_id: int, request_meta=None):
     job.started_at = timezone.now()
     job.save(update_fields=["status", "progress_percent", "started_at", "updated_at"])
     append_job_log(job, f"[trace:{job.trace_id}] SQL 作业开始执行")
+    job.progress_percent = 18
+    job.save(update_fields=["progress_percent", "updated_at"])
     before_image = []
     after_image = []
     txn_snapshot = {"before": _capture_txn_snapshot(job.instance, job.database_name)}
@@ -728,12 +734,23 @@ def _run_sql_job(job_id: int, request_meta=None):
         if job.execute_mode == "dry_run":
             result = {"headers": [], "rows": [], "affected_rows": 0, "execution_context": {}}
             append_job_log(job, f"[trace:{job.trace_id}] Dry Run 模式未实际执行 SQL")
+            job.progress_percent = 80
+            job.save(update_fields=["progress_percent", "updated_at"])
         else:
             before_image = _capture_before_image(job.instance, job.database_name, job.sql_text)
+            job.progress_percent = 42
+            job.save(update_fields=["progress_percent", "updated_at"])
+            append_job_log(job, f"[trace:{job.trace_id}] 变更前快照已采集")
             result = engine.execute_sql(job.database_name or job.instance.default_database, job.sql_text)
+            job.progress_percent = 72
+            job.save(update_fields=["progress_percent", "updated_at"])
+            append_job_log(job, f"[trace:{job.trace_id}] SQL 已在数据库执行完毕")
             if job.sql_type == "UPDATE":
                 after_image = _capture_before_image(job.instance, job.database_name, f"DELETE FROM {_extract_tables(job.sql_text)[0]} WHERE {_extract_where_clause(job.sql_text)}")
+                append_job_log(job, f"[trace:{job.trace_id}] 变更后对比快照已采集")
         txn_snapshot["after"] = _capture_txn_snapshot(job.instance, job.database_name)
+        job.progress_percent = 88
+        job.save(update_fields=["progress_percent", "updated_at"])
         SQLExecutionResult.objects.update_or_create(
             job=job,
             defaults={

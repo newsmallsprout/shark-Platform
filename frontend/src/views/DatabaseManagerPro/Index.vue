@@ -54,10 +54,10 @@
               </div>
               <div class="toolbar-group">
                 <el-button @click="formatSqlAction">格式化</el-button>
-                <el-button @click="explainSqlAction" :disabled="!canRun">执行计划</el-button>
-                <el-button type="warning" @click="reviewSqlAction" :disabled="!canRun">AI 分析</el-button>
+                <el-button @click="explainSqlAction" :loading="explainLoading" :disabled="!canRun">执行计划</el-button>
+                <el-button type="warning" @click="reviewSqlAction" :loading="aiReviewLoading" :disabled="!canRun">AI 分析</el-button>
                 <el-button @click="approvalSettingDrawerVisible = true" :disabled="!selectedInstance">审批设置</el-button>
-                <el-button type="primary" @click="executeSqlAction" :disabled="!canRun">执行 SQL</el-button>
+                <el-button type="primary" @click="executeSqlAction" :loading="executeLoading" :disabled="!canRun">执行 SQL</el-button>
               </div>
             </div>
           </template>
@@ -128,6 +128,44 @@
                 </div>
               </div>
             </template>
+            <div v-if="activeJob?.id" class="job-exec-panel">
+              <div class="job-exec-row">
+                <span class="job-exec-title">作业 #{{ activeJob.id }}</span>
+                <el-tag effect="dark" :type="jobStatusTagType">{{ jobStatusLabel }}</el-tag>
+                <span v-if="activeJob.trace_id" class="job-exec-trace">trace {{ activeJob.trace_id }}</span>
+              </div>
+              <div class="job-exec-meta">
+                <span>实例：{{ activeJob.instance_name || `#${activeJob.instance}` }}</span>
+                <span v-if="activeJob.database_name">库：{{ activeJob.database_name }}</span>
+                <span v-if="activeJob.sql_type">类型：{{ activeJob.sql_type }}</span>
+                <span v-if="activeJob.affected_rows != null">影响行：{{ activeJob.affected_rows }}</span>
+                <span v-if="activeJob.duration_ms != null">耗时：{{ activeJob.duration_ms }} ms</span>
+              </div>
+              <el-progress
+                class="job-exec-progress"
+                :percentage="jobProgressUi.percent"
+                :status="jobProgressUi.barStatus"
+                :stroke-width="10"
+                :striped="jobProgressUi.striped"
+                :striped-flow="jobProgressUi.stripedFlow"
+              />
+              <div class="job-phase-hint">{{ jobPhaseHint }}</div>
+              <el-alert
+                v-if="activeJob.status === 'failed' && activeJob.error_message"
+                type="error"
+                :closable="false"
+                show-icon
+                class="job-exec-err"
+                :title="String(activeJob.error_message)"
+              />
+              <el-alert
+                v-else-if="activeJob.status === 'waiting_approval'"
+                type="warning"
+                :closable="false"
+                show-icon
+                title="当前作业在等待审批，审批通过后才会进入队列执行。"
+              />
+            </div>
             <el-tabs v-model="activePane">
               <el-tab-pane label="结果集" name="result">
                 <el-table v-if="jobResult.rows_json?.length" :data="jobResult.rows_json" max-height="260">
@@ -136,7 +174,11 @@
                 <el-empty v-else description="暂无结果集" />
               </el-tab-pane>
               <el-tab-pane label="执行日志" name="logs">
-                <div class="log-stream">
+                <el-empty
+                  v-if="!jobLogs.length && (activeJob?.status === 'queued' || activeJob?.status === 'running')"
+                  description="暂无日志输出；排队或执行刚开始时稍候刷新。"
+                />
+                <div v-else class="log-stream">
                   <div v-for="item in jobLogs" :key="`${item.seq}-${item.created_at}`" class="log-line" :class="item.level">
                     [{{ item.level }}] {{ item.message }}
                   </div>
@@ -690,6 +732,10 @@ const restoreForm = reactive({
 })
 
 let pollTimer: number | undefined
+let pollIntervalDesiredMs = 0
+const explainLoading = ref(false)
+const aiReviewLoading = ref(false)
+const executeLoading = ref(false)
 
 const summaryCards = computed(() => {
   const online = instances.value.filter(item => item.status === 'online').length
@@ -941,8 +987,16 @@ const formatSqlAction = async () => {
 }
 
 const explainSqlAction = async () => {
-  if (!selectedInstance.value) return
-  explainResult.value = await dbManagerProApi.explainSql(selectedInstance.value.id, workbench.database, workbench.sql)
+  if (!selectedInstance.value) {
+    ElMessage.warning('请先选择数据库实例')
+    return
+  }
+  explainLoading.value = true
+  try {
+    explainResult.value = await dbManagerProApi.explainSql(selectedInstance.value.id, workbench.database, workbench.sql)
+  } finally {
+    explainLoading.value = false
+  }
 }
 
 const loadCompletion = async (keyword = '') => {
@@ -956,28 +1010,60 @@ const handleCompletionKeywordChange = async (keyword: string) => {
 }
 
 const reviewSqlAction = async () => {
-  if (!selectedInstance.value) return
-  const res = await dbManagerProApi.reviewSql(selectedInstance.value.id, workbench.database, workbench.sql)
-  aiReview.value = res.report
+  if (!selectedInstance.value) {
+    ElMessage.warning('请先选择数据库实例')
+    return
+  }
+  aiReviewLoading.value = true
+  try {
+    const res = (await dbManagerProApi.reviewSql(selectedInstance.value.id, workbench.database, workbench.sql)) as any
+    aiReview.value = res.report
+    if (aiReview.value) ElMessage.success('AI 分析完成')
+  } catch {
+    /* request interceptor */
+  } finally {
+    aiReviewLoading.value = false
+  }
 }
 
 const executeSqlAction = async () => {
-  if (!selectedInstance.value) return
-  const res = await dbManagerProApi.createJob({
-    instance_id: selectedInstance.value.id,
-    database: workbench.database,
-    sql: workbench.sql,
-    applicant_user_id: workbench.applicantUserId,
-    approval_reason: workbench.approvalReason,
-    cc_user_ids: workbench.ccUserIds,
-    approval_flow: workbench.approvalFlow.filter(item => item.group_name)
-  })
-  activeJob.value = res.job
-  aiReview.value = res.report
-  activePane.value = 'logs'
-  await loadJobs()
-  if (activeJob.value?.id) {
-    await loadJobDetail(activeJob.value)
+  if (!selectedInstance.value) {
+    ElMessage.warning('请先选择数据库实例')
+    return
+  }
+  executeLoading.value = true
+  try {
+    const res = (await dbManagerProApi.createJob({
+      instance_id: selectedInstance.value.id,
+      database: workbench.database,
+      sql: workbench.sql,
+      applicant_user_id: workbench.applicantUserId,
+      approval_reason: workbench.approvalReason,
+      cc_user_ids: workbench.ccUserIds,
+      approval_flow: workbench.approvalFlow.filter(item => item.group_name)
+    })) as any
+    activeJob.value = res.job
+    aiReview.value = res.report
+    await loadJobs()
+    if (activeJob.value?.id) {
+      await loadJobDetail(activeJob.value)
+    }
+    const st = activeJob.value?.status
+    if (st === 'failed') {
+      ElMessage.error(activeJob.value?.error_message || '作业被拒绝或未执行')
+      activePane.value = 'logs'
+    } else if (st === 'waiting_approval') {
+      ElMessage.warning('已提交审批，通过后才会执行 SQL；可在「作业记录」查看状态')
+      activePane.value = 'jobs'
+    } else {
+      ElMessage.success('作业已排队执行（异步）；成功后下方会自动切换到结果集')
+      activePane.value = jobResult.value.rows_json?.length ? 'result' : 'logs'
+    }
+    tunePollInterval()
+  } catch {
+    /* request interceptor */
+  } finally {
+    executeLoading.value = false
   }
 }
 
@@ -994,12 +1080,19 @@ const loadJobDetail = async (row: any) => {
   } catch {
     jobResult.value = { columns_json: [], rows_json: [] }
   }
+  const rows = jobResult.value.rows_json as unknown[] | undefined
+  if (detail.status === 'running' || detail.status === 'queued') {
+    activePane.value = 'logs'
+  } else if (detail.status === 'success') {
+    activePane.value = 'result'
+  }
 }
 
 const cancelJobAction = async () => {
   if (!activeJob.value?.id) return
   await dbManagerProApi.cancelJob(activeJob.value.id)
   await loadJobDetail(activeJob.value)
+  tunePollInterval()
   await loadAudit()
 }
 
@@ -1007,12 +1100,14 @@ const pauseJobAction = async () => {
   if (!activeJob.value?.id) return
   await dbManagerProApi.pauseJob(activeJob.value.id)
   await loadJobDetail(activeJob.value)
+  tunePollInterval()
 }
 
 const resumeJobAction = async () => {
   if (!activeJob.value?.id) return
   await dbManagerProApi.resumeJob(activeJob.value.id)
   await loadJobDetail(activeJob.value)
+  tunePollInterval()
 }
 
 const approve = async (row: any) => {
@@ -1186,16 +1281,93 @@ const alertType = (decision: string) => {
   return 'error'
 }
 
+const JOB_STATUS_LABELS: Record<string, string> = {
+  draft: '草稿',
+  ai_reviewing: 'AI 预审中',
+  waiting_confirm: '待确认',
+  waiting_approval: '待审批',
+  queued: '排队中',
+  running: '执行中',
+  paused: '已暂停',
+  success: '执行成功',
+  failed: '失败',
+  cancelled: '已取消',
+}
+
+const jobStatusLabel = computed(() => {
+  const st = activeJob.value?.status
+  return (st && JOB_STATUS_LABELS[st]) || st || '—'
+})
+
+const jobStatusTagType = computed(() => {
+  const st = activeJob.value?.status
+  if (st === 'success') return 'success'
+  if (st === 'failed' || st === 'cancelled') return 'danger'
+  if (st === 'running' || st === 'queued') return 'primary'
+  if (st === 'waiting_approval' || st === 'paused') return 'warning'
+  return 'info'
+})
+
+const jobProgressUi = computed(() => {
+  const j = activeJob.value
+  if (!j?.id) {
+    return { percent: 0, barStatus: undefined as undefined | 'success' | 'exception' | 'warning', striped: false, stripedFlow: false }
+  }
+  const st = j.status
+  const raw = Number(j.progress_percent) || 0
+  if (st === 'success') return { percent: 100, barStatus: 'success' as const, striped: false, stripedFlow: false }
+  if (st === 'failed' || st === 'cancelled') {
+    return { percent: Math.min(Math.max(raw, 8), 99), barStatus: 'exception' as const, striped: false, stripedFlow: false }
+  }
+  if (st === 'queued') return { percent: Math.max(raw, 12), barStatus: undefined, striped: true, stripedFlow: true }
+  if (st === 'running') return { percent: Math.max(raw, 18), barStatus: undefined, striped: true, stripedFlow: true }
+  if (st === 'waiting_approval' || st === 'paused') {
+    return { percent: Math.min(raw || 6, 30), barStatus: 'warning' as const, striped: false, stripedFlow: false }
+  }
+  return { percent: Math.min(Math.max(raw, 5), 95), barStatus: undefined, striped: false, stripedFlow: false }
+})
+
+const jobPhaseHint = computed(() => {
+  const j = activeJob.value
+  if (!j?.id) return '执行 SQL 后将在此展示进度与各阶段说明'
+  const st = j.status
+  if (st === 'waiting_approval') return '等待审批；可通过下方「审批中心」催办，通过后作业才会排队执行。'
+  if (st === 'queued') return '已在队列中，等待执行器（Celery Worker 或进程内线程）拉取任务…'
+  if (st === 'paused') return '作业已暂停，恢复后将重新排队。'
+  if (st === 'cancelled') return '作业已取消。'
+  if (st === 'failed') return '执行失败，请查看下方红色错误信息与「执行日志」明细。'
+  if (st === 'success') return '执行成功；有返回行时在「结果集」查看，仅 DML 时可能无表格数据。'
+  if (st === 'running') {
+    const p = Number(j.progress_percent) || 0
+    if (p < 22) return '阶段 1/4：连接实例并初始化执行上下文…'
+    if (p < 48) return '阶段 2/4：采集变更前快照（如适用）…'
+    if (p < 82) return '阶段 3/4：在数据库中执行 SQL…'
+    return '阶段 4/4：写入结果集、审计与收尾…'
+  }
+  const zh = st ? JOB_STATUS_LABELS[st] : ''
+  return zh ? `当前：${zh}` : ''
+})
+
+const tunePollInterval = () => {
+  const st = activeJob.value?.status || ''
+  const busy = st === 'queued' || st === 'running'
+  const want = busy ? 1500 : 5000
+  if (pollTimer && want === pollIntervalDesiredMs) return
+  pollIntervalDesiredMs = want
+  if (pollTimer) window.clearInterval(pollTimer)
+  pollTimer = window.setInterval(refreshAll, want)
+}
+
 const refreshAll = async () => {
   await Promise.all([loadInstances(), loadJobs(), loadApprovals(), loadAudit(), loadPolicies(), loadAccessRules(), loadBackupData(), loadUserRoleOptions(), loadApprovalApplicants()])
   if (activeJob.value?.id) {
     await loadJobDetail(activeJob.value)
   }
+  tunePollInterval()
 }
 
 onMounted(async () => {
   await refreshAll()
-  pollTimer = window.setInterval(refreshAll, 5000)
 })
 
 onBeforeUnmount(() => {
@@ -1253,6 +1425,48 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-columns: 420px 1fr;
   gap: 12px;
+}
+.job-exec-panel {
+  padding: 12px 12px 8px;
+  margin-bottom: 8px;
+  background: linear-gradient(180deg, #f8fafc 0%, #fff 100%);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+}
+.job-exec-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.job-exec-title {
+  font-weight: 600;
+  font-size: 15px;
+}
+.job-exec-trace {
+  font-size: 12px;
+  color: #64748b;
+  font-family: ui-monospace, monospace;
+}
+.job-exec-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+  margin: 8px 0 10px;
+  font-size: 12px;
+  color: #475569;
+}
+.job-exec-progress {
+  margin-bottom: 8px;
+}
+.job-phase-hint {
+  font-size: 13px;
+  color: #334155;
+  line-height: 1.5;
+  margin-bottom: 8px;
+}
+.job-exec-err {
+  margin-top: 4px;
 }
 .panel-header {
   display: flex;
