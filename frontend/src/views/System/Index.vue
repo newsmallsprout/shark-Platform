@@ -3,11 +3,12 @@
     <div class="page-header">
       <div class="header-info">
         <h2 class="page-title">System Inspection</h2>
-        <p class="page-subtitle">全量服务器资源使用状况 + 告警分析 + 运维处置建议</p>
+        <p class="page-subtitle">全量服务器资源与告警巡检；异常可通过「系统工单」交由人工处置。</p>
       </div>
       <div class="header-actions">
+        <el-button @click="router.push('/system/tickets')" v-if="canViewInspection">系统工单</el-button>
         <el-button @click="showLogs" :icon="Document">Inspection Logs</el-button>
-        <el-button @click="configVisible = true" :icon="Setting" v-if="canManage">Configure AI</el-button>
+        <el-button @click="configVisible = true" :icon="Setting" v-if="canManage">巡检配置</el-button>
         <el-button type="primary" size="large" @click="handleRun" :loading="loading" class="action-btn shadow-btn" v-if="canManage">
           <el-icon><Search /></el-icon> Run New Inspection
         </el-button>
@@ -99,7 +100,7 @@
         <div class="analysis-section">
           <div class="section-header">
             <el-icon><MagicStick /></el-icon>
-            <span>巡检报告（运维分析）</span>
+            <span>巡检报告摘要</span>
           </div>
           <div class="analysis-card">
             <div class="markdown-body">
@@ -180,6 +181,33 @@
           </div>
         </div>
       </div>
+      <template #footer>
+        <el-button @click="dialogVisible = false">关闭</el-button>
+        <el-button type="primary" @click="openTicketDialog">提交系统工单</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="ticketDialogVisible" title="提交系统运维工单" width="560px" destroy-on-close>
+      <el-form label-position="top">
+        <el-form-item label="标题">
+          <el-input v-model="ticketTitle" />
+        </el-form-item>
+        <el-form-item label="严重度">
+          <el-select v-model="ticketSeverity" style="width: 100%">
+            <el-option label="低" value="low" />
+            <el-option label="中" value="medium" />
+            <el-option label="高" value="high" />
+            <el-option label="紧急" value="critical" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="说明（可编辑）">
+          <el-input v-model="ticketDescription" type="textarea" :rows="12" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="ticketDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="ticketSubmitting" @click="submitOpsTicket">提交</el-button>
+      </template>
     </el-dialog>
 
     <!-- Config Dialog -->
@@ -246,6 +274,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted, computed, watch, provide } from 'vue'
+import { useRouter } from 'vue-router'
 import { useSystemStore } from '@/stores/system'
 import type { InspectionReport } from '@/types/system'
 import { 
@@ -254,6 +283,8 @@ import {
   DataLine, Histogram, Document, Refresh, Download
 } from '@element-plus/icons-vue'
 import { taskApi } from '@/api/task'
+import { opsTicketsApi } from '@/api/ops_tickets'
+import { ElMessage } from 'element-plus'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
@@ -277,6 +308,8 @@ use([
 ])
 
 const systemStore = useSystemStore()
+const router = useRouter()
+const canViewInspection = computed(() => systemStore.isAdmin || systemStore.hasPermission('view_inspection'))
 const canManage = computed(() => systemStore.isAdmin || systemStore.hasPermission('run_inspection'))
 // ... existing refs and computed ...
 
@@ -412,6 +445,60 @@ const viewReport = async (row: any) => {
     0
   currentReport.value = { ...rep, score }
   dialogVisible.value = true
+}
+
+const ticketDialogVisible = ref(false)
+const ticketTitle = ref('')
+const ticketDescription = ref('')
+const ticketSeverity = ref('medium')
+const ticketSubmitting = ref(false)
+
+const openTicketDialog = () => {
+  const rep: any = currentReport.value
+  if (!rep?.report_id) {
+    ElMessage.warning('报告数据不完整')
+    return
+  }
+  const hs = rep.health_summary || rep.risk_summary || {}
+  const reasons = (hs.reasons || []).filter(Boolean)
+  const alerts = rep.alerts_summary?.top_alerts || []
+  const rid = rep.report_id as string
+  ticketTitle.value = `巡检处置 · ${rid}`
+  let desc = `关联巡检报告: ${rid}\n健康分: ${rep.score ?? '-'}\n`
+  if (reasons.length) desc += '\n健康原因:\n' + reasons.map((r: string) => `- ${r}`).join('\n')
+  if (alerts.length)
+    desc += '\nTOP 告警:\n' + alerts.slice(0, 8).map((a: any) => `- ${a.name} (${a.count})`).join('\n')
+  if (rep.ai_analysis) desc += '\n\n摘要:\n' + String(rep.ai_analysis).slice(0, 1200)
+  ticketDescription.value = desc
+  ticketSeverity.value =
+    rep.score != null && Number(rep.score) < 60 ? 'critical' : Number(rep.score) < 80 ? 'high' : 'medium'
+  ticketDialogVisible.value = true
+}
+
+const submitOpsTicket = async () => {
+  const rep: any = currentReport.value
+  if (!rep?.report_id) return
+  ticketSubmitting.value = true
+  try {
+    const hs = rep.health_summary || rep.risk_summary || {}
+    await opsTicketsApi.create({
+      title: ticketTitle.value,
+      description: ticketDescription.value,
+      inspection_report_id: rep.report_id as string,
+      severity: ticketSeverity.value,
+      inspection_snapshot: {
+        score: rep.score,
+        health_reasons: hs.reasons || [],
+        top_alerts: (rep.alerts_summary?.top_alerts || []).slice(0, 15),
+      },
+    })
+    ElMessage.success('工单已提交')
+    ticketDialogVisible.value = false
+    dialogVisible.value = false
+    router.push('/system/tickets')
+  } finally {
+    ticketSubmitting.value = false
+  }
 }
 
 // Log Viewer Logic

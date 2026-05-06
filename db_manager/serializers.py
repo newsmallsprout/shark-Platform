@@ -37,13 +37,6 @@ class DBInstanceSerializer(serializers.ModelSerializer):
         return not obj.read_only
 
 
-class SQLReviewRequestSerializer(serializers.Serializer):
-    instance_id = serializers.IntegerField()
-    database = serializers.CharField(required=False, allow_blank=True)
-    sql = serializers.CharField()
-    review_mode = serializers.ChoiceField(choices=["quick", "full"], default="full")
-
-
 class SQLFormatRequestSerializer(serializers.Serializer):
     sql = serializers.CharField()
 

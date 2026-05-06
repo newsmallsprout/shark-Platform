@@ -36,7 +36,7 @@
         <pre class="sql-content">{{ detail.job.sql_text }}</pre>
       </el-card>
 
-      <el-divider content-position="left">AI 预审</el-divider>
+      <el-divider content-position="left">SQL 规则预审</el-divider>
       <el-descriptions v-if="detail?.ai_review" :column="1" border>
         <el-descriptions-item label="决策">{{ detail.ai_review.decision || '-' }}</el-descriptions-item>
         <el-descriptions-item label="摘要">{{ detail.ai_review.sql_summary || '-' }}</el-descriptions-item>

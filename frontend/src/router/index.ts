@@ -84,16 +84,16 @@ const routes: Array<RouteRecordRaw> = [
         meta: { title: 'Log Monitor', icon: 'Monitor', viewPerm: 'view_logs' }
       },
       {
-        path: 'ai-ops',
-        name: 'AIOps',
-        component: () => import('@/views/AIOps/Index.vue'),
-        meta: { title: 'AI Fault Analysis', icon: 'Cpu' }
-      },
-      {
         path: 'schedules',
         name: 'Schedules',
         component: () => import('@/views/Schedules/Index.vue'),
         meta: { title: 'Schedules', icon: 'Calendar' }
+      },
+      {
+        path: 'system/tickets',
+        name: 'SystemOpsTickets',
+        component: () => import('@/views/System/OpsTickets.vue'),
+        meta: { title: 'System Ops Tickets', icon: 'Tickets', viewPerm: 'view_inspection' }
       },
       {
         path: 'system',

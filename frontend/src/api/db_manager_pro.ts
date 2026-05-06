@@ -54,13 +54,6 @@ export const dbManagerProApi = {
       { timeout: 120000 },
     )
   },
-  reviewSql(instance_id: number, database: string, sql: string) {
-    return request.post(
-      'db/sql/ai-review/',
-      { instance_id, database, sql, review_mode: 'full' },
-      { timeout: 180000 },
-    )
-  },
   listApprovalApplicants() {
     return request.get('db/sql/approval-applicants/')
   },

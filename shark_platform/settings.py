@@ -56,6 +56,7 @@ INSTALLED_APPS = [
     'deploy',
     'monitor',
     'inspection',
+    'ops_tickets',
     'tasks',
     'schedules',
     'ai_ops',

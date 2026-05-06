@@ -21,7 +21,6 @@ from django.conf import settings
 from django.utils.dateparse import parse_datetime
 from django.utils import timezone
 
-from ai_ops.models import AIConfig
 from shark_platform.celery import app as celery_app
 
 from .engines import DBEngineFactory
@@ -547,44 +546,8 @@ def _heuristic_review(instance: DBInstance, sql: str, explain_result):
     }
 
 
-def _call_llm_review(instance: DBInstance, database_name: str, sql: str, explain_result):
-    cfg = AIConfig.get_active_config()
-    if not cfg or not cfg.enable_ai_analysis or not cfg.api_key:
-        return None
-    prompt = (
-        "你是数据库安全与性能专家，请输出严格 JSON。"
-        "字段包括 decision,risk_level,sql_summary,security_findings,performance_findings,"
-        "permission_findings,optimization_suggestions,blocking_reasons,rewrite_sql,explain_summary。"
-        f"\n数据库类型: {instance.db_type}"
-        f"\n环境: {instance.environment}"
-        f"\n数据库: {database_name or instance.default_database}"
-        f"\nSQL:\n{sql}"
-        f"\n执行计划:\n{explain_result}"
-    )
-    payload = {
-        "model": cfg.model,
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": cfg.temperature,
-        "max_tokens": min(cfg.max_tokens, 1500),
-    }
-    headers = {"Authorization": f"Bearer {cfg.api_key}", "Content-Type": "application/json"}
-    response = requests.post(f"{cfg.api_base}/chat/completions", headers=headers, json=payload, timeout=45)
-    response.raise_for_status()
-    content = response.json()["choices"][0]["message"]["content"]
-    start = content.find("{")
-    end = content.rfind("}")
-    if start == -1 or end == -1:
-        raise ValueError("LLM response is not valid JSON")
-    report = requests.models.complexjson.loads(content[start:end + 1])
-    report["raw_report"] = {"llm": report, "explain": explain_result}
-    report.setdefault("syntax_ok", True)
-    report.setdefault("security_risk_level", report.get("risk_level", "medium"))
-    report.setdefault("performance_risk_level", report.get("risk_level", "medium"))
-    report.setdefault("permission_risk_level", report.get("risk_level", "medium"))
-    return report
-
-
-def review_sql(instance: DBInstance, database_name: str, sql: str):
+def sql_precheck_report(instance: DBInstance, database_name: str, sql: str):
+    """Rule-based SQL assessment plus optional EXPLAIN (no LLM)."""
     explain_result = {"headers": [], "rows": [], "total": 0}
     sql_type = _sql_type(sql)
     if instance.db_type in ("mysql", "postgresql") and sql_type in {"SELECT", "UPDATE", "DELETE"}:
@@ -592,46 +555,7 @@ def review_sql(instance: DBInstance, database_name: str, sql: str):
             explain_result = explain_sql(instance, database_name, sql)
         except Exception:
             explain_result = {"headers": [], "rows": [], "total": 0}
-    heuristic = _heuristic_review(instance, sql, explain_result)
-    try:
-        llm_result = _call_llm_review(instance, database_name, sql, explain_result)
-    except Exception:
-        llm_result = None
-    return llm_result or heuristic
-
-
-def create_ai_review_job(instance: DBInstance, user, database_name: str, sql: str):
-    ensure_instance_access(user, instance, action="query", database_name=database_name or instance.default_database, sql=sql)
-    job = SQLExecutionJob.objects.create(
-        instance=instance,
-        user=user,
-        database_name=database_name or instance.default_database,
-        sql_text=sql,
-        sql_hash=_hash_sql(sql),
-        sql_type=_sql_type(sql),
-        status="ai_reviewing",
-    )
-    report = review_sql(instance, database_name, sql)
-    SQLAIReview.objects.create(
-        job=job,
-        model_name=AIConfig.get_active_config().model if AIConfig.get_active_config() else "",
-        prompt_version="db-manager-v1",
-        syntax_ok=report.get("syntax_ok", True),
-        security_risk_level=report.get("security_risk_level", "low"),
-        performance_risk_level=report.get("performance_risk_level", "low"),
-        permission_risk_level=report.get("permission_risk_level", "low"),
-        decision=report.get("decision", "allow"),
-        sql_summary=report.get("sql_summary", ""),
-        explain_summary=report.get("explain_summary", ""),
-        rewrite_sql=report.get("rewrite_sql", ""),
-        optimization_suggestions=report.get("optimization_suggestions", []),
-        blocking_reasons=report.get("blocking_reasons", []),
-        raw_report=report.get("raw_report", {}),
-    )
-    job.risk_level = report.get("risk_level", "low")
-    job.status = "waiting_confirm"
-    job.save(update_fields=["risk_level", "status", "updated_at"])
-    return job, report
+    return _heuristic_review(instance, sql, explain_result)
 
 
 def matching_approval_policy(instance: DBInstance, sql: str, report=None):
@@ -788,7 +712,7 @@ def create_execution_job(instance: DBInstance, user, database_name: str, sql: st
     action = _sql_action(sql)
     sql_type = _sql_type(sql)
     ensure_instance_access(user, instance, action=action, database_name=database_name or instance.default_database, sql=sql)
-    report = review_sql(instance, database_name, sql)
+    report = sql_precheck_report(instance, database_name, sql)
     execution_policy = matching_execution_policy(instance, database_name or instance.default_database, sql, report=report)
     actual_execute_mode = "dry_run" if execute_mode == "dry_run" else (execution_policy.auto_execute_mode if execution_policy else recommend_execute_mode(sql))
     job = SQLExecutionJob.objects.create(
@@ -806,7 +730,7 @@ def create_execution_job(instance: DBInstance, user, database_name: str, sql: st
     SQLAIReview.objects.update_or_create(
         job=job,
         defaults={
-            "model_name": AIConfig.get_active_config().model if AIConfig.get_active_config() else "",
+            "model_name": "rules",
             "prompt_version": "db-manager-v1",
             "syntax_ok": report.get("syntax_ok", True),
             "security_risk_level": report.get("security_risk_level", "low"),
@@ -823,9 +747,9 @@ def create_execution_job(instance: DBInstance, user, database_name: str, sql: st
     )
     if report.get("decision") == "block":
         job.status = "failed"
-        job.error_message = "AI 预审阻断执行"
+        job.error_message = "规则预审阻断执行"
         job.save(update_fields=["status", "error_message", "updated_at"])
-        append_job_log(job, f"[trace:{job.trace_id}] AI 预审阻断执行", "error")
+        append_job_log(job, f"[trace:{job.trace_id}] 规则预审阻断执行", "error")
         _write_audit(job, request_meta=request_meta)
         return job, report, None
     matched_policy = matching_approval_policy(instance, sql, report=report)

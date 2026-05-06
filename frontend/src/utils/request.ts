@@ -95,6 +95,10 @@ class Request {
   public delete<T>(url: string, config?: AxiosRequestConfig): Promise<T> {
     return this.instance.delete(url, config)
   }
+
+  public patch<T>(url: string, data?: any, config?: AxiosRequestConfig): Promise<T> {
+    return this.instance.patch(url, data, config)
+  }
 }
 
 export default new Request()

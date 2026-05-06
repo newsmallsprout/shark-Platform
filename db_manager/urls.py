@@ -18,7 +18,6 @@ urlpatterns = [
     path('sql/completion/', views.sql_completion),
     path('sql/approval-applicants/', views.approval_applicant_list),
     path('sql/explain/', views.sql_explain),
-    path('sql/ai-review/', views.sql_ai_review),
     path('sql/jobs/', views.sql_job_list),
     path('sql/jobs/create/', views.sql_job_create),
     path('sql/jobs/<int:pk>/', views.sql_job_detail),

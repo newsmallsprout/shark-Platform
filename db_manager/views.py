@@ -11,8 +11,8 @@ from rest_framework.response import Response
 from api.views import HasRolePermission
 from .engines import DBEngineFactory
 from .models import BackupPlan, BackupRecord, DBAccessRule, DBInstance, DatabaseConnection, RestoreJob, RollbackJob, SQLAIReview, SQLApprovalOrder, SQLApprovalPolicy, SQLAuditLog, SQLExecutionJob, SQLExecutionPolicy
-from .serializers import BackupPlanSerializer, BackupRecordSerializer, DBInstanceSerializer, RestoreJobSerializer, RollbackJobSerializer, SQLApprovalPolicySerializer, SQLExecuteRequestSerializer, SQLExecutionJobSerializer, SQLExecutionPolicySerializer, SQLFormatRequestSerializer, SQLReviewRequestSerializer
-from .services import approval_is_overdue, approve_order, cancel_job, create_ai_review_job, create_execution_job, create_restore_job, create_rollback_job, ensure_instance_access, execute_rollback_job, export_audit_rows, explain_access_preview, explain_sql, filter_accessible_instances, get_schema, get_table_detail, list_approval_applicants, matching_execution_policy, pause_job, recommend_execute_mode, recommend_permission_codename, reject_order, remind_approval, resume_job, run_backup_plan, run_instance_diagnostics, serialize_access_rule, serialize_backup_plan, serialize_execution_policy, serialize_instance, serialize_rollback_job, test_instance, upsert_access_rule, upsert_backup_plan, upsert_execution_policy, upsert_instance
+from .serializers import BackupPlanSerializer, BackupRecordSerializer, DBInstanceSerializer, RestoreJobSerializer, RollbackJobSerializer, SQLApprovalPolicySerializer, SQLExecuteRequestSerializer, SQLExecutionJobSerializer, SQLExecutionPolicySerializer, SQLFormatRequestSerializer
+from .services import approval_is_overdue, approve_order, cancel_job, create_execution_job, create_restore_job, create_rollback_job, ensure_instance_access, execute_rollback_job, export_audit_rows, explain_access_preview, explain_sql, filter_accessible_instances, get_schema, get_table_detail, list_approval_applicants, matching_execution_policy, pause_job, recommend_execute_mode, recommend_permission_codename, reject_order, remind_approval, resume_job, run_backup_plan, run_instance_diagnostics, serialize_access_rule, serialize_backup_plan, serialize_execution_policy, serialize_instance, serialize_rollback_job, test_instance, upsert_access_rule, upsert_backup_plan, upsert_execution_policy, upsert_instance
 
 
 def _normalize_db_connection_extra(conn_type, deployment_mode, extra_config):
@@ -295,25 +295,6 @@ def sql_explain(request):
     ensure_instance_access(request.user, instance, action="query", database_name=serializer.validated_data.get("database", ""), sql=serializer.validated_data["sql"])
     result = explain_sql(instance, serializer.validated_data.get("database", ""), serializer.validated_data["sql"])
     return Response(result)
-
-
-@api_view(['POST'])
-@permission_classes([HasRolePermission])
-def sql_ai_review(request):
-    serializer = SQLReviewRequestSerializer(data=request.data)
-    serializer.is_valid(raise_exception=True)
-    instance = get_object_or_404(filter_accessible_instances(request.user, DBInstance.objects.all(), action="query"), pk=serializer.validated_data["instance_id"])
-    job, report = create_ai_review_job(instance, request.user, serializer.validated_data.get("database", ""), serializer.validated_data["sql"])
-    matched_execution_policy = matching_execution_policy(instance, serializer.validated_data.get("database", ""), serializer.validated_data["sql"], report=report)
-    return Response({
-        "job_id": job.id,
-        "status": job.status,
-        "report": report,
-        "recommended_execute_mode": matched_execution_policy.auto_execute_mode if matched_execution_policy else recommend_execute_mode(serializer.validated_data["sql"]),
-        "required_permission": recommend_permission_codename(serializer.validated_data["sql"], report=report),
-        "execution_policy": serialize_execution_policy(matched_execution_policy) if matched_execution_policy else None,
-        "ai_review": SQLAIReview.objects.filter(job=job).values().first(),
-    })
 
 
 @api_view(['POST'])

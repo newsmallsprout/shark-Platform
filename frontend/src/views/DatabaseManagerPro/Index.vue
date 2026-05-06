@@ -55,7 +55,6 @@
               <div class="toolbar-group">
                 <el-button @click="formatSqlAction">格式化</el-button>
                 <el-button @click="explainSqlAction" :loading="explainLoading" :disabled="!canRun">执行计划</el-button>
-                <el-button type="warning" @click="reviewSqlAction" :loading="aiReviewLoading" :disabled="!canRun">AI 分析</el-button>
                 <el-button @click="approvalSettingDrawerVisible = true" :disabled="!selectedInstance">审批设置</el-button>
                 <el-button type="primary" @click="executeSqlAction" :loading="executeLoading" :disabled="!canRun">执行 SQL</el-button>
               </div>
@@ -85,28 +84,28 @@
           <el-card shadow="never" class="analysis-card">
             <template #header>
               <div class="panel-header">
-                <span>AI 分析 / 执行计划</span>
-                <el-tag v-if="aiReview?.risk_level" :type="riskTagType(aiReview.risk_level)">{{ aiReview.risk_level }}</el-tag>
+                <span>规则预审 / 执行计划</span>
+                <el-tag v-if="sqlPrecheckReport?.risk_level" :type="riskTagType(sqlPrecheckReport.risk_level)">{{ sqlPrecheckReport.risk_level }}</el-tag>
               </div>
             </template>
-            <el-empty v-if="!aiReview && !explainResult.rows?.length" description="先执行 AI 分析或执行计划预览" />
+            <el-empty v-if="!sqlPrecheckReport && !explainResult.rows?.length" description="执行 SQL 后将显示规则预审结果，或使用「执行计划」预览" />
             <template v-else>
               <el-alert
-                v-if="aiReview"
-                :title="`决策：${aiReview.decision || '-'} / SQL 类型：${aiReview.sql_type || '-'}`"
-                :type="alertType(aiReview?.decision)"
+                v-if="sqlPrecheckReport"
+                :title="`决策：${sqlPrecheckReport.decision || '-'} / SQL 类型：${sqlPrecheckReport.sql_type || '-'}`"
+                :type="alertType(sqlPrecheckReport?.decision)"
                 :closable="false"
                 show-icon
                 class="mb-12"
               />
-              <el-descriptions v-if="aiReview" :column="1" border>
-                <el-descriptions-item label="摘要">{{ aiReview.sql_summary || '-' }}</el-descriptions-item>
-                <el-descriptions-item label="执行计划摘要">{{ aiReview.explain_summary || '-' }}</el-descriptions-item>
+              <el-descriptions v-if="sqlPrecheckReport" :column="1" border>
+                <el-descriptions-item label="摘要">{{ sqlPrecheckReport.sql_summary || '-' }}</el-descriptions-item>
+                <el-descriptions-item label="执行计划摘要">{{ sqlPrecheckReport.explain_summary || '-' }}</el-descriptions-item>
                 <el-descriptions-item label="安全风险">
-                  <div v-for="item in aiReview.security_findings || []" :key="item">{{ item }}</div>
+                  <div v-for="item in sqlPrecheckReport.security_findings || []" :key="item">{{ item }}</div>
                 </el-descriptions-item>
                 <el-descriptions-item label="性能建议">
-                  <div v-for="item in aiReview.optimization_suggestions || []" :key="item">{{ item }}</div>
+                  <div v-for="item in sqlPrecheckReport.optimization_suggestions || []" :key="item">{{ item }}</div>
                 </el-descriptions-item>
               </el-descriptions>
               <explain-visualizer v-if="explainResult.rows?.length" :headers="explainResult.headers" :rows="explainResult.rows" class="mt-12" />
@@ -637,7 +636,7 @@ const selectedInstanceId = ref<number | undefined>(undefined)
 const drawerVisible = ref(false)
 const drawerTitle = ref('新增实例')
 const activePane = ref('result')
-const aiReview = ref<any>(null)
+const sqlPrecheckReport = ref<any>(null)
 const explainResult = ref<any>({ headers: [], rows: [] })
 const activeJob = ref<any>(null)
 const jobLogs = ref<any[]>([])
@@ -732,7 +731,6 @@ const restoreForm = reactive({
 let pollTimer: number | undefined
 let pollIntervalDesiredMs = 0
 const explainLoading = ref(false)
-const aiReviewLoading = ref(false)
 const executeLoading = ref(false)
 
 const summaryCards = computed(() => {
@@ -996,23 +994,6 @@ const explainSqlAction = async () => {
   }
 }
 
-const reviewSqlAction = async () => {
-  if (!selectedInstance.value) {
-    ElMessage.warning('请先选择数据库实例')
-    return
-  }
-  aiReviewLoading.value = true
-  try {
-    const res = (await dbManagerProApi.reviewSql(selectedInstance.value.id, workbench.database, workbench.sql)) as any
-    aiReview.value = res.report
-    if (aiReview.value) ElMessage.success('AI 分析完成')
-  } catch {
-    /* request interceptor */
-  } finally {
-    aiReviewLoading.value = false
-  }
-}
-
 const executeSqlAction = async () => {
   if (!selectedInstance.value) {
     ElMessage.warning('请先选择数据库实例')
@@ -1030,7 +1011,7 @@ const executeSqlAction = async () => {
       approval_flow: workbench.approvalFlow.filter(item => item.group_name)
     })) as any
     activeJob.value = res.job
-    aiReview.value = res.report
+    sqlPrecheckReport.value = res.report
     await loadJobs()
     if (activeJob.value?.id) {
       await loadJobDetail(activeJob.value)
@@ -1270,7 +1251,7 @@ const alertType = (decision: string) => {
 
 const JOB_STATUS_LABELS: Record<string, string> = {
   draft: '草稿',
-  ai_reviewing: 'AI 预审中',
+  ai_reviewing: '预审中',
   waiting_confirm: '待确认',
   waiting_approval: '待审批',
   queued: '排队中',

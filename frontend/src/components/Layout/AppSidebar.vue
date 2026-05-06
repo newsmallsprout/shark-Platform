@@ -42,10 +42,6 @@
         </el-menu-item>
 
         <div class="menu-group-title" v-if="!isCollapsed">Operations</div>
-        <el-menu-item index="/ai-ops">
-          <el-icon><Cpu /></el-icon>
-          <template #title>Fault Analysis</template>
-        </el-menu-item>
         <el-menu-item index="/schedules">
           <el-icon><Calendar /></el-icon>
           <template #title>Schedule Mgmt</template>
@@ -59,6 +55,10 @@
         <el-menu-item index="/system" v-if="canViewSystem">
           <el-icon><Setting /></el-icon>
           <template #title>System Inspection</template>
+        </el-menu-item>
+        <el-menu-item index="/system/tickets" v-if="canViewSystem">
+          <el-icon><Tickets /></el-icon>
+          <template #title>系统工单</template>
         </el-menu-item>
         <el-menu-item index="/deploy" v-if="canViewDeploy">
           <el-icon><Upload /></el-icon>
@@ -82,7 +82,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
-import { DataLine, List, Link, Monitor, Setting, Upload, Fold, Expand, Lock, Calendar, Cpu } from '@element-plus/icons-vue'
+import { DataLine, List, Link, Monitor, Setting, Upload, Fold, Expand, Lock, Calendar, Tickets } from '@element-plus/icons-vue'
 import { useSystemStore } from '@/stores/system'
 
 const route = useRoute()
@@ -110,6 +110,7 @@ const activeMenu = computed(() => {
   const path = route.path
   if (path.startsWith('/tasks')) return '/tasks'
   if (path.startsWith('/database-manager/permissions')) return '/database-manager/permissions'
+  if (path.startsWith('/system/tickets')) return '/system/tickets'
   return path
 })
 </script>

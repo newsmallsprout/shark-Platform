@@ -81,6 +81,8 @@ class HasRolePermission(BasePermission):
                 return has('manage_deploy')
             if '/deploy/plans' in path:
                 return has('view_deploy')
+        if '/ops/' in path:
+            return has('view_inspection')
         if '/inspection/' in path:
             if '/inspection/run' in path:
                 return has('run_inspection')

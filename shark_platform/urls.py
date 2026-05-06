@@ -48,6 +48,7 @@ urlpatterns = [
     path('api/', include('tasks.urls')), 
     path('api/monitor/', include('monitor.urls')),
     path('api/inspection/', include('inspection.urls')),
+    path('api/ops/', include('ops_tickets.urls')),
     path('api/', include('schedules.urls')),
     path('api/ai_ops/', include('ai_ops.urls')),
     path('api/db/', include('db_manager.urls')),
