@@ -608,13 +608,11 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { dbManagerProApi, type DBInstancePayload } from '@/api/db_manager_pro'
 import { useSystemStore } from '@/stores/system'
-import { useRouter } from 'vue-router'
 import MonacoSqlEditor from './components/MonacoSqlEditor.vue'
 import ExplainVisualizer from './components/ExplainVisualizer.vue'
 import { getDbTypePreset } from './dbInstanceTypePresets'
 
 const systemStore = useSystemStore()
-const router = useRouter()
 
 const filters = reactive({ keyword: '', environment: '' })
 const instances = ref<any[]>([])
@@ -1035,8 +1033,8 @@ const executeSqlAction = async () => {
   }
 }
 
-const viewApproval = (row: any) => {
-  router.push(`/database-manager/approvals/${row.id}`)
+const viewApproval = (_row: any) => {
+  ElMessage.info('审批详情页面已从导航移除')
 }
 
 const loadJobDetail = async (row: any) => {

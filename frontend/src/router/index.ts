@@ -54,30 +54,6 @@ const routes: Array<RouteRecordRaw> = [
         meta: { title: 'Connections', icon: 'Link', viewPerm: 'view_tasks' }
       },
       {
-        path: 'database-manager',
-        name: 'DatabaseManager',
-        component: () => import('@/views/DatabaseManagerPro/Index.vue'),
-        meta: { title: 'Database Manager', icon: 'Coin', viewPerm: 'view_db_manager' }
-      },
-      {
-        path: 'database-manager/permissions',
-        name: 'DatabaseManagerPermissions',
-        component: () => import('@/views/DatabaseManagerPro/Permissions.vue'),
-        meta: { title: 'Database Permissions', icon: 'Lock', viewPerm: 'manage_db_permissions' }
-      },
-      {
-        path: 'database-manager/approvals/:id',
-        name: 'DatabaseManagerApprovalDetail',
-        component: () => import('@/views/DatabaseManagerPro/ApprovalDetail.vue'),
-        meta: { title: 'Approval Detail', icon: 'Lock', viewPerm: 'approve_sql_execution', hidden: true }
-      },
-      {
-        path: 'database-manager-legacy',
-        name: 'DatabaseManagerLegacy',
-        component: () => import('@/views/DatabaseManager/Index.vue'),
-        meta: { title: 'Database Manager Legacy', hidden: true }
-      },
-      {
         path: 'logs',
         name: 'Logs',
         component: () => import('@/views/LogMonitor/Index.vue'),
@@ -100,12 +76,6 @@ const routes: Array<RouteRecordRaw> = [
         name: 'System',
         component: () => import('@/views/System/Index.vue'),
         meta: { title: 'System', icon: 'Setting', viewPerm: 'view_inspection' }
-      },
-      {
-        path: 'deploy',
-        name: 'Deploy',
-        component: () => import('@/views/Deploy/Index.vue'),
-        meta: { title: 'Deploy', icon: 'Upload', viewPerm: 'view_deploy' }
       },
       {
         path: 'permissions',
@@ -148,12 +118,10 @@ router.beforeEach(async (to, from, next) => {
       // Intelligent fallback
       if (systemStore.hasPermission('view_logs')) return next('/logs')
       if (systemStore.hasPermission('view_tasks')) return next('/tasks')
-      if (systemStore.hasPermission('view_deploy')) return next('/deploy')
       if (systemStore.hasPermission('view_inspection')) return next('/system')
       if (systemStore.hasPermission('view_dashboard')) return next('/dashboard')
       
-      // Fallback to a non-permission page for authenticated users
-      return next('/database-manager')
+      return next('/dashboard')
     }
   }
   next()
