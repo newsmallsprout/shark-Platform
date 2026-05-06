@@ -810,8 +810,13 @@ def sql_completion(request):
     engine = DBEngineFactory.get_engine(instance)
     keyword = request.query_params.get("keyword", "")
     database_name = request.query_params.get("database") or instance.default_database
-    items = engine.completion_items(database_name, keyword) if hasattr(engine, "completion_items") else []
-    return Response({"items": items[:300]})
+    suggest_tables = request.query_params.get("suggest_tables", "").strip().lower() in ("1", "true", "yes", "on")
+    items = (
+        engine.completion_items(database_name, keyword, suggest_tables=suggest_tables)
+        if hasattr(engine, "completion_items")
+        else []
+    )
+    return Response({"items": items[:400]})
 
 
 @api_view(['GET'])

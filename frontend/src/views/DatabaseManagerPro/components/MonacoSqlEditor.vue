@@ -10,20 +10,33 @@ import loader from '@monaco-editor/loader'
 
 type EditorSnippet = { label: string; insertText: string; detail?: string }
 
-const props = withDefaults(defineProps<{
-  modelValue: string
-  language?: string
-  suggestions?: Array<{ label: string; detail?: string; schema?: string; table?: string; column?: string }>
-  extraSnippets?: EditorSnippet[]
-}>(), {
-  language: 'sql',
-  suggestions: () => [],
-  extraSnippets: () => []
-})
+type SqlCompletionItem = {
+  label: string
+  detail?: string
+  schema?: string
+  table?: string
+  column?: string
+  kind?: string
+}
+
+const props = withDefaults(
+  defineProps<{
+    modelValue: string
+    language?: string
+    suggestions?: SqlCompletionItem[]
+    extraSnippets?: EditorSnippet[]
+    /** When set, completion loads asynchronously (supports table vs column mode). */
+    fetchCompletions?: (keyword: string, suggestTables: boolean) => Promise<SqlCompletionItem[]>
+  }>(),
+  {
+    language: 'sql',
+    suggestions: () => [],
+    extraSnippets: () => []
+  }
+)
 
 const emit = defineEmits<{
   (e: 'update:modelValue', value: string): void
-  (e: 'keyword-change', value: string): void
 }>()
 
 const containerRef = ref<HTMLElement | null>(null)
@@ -47,6 +60,41 @@ const activeSnippets = () => {
 }
 
 const isSqlLikeLanguage = () => ['sql', 'mysql', 'pgsql'].includes(props.language || 'sql')
+
+/** Text before cursor with the partial word at cursor stripped so trailing keywords match. */
+function sqlPrefixBeforeCursor(model: any, position: any): string {
+  const offset = model.getOffsetAt(position)
+  const full = model.getValue()
+  let slice = full.slice(0, offset)
+  const word = model.getWordUntilPosition(position)
+  if (word?.word) {
+    const line = model.getLineContent(position.lineNumber)
+    const suf = line.slice(0, position.column - 1)
+    if (suf.endsWith(word.word)) {
+      slice = slice.slice(0, slice.length - word.word.length)
+    }
+  }
+  return slice.replace(/\s+$/, '')
+}
+
+/** True after FROM / JOIN / INTO / UPDATE etc., when user expects a table name. */
+function sqlCompletionWantsTables(model: any, position: any): boolean {
+  if (!isSqlLikeLanguage()) return false
+  const trimmed = sqlPrefixBeforeCursor(model, position)
+  const t = trimmed.toUpperCase()
+  return (
+    /\b(FROM|JOIN|INTO|UPDATE)\s*$/.test(t) ||
+    /\b(ALTER|DROP|TRUNCATE)\s+TABLE\s*$/.test(t)
+  )
+}
+
+function completionKind(monaco: any, item: SqlCompletionItem): number {
+  const k = item.kind
+  if (k === 'table') return monaco.languages.CompletionItemKind.Struct
+  if (k === 'column') return monaco.languages.CompletionItemKind.Field
+  if (k === 'keyword') return monaco.languages.CompletionItemKind.Keyword
+  return monaco.languages.CompletionItemKind.Field
+}
 
 const applyMarkers = () => {
   if (!monacoRef || !editor) return
@@ -91,7 +139,7 @@ const registerCompletion = () => {
   }
   providerDisposable = monacoRef.languages.registerCompletionItemProvider(lang, {
     triggerCharacters: ['.', ' ', '_', '$', '{'],
-    provideCompletionItems(model: any, position: any) {
+    provideCompletionItems: async (model: any, position: any) => {
       const word = model.getWordUntilPosition(position)
       const range = {
         startLineNumber: position.lineNumber,
@@ -99,17 +147,29 @@ const registerCompletion = () => {
         startColumn: word.startColumn,
         endColumn: word.endColumn
       }
+      const wantsTables = sqlCompletionWantsTables(model, position)
+      let items: SqlCompletionItem[] = []
+      if (props.fetchCompletions) {
+        try {
+          items = await props.fetchCompletions(word.word || '', wantsTables)
+        } catch {
+          items = []
+        }
+      } else {
+        items = props.suggestions || []
+      }
+      const snippets = wantsTables ? [] : activeSnippets()
       return {
         suggestions: [
-          ...props.suggestions.map((item) => ({
+          ...items.map((item) => ({
             label: item.label,
-            kind: monacoRef.languages.CompletionItemKind.Field,
+            kind: completionKind(monacoRef, item),
             insertText: item.label,
             detail: item.detail || '',
             documentation: item.detail || '',
             range
           })),
-          ...activeSnippets().map((item) => ({
+          ...snippets.map((item) => ({
             label: item.label,
             kind: monacoRef.languages.CompletionItemKind.Snippet,
             insertText: item.insertText,
@@ -128,14 +188,12 @@ const registerCompletion = () => {
     provideHover(model: any, position: any) {
       const word = model.getWordAtPosition(position)
       if (!word) return null
-      const hit = props.suggestions.find(item => item.label.toLowerCase() === word.word.toLowerCase())
+      const pool = props.fetchCompletions ? [] : props.suggestions || []
+      const hit = pool.find((item) => item.label.toLowerCase() === word.word.toLowerCase())
       if (!hit) return null
       return {
         range: new monacoRef.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn),
-        contents: [
-          { value: `**${hit.label}**` },
-          { value: hit.detail || '-' }
-        ]
+        contents: [{ value: `**${hit.label}**` }, { value: hit.detail || '-' }]
       }
     }
   })
@@ -159,10 +217,6 @@ onMounted(async () => {
   changeDisposable = editor.onDidChangeModelContent(() => {
     const value = editor.getValue()
     emit('update:modelValue', value)
-    const position = editor.getPosition()
-    const model = editor.getModel()
-    const word = model?.getWordUntilPosition(position)
-    emit('keyword-change', word?.word || '')
     applyMarkers()
   })
   registerCompletion()
@@ -181,6 +235,10 @@ watch(() => props.modelValue, (value) => {
 watch(() => props.suggestions, () => {
   registerCompletion()
 }, { deep: true })
+
+watch(() => props.fetchCompletions, () => {
+  registerCompletion()
+})
 
 watch(() => props.extraSnippets, () => {
   registerCompletion()

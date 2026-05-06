@@ -74,7 +74,7 @@ class BaseEngine:
         """Return { headers: [], rows: [] }"""
         raise NotImplementedError
 
-    def completion_items(self, db=None, keyword=""):
+    def completion_items(self, db=None, keyword="", suggest_tables=False):
         return []
 
 class MySQLEngine(BaseEngine):
@@ -281,28 +281,82 @@ class MySQLEngine(BaseEngine):
         finally:
             conn.close()
 
-    def completion_items(self, db=None, keyword=""):
+    def completion_items(self, db=None, keyword="", suggest_tables=False):
         conn = self._connect(db)
         items = []
-        keyword_like = f"%{keyword or ''}%"
+        kw = (keyword or "").strip()
+        keyword_like = f"%{kw}%"
+        schema = db or self._database()
         try:
             with conn.cursor() as c:
-                c.execute(
-                    """
-                    SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME
-                    FROM information_schema.COLUMNS
-                    WHERE TABLE_SCHEMA NOT IN ('information_schema', 'performance_schema', 'sys', 'mysql')
-                      AND (%s = '%%' OR TABLE_NAME LIKE %s OR COLUMN_NAME LIKE %s OR TABLE_SCHEMA LIKE %s)
-                    ORDER BY TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION
-                    LIMIT 300
-                    """,
-                    (keyword_like, keyword_like, keyword_like, keyword_like),
-                )
+                if suggest_tables:
+                    if schema:
+                        c.execute(
+                            """
+                            SELECT TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE
+                            FROM information_schema.TABLES
+                            WHERE TABLE_SCHEMA = %s
+                              AND TABLE_TYPE IN ('BASE TABLE', 'VIEW')
+                              AND (%s = '' OR TABLE_NAME LIKE %s)
+                            ORDER BY TABLE_NAME
+                            LIMIT 400
+                            """,
+                            (schema, kw, keyword_like),
+                        )
+                    else:
+                        c.execute(
+                            """
+                            SELECT TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE
+                            FROM information_schema.TABLES
+                            WHERE TABLE_SCHEMA NOT IN ('information_schema', 'performance_schema', 'sys', 'mysql')
+                              AND TABLE_TYPE IN ('BASE TABLE', 'VIEW')
+                              AND (%s = '' OR TABLE_NAME LIKE %s OR TABLE_SCHEMA LIKE %s)
+                            ORDER BY TABLE_SCHEMA, TABLE_NAME
+                            LIMIT 400
+                            """,
+                            (kw, keyword_like, keyword_like),
+                        )
+                    for row in c.fetchall():
+                        items.append({
+                            "schema": row["TABLE_SCHEMA"],
+                            "table": row["TABLE_NAME"],
+                            "column": "",
+                            "kind": "table",
+                            "label": row["TABLE_NAME"],
+                            "detail": f'{row["TABLE_SCHEMA"]} · {row.get("TABLE_TYPE") or "TABLE"}',
+                        })
+                    return items
+                # 列补全：限定当前库（TABLE_SCHEMA），避免扫全实例
+                if schema:
+                    c.execute(
+                        """
+                        SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME
+                        FROM information_schema.COLUMNS
+                        WHERE TABLE_SCHEMA = %s
+                          AND (%s = '' OR COLUMN_NAME LIKE %s OR TABLE_NAME LIKE %s)
+                        ORDER BY TABLE_NAME, ORDINAL_POSITION
+                        LIMIT 400
+                        """,
+                        (schema, kw, keyword_like, keyword_like),
+                    )
+                else:
+                    c.execute(
+                        """
+                        SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME
+                        FROM information_schema.COLUMNS
+                        WHERE TABLE_SCHEMA NOT IN ('information_schema', 'performance_schema', 'sys', 'mysql')
+                          AND (%s = '' OR TABLE_NAME LIKE %s OR COLUMN_NAME LIKE %s OR TABLE_SCHEMA LIKE %s)
+                        ORDER BY TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION
+                        LIMIT 400
+                        """,
+                        (kw, keyword_like, keyword_like, keyword_like),
+                    )
                 for row in c.fetchall():
                     items.append({
                         "schema": row["TABLE_SCHEMA"],
                         "table": row["TABLE_NAME"],
                         "column": row["COLUMN_NAME"],
+                        "kind": "column",
                         "label": row["COLUMN_NAME"],
                         "detail": f'{row["TABLE_SCHEMA"]}.{row["TABLE_NAME"]}',
                     })
@@ -449,28 +503,55 @@ class PostgreSQLEngine(BaseEngine):
         finally:
             conn.close()
 
-    def completion_items(self, db=None, keyword=""):
+    def completion_items(self, db=None, keyword="", suggest_tables=False):
         conn = self._connect(db)
         items = []
-        keyword_like = f"%{keyword or ''}%"
+        kw = (keyword or "").strip()
+        keyword_like = f"%{kw}%"
         try:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as c:
+                if suggest_tables:
+                    c.execute(
+                        """
+                        SELECT table_schema, table_name, table_type
+                        FROM information_schema.tables
+                        WHERE table_catalog = current_database()
+                          AND table_schema NOT IN ('pg_catalog', 'information_schema')
+                          AND table_type IN ('BASE TABLE', 'VIEW')
+                          AND (%s = '' OR table_name ILIKE %s OR table_schema ILIKE %s)
+                        ORDER BY table_schema, table_name
+                        LIMIT 400
+                        """,
+                        (kw, keyword_like, keyword_like),
+                    )
+                    for row in c.fetchall():
+                        items.append({
+                            "schema": row["table_schema"],
+                            "table": row["table_name"],
+                            "column": "",
+                            "kind": "table",
+                            "label": row["table_name"],
+                            "detail": f'{row["table_schema"]} · {row.get("table_type") or "TABLE"}',
+                        })
+                    return items
                 c.execute(
                     """
                     SELECT table_schema, table_name, column_name
                     FROM information_schema.columns
-                    WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
-                      AND (%s = '%%' OR table_name ILIKE %s OR column_name ILIKE %s OR table_schema ILIKE %s)
+                    WHERE table_catalog = current_database()
+                      AND table_schema NOT IN ('pg_catalog', 'information_schema')
+                      AND (%s = '' OR table_name ILIKE %s OR column_name ILIKE %s)
                     ORDER BY table_schema, table_name, ordinal_position
-                    LIMIT 300
+                    LIMIT 400
                     """,
-                    (keyword_like, keyword_like, keyword_like, keyword_like),
+                    (kw, keyword_like, keyword_like),
                 )
                 for row in c.fetchall():
                     items.append({
                         "schema": row["table_schema"],
                         "table": row["table_name"],
                         "column": row["column_name"],
+                        "kind": "column",
                         "label": row["column_name"],
                         "detail": f'{row["table_schema"]}.{row["table_name"]}',
                     })

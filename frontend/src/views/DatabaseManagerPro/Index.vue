@@ -76,9 +76,8 @@
           <monaco-sql-editor
             v-model="workbench.sql"
             :language="editorLanguage"
-            :suggestions="mergedEditorSuggestions"
             :extra-snippets="editorExtraSnippets"
-            @keyword-change="handleCompletionKeywordChange"
+            :fetch-completions="fetchEditorCompletions"
           />
         </el-card>
 
@@ -643,7 +642,6 @@ const explainResult = ref<any>({ headers: [], rows: [] })
 const activeJob = ref<any>(null)
 const jobLogs = ref<any[]>([])
 const jobResult = ref<any>({ columns_json: [], rows_json: [] })
-const completionItems = ref<any[]>([])
 const portManuallyEdited = ref(false)
 const applyingPresetPort = ref(false)
 const flushingDrawerFromRow = ref(false)
@@ -764,27 +762,6 @@ const drawerPitrFields = computed(() => getDbTypePreset(form.db_type).pitrFields
 
 const editorLanguage = computed(() => getDbTypePreset(selectedInstance.value?.db_type).monacoLanguage)
 const editorExtraSnippets = computed(() => getDbTypePreset(selectedInstance.value?.db_type).editorSnippets)
-
-const mergedEditorSuggestions = computed(() => {
-  const preset = getDbTypePreset(selectedInstance.value?.db_type)
-  const seen = new Set<string>()
-  const out: any[] = []
-  for (const item of completionItems.value || []) {
-    const k = String(item.label || '').toLowerCase()
-    if (k && !seen.has(k)) {
-      seen.add(k)
-      out.push(item)
-    }
-  }
-  for (const item of preset.sqlCompletion) {
-    const k = item.label.toLowerCase()
-    if (!seen.has(k)) {
-      seen.add(k)
-      out.push(item)
-    }
-  }
-  return out
-})
 
 const canRun = computed(() => Boolean(selectedInstance.value?.id && workbench.sql.trim()))
 const autoExecuteModeText = computed(() => {
@@ -954,6 +931,27 @@ const loadBackupData = async () => {
   rollbackJobs.value = Array.isArray(rollbacks) ? rollbacks : []
 }
 
+const fetchEditorCompletions = async (keyword: string, suggestTables: boolean) => {
+  const inst = selectedInstance.value
+  if (!inst?.id) return []
+  const dt = inst.db_type as string
+  if (!['mysql', 'postgresql'].includes(dt)) return []
+  const res = await dbManagerProApi.completion(inst.id, workbench.database || '', keyword, suggestTables)
+  let items: any[] = Array.isArray(res.items) ? res.items : []
+  if (!suggestTables) {
+    const preset = getDbTypePreset(dt).sqlCompletion
+    const seen = new Set(items.map((i) => String(i.label || '').toLowerCase()))
+    for (const p of preset) {
+      const k = p.label.toLowerCase()
+      if (!seen.has(k)) {
+        seen.add(k)
+        items.push({ ...p, kind: 'keyword' })
+      }
+    }
+  }
+  return items
+}
+
 const selectInstance = async (row: any) => {
   selectedInstance.value = row
   selectedInstanceId.value = row.id
@@ -963,7 +961,6 @@ const selectInstance = async (row: any) => {
   if (!workbench.sql.trim()) {
     workbench.sql = preset.defaultSql
   }
-  await loadCompletion()
   await runDiagnosticsAction()
 }
 
@@ -997,16 +994,6 @@ const explainSqlAction = async () => {
   } finally {
     explainLoading.value = false
   }
-}
-
-const loadCompletion = async (keyword = '') => {
-  if (!selectedInstance.value?.id) return
-  const res = await dbManagerProApi.completion(selectedInstance.value.id, workbench.database, keyword)
-  completionItems.value = Array.isArray(res.items) ? res.items : []
-}
-
-const handleCompletionKeywordChange = async (keyword: string) => {
-  await loadCompletion(keyword)
 }
 
 const reviewSqlAction = async () => {

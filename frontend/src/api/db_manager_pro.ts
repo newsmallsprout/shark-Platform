@@ -42,8 +42,10 @@ export const dbManagerProApi = {
   formatSql(sql: string) {
     return request.post('db/sql/format/', { sql })
   },
-  completion(instance_id: number, database: string, keyword = '') {
-    return request.get('db/sql/completion/', { params: { instance_id, database, keyword } })
+  completion(instance_id: number, database: string, keyword = '', suggest_tables = false) {
+    const params: Record<string, string | number> = { instance_id, database, keyword }
+    if (suggest_tables) params.suggest_tables = '1'
+    return request.get('db/sql/completion/', { params })
   },
   explainSql(instance_id: number, database: string, sql: string) {
     return request.post(
