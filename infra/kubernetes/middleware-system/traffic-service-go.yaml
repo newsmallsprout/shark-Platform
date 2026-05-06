@@ -1,0 +1,125 @@
+# Traffic Ingest + Snapshot（Go）。与 shark-platform（Django）并行部署；大盘自定义时间窗把 Ingress / 前端指向本 Service。
+#
+# 镜像构建（上下文必须为 traffic-service-go 目录）：
+#   docker build -f traffic-service-go/Dockerfile -t your-registry/traffic-service:latest traffic-service-go
+#
+# 前置（与 docs/deployment/traffic-middleware.md 一致）：
+#   - Namespace、traffic-redis、clickhouse-traffic、geoip PVC、clickhouse-traffic-auth Secret
+#   - DDL：建议执行 infra/clickhouse/traffic_log_raw_and_rollup_mv.sql（或等价 Job）
+#
+# apply：
+#   kubectl apply -f infra/kubernetes/middleware-system/traffic-service-go.yaml
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: traffic-service
+  namespace: middleware-system
+  labels:
+    app: traffic-service
+spec:
+  type: ClusterIP
+  selector:
+    app: traffic-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: traffic-service
+  namespace: middleware-system
+  labels:
+    app: traffic-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: traffic-service
+  template:
+    metadata:
+      labels:
+        app: traffic-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      terminationGracePeriodSeconds: 60
+      volumes:
+        - name: geoip-maxmind
+          persistentVolumeClaim:
+            claimName: geoip-maxmind-pvc
+      containers:
+        - name: traffic-service
+          image: your-registry/traffic-service:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          volumeMounts:
+            - name: geoip-maxmind
+              mountPath: /data/geoip
+              readOnly: true
+          env:
+            - name: HTTP_ADDR
+              value: ":8080"
+            - name: GIN_MODE
+              value: release
+            # 与 Django shark-platform 使用同一 Redis（ingest 成功后仍会登记 known_stream_keys）
+            - name: TRAFFIC_REDIS_URL
+              value: "redis://traffic-redis.middleware-system.svc.cluster.local:6379/2"
+            - name: TRAFFIC_GEOIP_DB
+              value: "/data/geoip/GeoLite2-City.mmdb"
+            # ClickHouse 原生协议端口 9000（不是 HTTP 8123）
+            - name: TRAFFIC_CLICKHOUSE_ADDR
+              value: "clickhouse.middleware-system.svc.cluster.local:9000"
+            - name: TRAFFIC_CLICKHOUSE_USER
+              value: "shark"
+            - name: TRAFFIC_CLICKHOUSE_DATABASE
+              value: "traffic"
+            - name: TRAFFIC_CLICKHOUSE_TABLE
+              value: "traffic_log_raw"
+            - name: TRAFFIC_CLICKHOUSE_ROLLUP_TABLE
+              value: "traffic_rollup_min_local"
+            - name: TRAFFIC_CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: clickhouse-traffic-auth
+                  key: password
+            # Blackbox / 大盘 overview（按需）
+            # - name: TRAFFIC_PROMETHEUS_URL
+            #   value: "http://prometheus:9090"
+            # - name: TRAFFIC_BLACKBOX_PROMQL
+            #   value: '...'
+            # 可选：与 Django 共用 Postgres（DashboardConfig、Jaeger 配置等）；不需要 snapshot PG 时可删掉
+            # - name: DATABASE_URL
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: shark-platform-secrets
+            #       key: DATABASE_URL
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "2"
+              memory: "2Gi"
