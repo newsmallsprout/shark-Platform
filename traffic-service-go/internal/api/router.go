@@ -18,8 +18,10 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Recovery())
 
-	// 结构化日志可按环境替换为 zap / slog
-	r.Use(gin.Logger())
+	// 探针与 Prometheus 抓取频率高，避免刷屏（仍可通过 metrics 与 status 监控）
+	r.Use(gin.LoggerWithConfig(gin.LoggerConfig{
+		SkipPaths: []string{"/healthz", "/metrics"},
+	}))
 
 	r.GET("/healthz", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})

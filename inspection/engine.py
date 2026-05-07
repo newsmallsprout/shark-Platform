@@ -555,6 +555,13 @@ class InspectionEngine:
             report_id=report_id,
             defaults={"content": report}
         )
+
+        try:
+            from ops_tickets.services import ensure_auto_ticket_from_inspection
+
+            ensure_auto_ticket_from_inspection(report_id, report)
+        except Exception as exc:
+            log("inspection", f"Auto ops ticket creation skipped/failed: {exc}")
         
         log("inspection", "Inspection run completed.")
         return report
