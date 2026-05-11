@@ -2,14 +2,21 @@
   <div class="ops-tickets-page">
     <div class="page-header">
       <h2 class="page-title">系统运维工单</h2>
-      <p class="page-subtitle">由巡检报告发起的工单，供运维人工跟进与闭环。</p>
+      <p class="page-subtitle">
+        巡检发现的每个独立问题各生成一条待处理工单；工单内包含 AI 处理意见与建议排查命令，由人工执行与闭环。
+      </p>
       <el-button type="primary" @click="load">刷新</el-button>
     </div>
 
     <el-card shadow="never">
       <el-table :data="items" v-loading="loading" style="width: 100%">
         <el-table-column prop="id" label="#" width="70" />
-        <el-table-column prop="title" label="标题" min-width="200" />
+        <el-table-column prop="title" label="标题" min-width="220" />
+        <el-table-column label="分类" width="120">
+          <template #default="{ row }">
+            {{ ticketCategory(row) || '—' }}
+          </template>
+        </el-table-column>
         <el-table-column prop="inspection_report_id" label="巡检报告" width="130" />
         <el-table-column prop="severity" label="严重度" width="100">
           <template #default="{ row }">
@@ -31,14 +38,27 @@
       </el-table>
     </el-card>
 
-    <el-drawer v-model="drawerVisible" title="工单处理" size="420px" destroy-on-close>
+    <el-drawer v-model="drawerVisible" title="工单处理" size="520px" destroy-on-close>
       <template v-if="active">
         <el-descriptions :column="1" border size="small" class="mb-16">
           <el-descriptions-item label="标题">{{ active.title }}</el-descriptions-item>
+          <el-descriptions-item label="分类">{{ ticketCategory(active) || '—' }}</el-descriptions-item>
           <el-descriptions-item label="巡检">{{ active.inspection_report_id }}</el-descriptions-item>
         </el-descriptions>
+        <div v-if="ticketAiOpinion(active)" class="desc-block">
+          <div class="label">AI 处理意见</div>
+          <pre class="desc-pre desc-pre-ai">{{ ticketAiOpinion(active) }}</pre>
+        </div>
+        <div v-if="ticketAiCommands(active).length" class="desc-block">
+          <div class="label">建议排查命令</div>
+          <pre
+            v-for="(cmd, i) in ticketAiCommands(active)"
+            :key="i"
+            class="desc-pre desc-pre-cmd"
+          >{{ cmd }}</pre>
+        </div>
         <div class="desc-block">
-          <div class="label">描述</div>
+          <div class="label">完整描述</div>
           <pre class="desc-pre">{{ active.description || '-' }}</pre>
         </div>
         <el-form label-position="top" class="mt-16">
@@ -87,6 +107,25 @@ const form = reactive({
   severity: 'medium',
   resolution_notes: '',
 })
+
+function ticketCategory(row: OpsTicketItem) {
+  const s = row.inspection_snapshot as Record<string, unknown> | undefined
+  const c = s?.category
+  return typeof c === 'string' ? c : ''
+}
+
+function ticketAiOpinion(row: OpsTicketItem) {
+  const s = row.inspection_snapshot as Record<string, unknown> | undefined
+  const o = s?.ai_handling_opinion
+  return typeof o === 'string' ? o : ''
+}
+
+function ticketAiCommands(row: OpsTicketItem) {
+  const s = row.inspection_snapshot as Record<string, unknown> | undefined
+  const raw = s?.ai_troubleshooting_commands
+  if (!Array.isArray(raw)) return []
+  return raw.filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
+}
 
 function severityTag(s: string) {
   if (s === 'critical') return 'danger'
@@ -174,6 +213,18 @@ onMounted(load)
   font-size: 12px;
   white-space: pre-wrap;
   word-break: break-word;
+}
+.desc-pre-ai {
+  background: #14532d;
+  color: #dcfce7;
+}
+.desc-pre-cmd {
+  margin-top: 8px;
+  background: #1e1b4b;
+  color: #e0e7ff;
+}
+.desc-pre-cmd:first-of-type {
+  margin-top: 0;
 }
 .mb-16 {
   margin-bottom: 16px;

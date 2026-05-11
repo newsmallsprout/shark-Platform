@@ -557,9 +557,9 @@ class InspectionEngine:
         )
 
         try:
-            from ops_tickets.services import ensure_auto_ticket_from_inspection
+            from ops_tickets.services import ensure_auto_tickets_from_inspection
 
-            ensure_auto_ticket_from_inspection(report_id, report)
+            ensure_auto_tickets_from_inspection(report_id, report)
         except Exception as exc:
             log("inspection", f"Auto ops ticket creation skipped/failed: {exc}")
         
