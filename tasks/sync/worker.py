@@ -8,7 +8,7 @@ import ssl as _ssl
 from datetime import datetime as dt
 
 import pymysql
-from pymysql.cursors import SSDictCursor
+from pymysql.cursors import SSDictCursor, DictCursor
 from pymysql.err import OperationalError as MySQLOperationalError
 
 from pymongo import MongoClient
@@ -335,10 +335,11 @@ class SyncWorker:
             log(self.cfg.task_id, "FullSync: table_map is empty, nothing to sync.")
             return
 
-        # Full sync uses a plain DictCursor (buffered, no server-side cursor issues
-        # with repeated SELECTs on the same connection). Binlog streaming still uses
+        # Full sync uses a buffered DictCursor — no server-side cursor issues
+        # with repeated SELECTs on the same connection. Binlog streaming still uses
         # SSDictCursor via self.mysql_settings in do_inc_sync_once.
-        _full_kw = {k: v for k, v in self.mysql_settings.items() if k != "cursorclass"}
+        _full_kw = dict(self.mysql_settings)
+        _full_kw["cursorclass"] = DictCursor
         conn = pymysql.connect(**_full_kw)
         try:
             # --- Diagnostic: verify which database we're connected to ---
