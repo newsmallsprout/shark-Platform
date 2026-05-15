@@ -335,8 +335,24 @@ class SyncWorker:
             log(self.cfg.task_id, "FullSync: table_map is empty, nothing to sync.")
             return
 
-        conn = pymysql.connect(**self.mysql_settings)
+        # Full sync uses a plain DictCursor (buffered, no server-side cursor issues
+        # with repeated SELECTs on the same connection). Binlog streaming still uses
+        # SSDictCursor via self.mysql_settings in do_inc_sync_once.
+        _full_kw = {k: v for k, v in self.mysql_settings.items() if k != "cursorclass"}
+        conn = pymysql.connect(**_full_kw)
         try:
+            # --- Diagnostic: verify which database we're connected to ---
+            try:
+                with conn.cursor() as c_diag:
+                    c_diag.execute("SELECT DATABASE() AS db")
+                    row = c_diag.fetchone()
+                    actual_db = row.get("db", "UNKNOWN") if row else "UNKNOWN"
+                    log(self.cfg.task_id,
+                        f"FullSync MySQL: host={self.mysql_settings.get('host')}:{self.mysql_settings.get('port')} "
+                        f"db_cfg={self.mysql_settings.get('db')!r} actual_db={actual_db}")
+            except Exception as e:
+                log(self.cfg.task_id, f"FullSync DB diag failed: {e}")
+
             # --- Capture Master Status at start of full sync ---
             start_log_file = None
             start_log_pos = None
@@ -400,11 +416,6 @@ class SyncWorker:
                                 rs = c.fetchall()
                                 if not rs:
                                     break
-                                # Diagnostic: log first batch shape
-                                if processed == 0:
-                                    sample_keys = list(rs[0].keys())[:8] if rs else []
-                                    log(self.cfg.task_id,
-                                        f"FullSync batch#1 table={table} rows={len(rs)} cols={sample_keys} pk={real_pk} pk_in_row={real_pk in (rs[0] if rs else {})}")
                                 q.put(rs)
                                 last_id_local = last_id
                                 for r in rs:
