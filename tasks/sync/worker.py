@@ -403,20 +403,26 @@ class SyncWorker:
                     log(self.cfg.task_id, f"FullSync table={table} pk={real_pk} -> collection={coll_name}")
 
                     q = Queue(maxsize=max(1, int(self.cfg.prefetch_queue_size or 2)))
+                    _diag_printed = [False]  # mutable container for closure
                     def _producer():
                         nonlocal last_id
                         try:
                             while not self.stop_event.is_set():
                                 if last_id is None:
-                                    c.execute(f"SELECT * FROM `{table}` ORDER BY `{real_pk}` LIMIT %s", (mysql_batch,))
+                                    _sql = f"SELECT * FROM `{table}` ORDER BY `{real_pk}` LIMIT %s"
+                                    c.execute(_sql, (mysql_batch,))
                                 else:
-                                    c.execute(
-                                        f"SELECT * FROM `{table}` WHERE `{real_pk}` > %s ORDER BY `{real_pk}` LIMIT %s",
-                                        (last_id, mysql_batch),
-                                    )
+                                    _sql = f"SELECT * FROM `{table}` WHERE `{real_pk}` > %s ORDER BY `{real_pk}` LIMIT %s"
+                                    c.execute(_sql, (last_id, mysql_batch))
                                 rs = c.fetchall()
                                 if not rs:
                                     break
+                                if not _diag_printed[0]:
+                                    _diag_printed[0] = True
+                                    _pk_vals = [r.get(real_pk) for r in rs[:3]]
+                                    log(self.cfg.task_id,
+                                        f"FullSync SQL: {_sql % (('...',) if last_id is None else (last_id, '...'))} "
+                                        f"→ rows={len(rs)} first_pks={_pk_vals}")
                                 q.put(rs)
                                 last_id_local = last_id
                                 for r in rs:
