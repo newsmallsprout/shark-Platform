@@ -121,6 +121,19 @@ class SyncWorker:
         self.shard_total = max(1, int(getattr(cfg, "shard_total", 1) or 1))
         self.shard_index = int(getattr(cfg, "shard_index", 0) or 0)
 
+        # Redis fan-out: in Turbo multi-shard mode, one reader + N consumers
+        self._sync_role = "default"  # default | reader | consumer
+        self._redis_client = None
+        if self.shard_total > 1:
+            try:
+                redis_url = os.environ.get("REDIS_URL") or os.environ.get("TRAFFIC_REDIS_URL") or ""
+                if redis_url:
+                    from .redis_bus import make_redis_client
+                    self._redis_client = make_redis_client(redis_url)
+                    self._sync_role = "reader" if self.shard_index == 0 else "consumer"
+            except Exception:
+                pass
+
         self._last_state_save_ts = 0.0
         self._last_progress_ts = 0.0
 
@@ -236,18 +249,53 @@ class SyncWorker:
                 self.cfg.task_id, self.shard_total, self.shard_index
             )
 
-            # Sharded turbo workers are incremental-only to avoid duplicate full sync work.
+            # Sharded turbo workers: one shard (0) runs full sync first,
+            # then all shards start incremental from the captured binlog position.
             if self.shard_total > 1:
+                has_position = bool(state and state.get("log_file"))
+                if not has_position:
+                    if self.shard_index == 0:
+                        log(self.cfg.task_id, "Turbo shard=0: running full sync before incremental")
+                        self._metrics["phase"] = "full_sync"
+                        self.do_full_sync()
+                        # Reload the position captured during full sync
+                        state = load_state(
+                            self.cfg.task_id, self.shard_total, self.shard_index
+                        )
+                        _bf = state.get("log_file")
+                        _bp = state.get("log_pos")
+                    else:
+                        # Wait for shard 0 to finish full sync and save position
+                        self._metrics["phase"] = "waiting_full_sync"
+                        log(self.cfg.task_id, f"Turbo shard={self.shard_index}: waiting for shard 0 full sync...")
+                        deadline = time.time() + max(300, int(self.cfg.inc_reconnect_backoff_max_sec or 300))
+                        while not self.stop_event.is_set() and time.time() < deadline:
+                            time.sleep(2)
+                            state = load_state(
+                                self.cfg.task_id, self.shard_total, self.shard_index
+                            )
+                            if state and state.get("log_file"):
+                                break
+                        if self.stop_event.is_set():
+                            return
+                        if not (state and state.get("log_file")):
+                            log(self.cfg.task_id, "Turbo shard full-sync wait timed out; starting from latest binlog")
+                        _bf = state.get("log_file") if state else None
+                        _bp = state.get("log_pos") if state else None
+                else:
+                    _bf = self.cfg.binlog_filename or state.get("log_file")
+                    _bp = self.cfg.binlog_position
+                    if _bp is None:
+                        _bp = state.get("log_pos")
+
                 self._metrics["phase"] = "inc_sync"
-                log(self.cfg.task_id, f"Shard mode enabled shard={self.shard_index}/{self.shard_total}; skip full sync")
-                _bf = self.cfg.binlog_filename or (state or {}).get("log_file")
-                _bp = self.cfg.binlog_position
-                if _bp is None:
-                    _bp = (state or {}).get("log_pos")
-                self.do_inc_sync_with_reconnect(_bf, _bp)
+                if self._sync_role == "consumer":
+                    self.do_inc_sync_from_redis()
+                else:
+                    self.do_inc_sync_with_reconnect(_bf, _bp)
                 return
 
-            if not state or state.get("metrics", {}).get("phase") == "full_sync":
+            if not state or not state.get("log_file") or state.get("metrics", {}).get("phase") == "full_sync":
                 # Check if specific binlog position provided in config
                 if self.cfg.binlog_filename:
                     log(self.cfg.task_id, f"Starting IncSync from config: {self.cfg.binlog_filename}:{self.cfg.binlog_position}")
@@ -434,6 +482,197 @@ class SyncWorker:
         finally:
             conn.close()
 
+    def do_inc_sync_from_redis(self):
+        """Turbo consumer mode: read binlog events from Redis queue (fan-out from shard 0 reader).
+
+        This avoids N x MySQL binlog connections — only shard 0 connects to MySQL
+        and publishes to Redis; all consumers read from Redis and apply shard filtering.
+        """
+        if not self._redis_client:
+            log(self.cfg.task_id, "Consumer: no Redis client, falling back to direct MySQL binlog")
+            self._sync_role = "reader"
+            state = load_state(self.cfg.task_id, self.shard_total, self.shard_index) or {}
+            self.do_inc_sync_with_reconnect(state.get("log_file"), state.get("log_pos"))
+            return
+
+        write_concern = WriteConcern(w=int(self.cfg.mongo_write_w or 1), j=bool(self.cfg.mongo_write_j))
+        inc_batch = int(self.cfg.inc_flush_batch or 2000)
+        flush_interval = max(1, int(self.cfg.inc_flush_interval_sec or 2))
+
+        log(self.cfg.task_id,
+            f"Turbo consumer shard={self.shard_index}/{self.shard_total}: "
+            f"reading from Redis queue, batch={inc_batch} flush={flush_interval}s")
+
+        def writer_func(coll_name: str, ops: List):
+            coll = self.mongo_db.get_collection(coll_name, write_concern=write_concern)
+            _s = time.time()
+            self.mongo_writer.safe_bulk_write(coll, ops, table="*", coll_name=coll_name)
+            self.rate.update_write_stats(time.time() - _s, len(ops))
+            self.rate.sleep_if_needed()
+
+        def on_flush_done():
+            try:
+                state = load_state(self.cfg.task_id, self.shard_total, self.shard_index) or {}
+                lf = self._metrics.get("binlog_file") or state.get("log_file")
+                lp = self._metrics.get("binlog_pos") or state.get("log_pos")
+                self._maybe_save_state(lf, lp)
+            except Exception:
+                pass
+
+        buf = FlushBuffer(
+            batch_size=inc_batch,
+            flush_interval_sec=flush_interval,
+            writer_func=writer_func,
+            on_flush_done=on_flush_done,
+            stop_event=self.stop_event,
+        )
+        buf.start()
+
+        try:
+            from .redis_bus import consume_events, load_reader_position
+            for ev in consume_events(self._redis_client, self.cfg.task_id, self.stop_event):
+                ev_type = ev.get("type", "")
+                table = ev.get("table", "")
+                lf = ev.get("log_file")
+                lp = ev.get("log_pos")
+
+                self._metrics["binlog_file"] = lf or self._metrics.get("binlog_file", "")
+                self._metrics["binlog_pos"] = lp or 0
+                self._metrics["last_update"] = time.time()
+                self._metrics["current_table"] = table or ""
+
+                if self.cfg.debug_binlog_events:
+                    log(self.cfg.task_id, f"REDIS-EV {ev_type} table={table}")
+
+                if table not in self.cfg.table_map:
+                    self._maybe_refresh_table_map(reason=f"unknown:{table}")
+                    if table not in self.cfg.table_map:
+                        continue
+
+                coll_name = self.cfg.table_map[table]
+
+                if ev_type == "WriteRowsEvent":
+                    for row in ev.get("rows", []):
+                        data = row.get("values")
+                        if not data:
+                            continue
+                        data = self.mysql_introspector.maybe_fix_row_unknown_cols(table, data)
+                        if not data:
+                            continue
+                        pk_val = self.mysql_introspector.extract_pk(table, data)
+                        if not self._shard_match(pk_val):
+                            continue
+                        self._metrics["inc_insert_count"] += 1
+
+                        doc = self.converter.row_to_base_doc(data)
+                        if self.cfg.use_pk_as_mongo_id:
+                            if pk_val is not None:
+                                doc["_id"] = pk_val
+                                buf.add(coll_name, ReplaceOne({"_id": doc["_id"]}, doc, upsert=True))
+                            else:
+                                buf.add(coll_name, InsertOne(doc))
+                        else:
+                            buf.add(coll_name, InsertOne(doc))
+
+                elif ev_type == "UpdateRowsEvent":
+                    for row in ev.get("rows", []):
+                        data = row.get("after_values")
+                        if not data:
+                            continue
+                        data = self.mysql_introspector.maybe_fix_row_unknown_cols(table, data)
+                        if not data:
+                            continue
+                        pk_val = self.mysql_introspector.extract_pk(table, data)
+                        if pk_val is None:
+                            continue
+                        if not self._shard_match(pk_val):
+                            continue
+                        self._metrics["update_count"] += 1
+
+                        base_id = pk_val
+                        if self.cfg.handle_updates_as_insert and not self.cfg.update_insert_new_doc:
+                            doc = self.converter.row_to_base_doc(data)
+                            buf.add(coll_name, InsertOne(doc))
+                        else:
+                            if self.cfg.update_insert_new_doc:
+                                vdoc = self.converter.row_to_version_doc(data, pk_val=pk_val, base_id=base_id)
+                                buf.add(coll_name, InsertOne(vdoc))
+                            else:
+                                doc = self.converter.row_to_base_doc(data)
+                                if self.cfg.use_pk_as_mongo_id and "_id" in doc:
+                                    buf.add(coll_name, ReplaceOne({"_id": doc["_id"]}, doc, upsert=True))
+                                else:
+                                    pk_field = self.cfg.pk_field
+                                    buf.add(
+                                        coll_name,
+                                        UpdateOne(
+                                            {pk_field: pk_val},
+                                            {
+                                                "$set": doc,
+                                                "$setOnInsert": {"_id": ObjectId()},
+                                                "$unset": {"_is_version": "", "_op": "", "_base_id": "", "_ts": ""},
+                                            },
+                                            upsert=True,
+                                        ),
+                                    )
+
+                elif ev_type == "DeleteRowsEvent" and self.cfg.handle_deletes:
+                    for row in ev.get("rows", []):
+                        data = row.get("values")
+                        if not data:
+                            continue
+                        data = self.mysql_introspector.maybe_fix_row_unknown_cols(table, data)
+                        if not data:
+                            continue
+                        pk_val = self.mysql_introspector.extract_pk(table, data)
+                        if pk_val is None:
+                            continue
+                        if not self._shard_match(pk_val):
+                            continue
+                        self._metrics["delete_count"] += 1
+
+                        if self.cfg.delete_append_new_doc:
+                            vdoc = self.converter.row_to_delete_doc(data, pk_val=pk_val, base_id=pk_val)
+                            buf.add(coll_name, InsertOne(vdoc))
+                        else:
+                            set_doc = {
+                                self.cfg.delete_flag_field: True,
+                                self.cfg.delete_time_field: dt.utcnow(),
+                                "_op": "delete",
+                                "_ts": dt.utcnow(),
+                            }
+                            if self.cfg.delete_mark_only_base_doc:
+                                buf.add(
+                                    coll_name,
+                                    UpdateOne({"_id": pk_val}, {"$set": set_doc}, upsert=self.cfg.delete_upsert_tombstone),
+                                )
+                            else:
+                                buf.add(coll_name, UpdateMany({self.cfg.pk_field: pk_val}, {"$set": set_doc}, upsert=False))
+                                buf.add(
+                                    coll_name,
+                                    UpdateOne({"_id": pk_val}, {"$set": set_doc}, upsert=self.cfg.delete_upsert_tombstone),
+                                )
+
+                try:
+                    self._metrics["processed_count"] = (
+                        int(self._metrics.get("full_insert_count") or 0)
+                        + int(self._metrics.get("inc_insert_count") or 0)
+                        + int(self._metrics.get("update_count") or 0)
+                        + int(self._metrics.get("delete_count") or 0)
+                    )
+                except Exception:
+                    pass
+
+                buf.flush_if_reach_batch()
+                buf.flush(force=False)
+
+        finally:
+            try:
+                buf.stop()
+            except Exception:
+                pass
+            log(self.cfg.task_id, "Turbo consumer IncSync stopped (redis)")
+
     def do_inc_sync_with_reconnect(self, log_file, log_pos):
         retry = 0
         backoff = float(self.cfg.inc_reconnect_backoff_base_sec or 1.0)
@@ -565,6 +804,20 @@ class SyncWorker:
                 self._metrics["current_table"] = table or ""
                 if self.cfg.debug_binlog_events:
                     log(self.cfg.task_id, f"EV {type(ev).__name__} table={table}")
+
+                # Fan-out to Redis consumers (reader mode only)
+                if self._sync_role == "reader" and self._redis_client:
+                    try:
+                        from .redis_bus import publish_event, save_reader_position
+                        lf = self.stream.log_file
+                        lp = self.stream.log_pos
+                        save_reader_position(self._redis_client, self.cfg.task_id, lf, lp)
+                        publish_event(
+                            self._redis_client, self.cfg.task_id,
+                            type(ev).__name__, table, lf, lp, ev.rows,
+                        )
+                    except Exception:
+                        pass
 
                 if table not in self.cfg.table_map:
                     self._maybe_refresh_table_map(reason=f"unknown:{table}")
