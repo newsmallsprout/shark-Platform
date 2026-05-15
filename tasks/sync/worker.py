@@ -388,24 +388,36 @@ class SyncWorker:
                     q = Queue(maxsize=max(1, int(self.cfg.prefetch_queue_size or 2)))
                     def _producer():
                         nonlocal last_id
-                        while not self.stop_event.is_set():
-                            if last_id is None:
-                                c.execute(f"SELECT * FROM `{table}` ORDER BY `{real_pk}` LIMIT %s", (mysql_batch,))
-                            else:
-                                c.execute(
-                                    f"SELECT * FROM `{table}` WHERE `{real_pk}` > %s ORDER BY `{real_pk}` LIMIT %s",
-                                    (last_id, mysql_batch),
-                                )
-                            rs = c.fetchall()
-                            if not rs:
-                                break
-                            q.put(rs)
-                            last_id_local = last_id
-                            for r in rs:
-                                if real_pk in r:
-                                    last_id_local = r[real_pk]
-                            last_id = last_id_local
-                        q.put(None)
+                        try:
+                            while not self.stop_event.is_set():
+                                if last_id is None:
+                                    c.execute(f"SELECT * FROM `{table}` ORDER BY `{real_pk}` LIMIT %s", (mysql_batch,))
+                                else:
+                                    c.execute(
+                                        f"SELECT * FROM `{table}` WHERE `{real_pk}` > %s ORDER BY `{real_pk}` LIMIT %s",
+                                        (last_id, mysql_batch),
+                                    )
+                                rs = c.fetchall()
+                                if not rs:
+                                    break
+                                # Diagnostic: log first batch shape
+                                if processed == 0:
+                                    sample_keys = list(rs[0].keys())[:8] if rs else []
+                                    log(self.cfg.task_id,
+                                        f"FullSync batch#1 table={table} rows={len(rs)} cols={sample_keys} pk={real_pk} pk_in_row={real_pk in (rs[0] if rs else {})}")
+                                q.put(rs)
+                                last_id_local = last_id
+                                for r in rs:
+                                    if real_pk in r:
+                                        last_id_local = r[real_pk]
+                                last_id = last_id_local
+                            q.put(None)
+                        except Exception as e:
+                            log(self.cfg.task_id, f"FullSync producer CRASH table={table} pk={real_pk}: {type(e).__name__}: {str(e)[:300]}")
+                            try:
+                                q.put(None)
+                            except Exception:
+                                pass
                     t = threading.Thread(target=_producer, daemon=True)
                     t.start()
                     fast_insert = False
