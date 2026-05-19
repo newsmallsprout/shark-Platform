@@ -144,43 +144,53 @@ def save_state(
     shard_total: int = 1,
     shard_index: int = 0,
 ):
-    try:
-        with transaction.atomic():
-            task = SyncTask.objects.select_for_update().get(task_id=task_id)
-            state = copy.deepcopy(task.state or {})
-            st = max(1, int(shard_total or 1))
-            si = int(shard_index or 0)
-            metrics = copy.deepcopy(metrics or {})
+    max_retries = 3
+    import time as _time
+    for attempt in range(max_retries):
+        try:
+            with transaction.atomic():
+                task = SyncTask.objects.select_for_update().get(task_id=task_id)
+                state = copy.deepcopy(task.state or {})
+                st = max(1, int(shard_total or 1))
+                si = int(shard_index or 0)
+                metrics = copy.deepcopy(metrics or {})
 
-            if st <= 1:
-                if log_file:
-                    state["log_file"] = log_file
-                if log_pos is not None:
-                    state["log_pos"] = log_pos
-                state["metrics"] = metrics
-            else:
-                shards: Dict[str, Any] = dict(state.get("shards") or {})
-                sk = str(si)
-                prev = dict(shards.get(sk) or {})
-                block: Dict[str, Any] = {
-                    "metrics": metrics,
-                }
-                if log_file:
-                    block["log_file"] = log_file
-                elif prev.get("log_file"):
-                    block["log_file"] = prev.get("log_file")
-                if log_pos is not None:
-                    block["log_pos"] = log_pos
-                elif prev.get("log_pos") is not None:
-                    block["log_pos"] = prev.get("log_pos")
-                shards[sk] = block
-                state["shards"] = shards
-                state["metrics"] = _aggregate_shards_to_metrics(state, st)
+                if st <= 1:
+                    if log_file:
+                        state["log_file"] = log_file
+                    if log_pos is not None:
+                        state["log_pos"] = log_pos
+                    state["metrics"] = metrics
+                else:
+                    shards: Dict[str, Any] = dict(state.get("shards") or {})
+                    sk = str(si)
+                    prev = dict(shards.get(sk) or {})
+                    block: Dict[str, Any] = {
+                        "metrics": metrics,
+                    }
+                    if log_file:
+                        block["log_file"] = log_file
+                    elif prev.get("log_file"):
+                        block["log_file"] = prev.get("log_file")
+                    if log_pos is not None:
+                        block["log_pos"] = log_pos
+                    elif prev.get("log_pos") is not None:
+                        block["log_pos"] = prev.get("log_pos")
+                    shards[sk] = block
+                    state["shards"] = shards
+                    state["metrics"] = _aggregate_shards_to_metrics(state, st)
 
-            task.state = state
-            task.save(update_fields=["state"])
-    except SyncTask.DoesNotExist:
-        pass
+                task.state = state
+                task.save(update_fields=["state"])
+            break  # success — exit retry loop
+        except SyncTask.DoesNotExist:
+            return
+        except Exception as e:
+            s = str(e).lower()
+            if ("database is locked" in s or "locked" in s) and attempt < max_retries - 1:
+                _time.sleep(0.2 * (attempt + 1))
+                continue
+            # Non-retriable or exhausted retries — silently skip this save
 
 
 def save_task_config(cfg: SyncTaskRequest):
