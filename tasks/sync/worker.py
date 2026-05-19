@@ -137,7 +137,7 @@ class SyncWorker:
         self._last_state_save_ts = 0.0
         self._last_progress_ts = 0.0
 
-        self._auto_mode = (not bool(cfg.table_map))
+        self._auto_mode = (not bool(cfg.table_map)) or ("*" in (cfg.table_map or {}))
         self._table_refresh_ts_holder = {"ts": 0.0}
 
         # Status tracking
@@ -219,7 +219,7 @@ class SyncWorker:
         log(self.cfg.task_id, f"Auto table_map built size={len(self.cfg.table_map)} tables={list(self.cfg.table_map.keys())[:5]}...")
 
     def _maybe_refresh_table_map(self, reason: str = ""):
-        self.mysql_introspector.refresh_table_map_if_needed(
+        return self.mysql_introspector.refresh_table_map_if_needed(
             table_map=self.cfg.table_map,
             collection_suffix=self.cfg.collection_suffix,
             auto_mode=self._auto_mode,
@@ -228,6 +228,85 @@ class SyncWorker:
             last_refresh_ts_holder=self._table_refresh_ts_holder,
             reason=reason,
         )
+
+    def _full_sync_new_tables(self, new_tables: list):
+        """用独立 MySQL 连接（非 binlog 流连接）全量同步新发现的表。"""
+        if not new_tables:
+            return
+        mysql_batch = int(self.cfg.mysql_fetch_batch or 2000)
+        mongo_batch = int(self.cfg.mongo_bulk_batch or 2000)
+        write_concern = WriteConcern(w=int(self.cfg.mongo_write_w or 1), j=bool(self.cfg.mongo_write_j))
+
+        full_kw = dict(self.mysql_settings)
+        full_kw.pop("cursorclass", None)
+        conn = None
+        try:
+            conn = pymysql.connect(**full_kw)
+            with conn.cursor() as c:
+                for table in new_tables:
+                    if self.stop_event.is_set():
+                        break
+                    coll_name = self.cfg.table_map.get(table)
+                    if not coll_name:
+                        continue
+
+                    # Detect PK
+                    real_pk = self.cfg.pk_field
+                    try:
+                        detected = self.mysql_introspector.get_primary_key(table)
+                        if detected:
+                            real_pk = detected
+                    except Exception:
+                        pass
+
+                    coll = self.mongo_db.get_collection(coll_name, write_concern=write_concern)
+                    processed = 0
+                    last_id = None
+                    ops = []
+                    log(self.cfg.task_id, f"FullSync(new) table={table} pk={real_pk} -> {coll_name}")
+
+                    while not self.stop_event.is_set():
+                        if last_id is None:
+                            c.execute(f"SELECT * FROM `{table}` ORDER BY `{real_pk}` LIMIT %s", (mysql_batch,))
+                        else:
+                            c.execute(
+                                f"SELECT * FROM `{table}` WHERE `{real_pk}` > %s ORDER BY `{real_pk}` LIMIT %s",
+                                (last_id, mysql_batch),
+                            )
+                        rs = c.fetchall()
+                        if not rs:
+                            break
+
+                        for r in rs:
+                            pk_val = r.get(real_pk)
+                            if pk_val is not None:
+                                last_id = pk_val
+                            doc = self.converter.row_to_base_doc(r)
+                            if self.cfg.use_pk_as_mongo_id and pk_val is not None:
+                                doc["_id"] = pk_val
+                                ops.append(ReplaceOne({"_id": doc["_id"]}, doc, upsert=True))
+                            else:
+                                ops.append(InsertOne(doc))
+                            processed += 1
+                            self._metrics["full_insert_count"] += 1
+
+                            if len(ops) >= mongo_batch:
+                                self.mongo_writer.safe_bulk_write(coll, ops, table, coll_name)
+                                ops.clear()
+
+                    if ops:
+                        self.mongo_writer.safe_bulk_write(coll, ops, table, coll_name)
+                        ops.clear()
+
+                    log(self.cfg.task_id, f"FullSync(new) done table={table} count={processed}")
+        except Exception as e:
+            log(self.cfg.task_id, f"FullSync(new) error: {type(e).__name__}: {str(e)[:300]}")
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
     def _shard_match(self, pk_val: Any) -> bool:
         if self.shard_total <= 1:
@@ -575,7 +654,9 @@ class SyncWorker:
                     log(self.cfg.task_id, f"REDIS-EV {ev_type} table={table}")
 
                 if table not in self.cfg.table_map:
-                    self._maybe_refresh_table_map(reason=f"unknown:{table}")
+                    new_tables = self._maybe_refresh_table_map(reason=f"unknown:{table}")
+                    if new_tables:
+                        self._full_sync_new_tables(new_tables)
                     if table not in self.cfg.table_map:
                         continue
 
@@ -850,7 +931,9 @@ class SyncWorker:
                         pass
 
                 if table not in self.cfg.table_map:
-                    self._maybe_refresh_table_map(reason=f"unknown:{table}")
+                    new_tables = self._maybe_refresh_table_map(reason=f"unknown:{table}")
+                    if new_tables:
+                        self._full_sync_new_tables(new_tables)
                     if table not in self.cfg.table_map:
                         continue
 

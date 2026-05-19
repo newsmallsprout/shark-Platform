@@ -185,25 +185,28 @@ class MySQLIntrospector:
         auto_discover_interval_sec: int,
         last_refresh_ts_holder: Dict[str, float],
         reason: str = "",
-    ):
+    ) -> List[str]:
         """
         last_refresh_ts_holder: {"ts": float} 作为可变引用，避免 worker 里堆字段
+        Returns: list of newly added table names (for immediate full sync).
         """
         if (not auto_mode) or (not auto_discover_new_tables):
-            return
+            return []
 
         now = time.time()
         interval = max(1, int(auto_discover_interval_sec or 10))
         if now - last_refresh_ts_holder.get("ts", 0.0) < interval:
-            return
+            return []
 
         try:
             tables = self.list_tables()
             added = 0
+            added_names = []
             for t in tables:
                 if t not in table_map:
                     table_map[t] = t + collection_suffix
                     added += 1
+                    added_names.append(t)
                     self._table_columns_cache.pop(t, None)
                     self._table_columns_cache_ts.pop(t, None)
                     self._pk_index_cache.pop(t, None)
@@ -213,6 +216,8 @@ class MySQLIntrospector:
                             self._pk_index_by_table.pop(k, None)
             last_refresh_ts_holder["ts"] = now
             if added > 0:
-                log(self.task_id, f"Discovered new tables={added} reason={reason}")
+                log(self.task_id, f"Discovered new tables={added} reason={reason}: {added_names[:5]}...")
+            return added_names
         except Exception as e:
             log(self.task_id, f"Refresh table_map failed: {str(e)[:180]}")
+            return []
