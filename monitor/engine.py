@@ -36,6 +36,9 @@ class MonitorEngine:
         self._index_lock = threading.Lock()
         self._index_entries = {}
         self._index_last_window_start = {}
+        # S3 error alert throttle: task_id -> last_alert_timestamp
+        self._s3_error_last_alert = {}
+        self._s3_error_count = {}
 
     def _get_s3_client(self, task):
         if not boto3:
@@ -222,8 +225,9 @@ class MonitorEngine:
                         Bucket=task.s3_bucket,
                         Delete={'Objects': keys_to_delete[i:i + 1000], 'Quiet': True}
                     )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Failed to cleanup S3 for task {task.id}: {e}")
+            self._alert_s3_failure(task, str(e))
 
     def start(self):
         with self._lock:
@@ -443,6 +447,18 @@ class MonitorEngine:
         raw_buffer = []
         error_output = []
         
+        # --- Severity Filter (SHARK_AIOPS_LOG_SEVERITY) ---
+        severity = os.environ.get("SHARK_AIOPS_LOG_SEVERITY", "all").strip().lower()
+        SEVERITY_ORDER = {'DEBUG': 0, 'TRACE': 0, 'INFO': 10, 'WARN': 20, 'ERROR': 30, 'FATAL': 40}
+        _severity_min_level = 0
+        _severity_keywords = []
+        if severity == "error":
+            _severity_min_level = 30
+            _severity_keywords = ['error', 'fatal', 'panic']
+        elif severity == "warn":
+            _severity_min_level = 20
+            _severity_keywords = ['error', 'warn', 'fatal', 'panic']
+        
         # Load persistent threshold state from task if available, or init new
         threshold_state = task.threshold_state or {}
         threshold_window = task.alert_threshold_window # e.g. 60
@@ -622,6 +638,19 @@ class MonitorEngine:
                 # Decode bytes to string
                 line_raw = line_bytes.decode('utf-8', errors='replace')
                 line = _strip_ansi(line_raw)
+                
+                # Severity filter: skip low-severity lines when not capturing
+                if _severity_min_level > 0 and not stack_capture_active:
+                    app_level_pre = _extract_level(line)
+                    if app_level_pre:
+                        if SEVERITY_ORDER.get(app_level_pre, 0) < _severity_min_level:
+                            low = line.lower()
+                            if not any(kw in low for kw in _severity_keywords):
+                                continue
+                    elif _severity_keywords:
+                        low = line.lower()
+                        if not any(kw in low for kw in _severity_keywords):
+                            continue
                 
                 # Write to raw log
                 if write_raw_s3:
@@ -1030,6 +1059,42 @@ class MonitorEngine:
         # but _fetch_k8s_logs now uses _process_log_stream.
         pass
 
+    def _alert_s3_failure(self, task, error_msg, failed_count=1):
+        """Send Slack alert on S3 upload failures. Throttled: max 1 alert per 30 min per task."""
+        import requests as req
+        try:
+            task.refresh_from_db(fields=['alert_enabled', 'slack_webhook_url'])
+        except Exception:
+            pass
+        if not task.alert_enabled:
+            return
+        webhook_url = task.slack_webhook_url
+        if not webhook_url:
+            return
+        
+        now = time.time()
+        tid = str(task.id)
+        last = self._s3_error_last_alert.get(tid, 0)
+        if now - last < 1800:  # 30 min cooldown
+            return
+        
+        self._s3_error_last_alert[tid] = now
+        bucket = task.s3_bucket or "?"
+        region = task.s3_region or "?"
+        
+        text = (
+            f":warning: *S3 Upload Failure*\n"
+            f"*Task*: {task.name} (id={task.id})\n"
+            f"*Bucket*: {bucket}  *Region*: {region}\n"
+            f"*Error*: {str(error_msg)[:500]}\n"
+            f"*Files failed*: {failed_count} in this batch\n"
+            f"Check S3 credentials: `s3_access_key` in `monitor_monitortask` table."
+        )
+        try:
+            req.post(webhook_url, json={"text": text}, timeout=5)
+        except Exception:
+            pass
+
     def _send_slack_alert(self, alerts, task, source, log_dir, error_filename=None):
         try:
             task.refresh_from_db(fields=['alert_enabled', 'slack_webhook_url', 'alert_silence_minutes', 'alert_state'])
@@ -1311,6 +1376,7 @@ class MonitorEngine:
                         pass
                         
                     logger.error(f"Failed to upload {fname}: {e}")
+                    self._alert_s3_failure(task, str(e), failed_count=1)
                     continue # Don't delete if upload failed
             
             # Perform Delete
