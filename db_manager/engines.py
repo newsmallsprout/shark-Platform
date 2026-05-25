@@ -5,16 +5,10 @@ from pymongo import MongoClient
 import pika
 import json
 import urllib.request
-import urllib.parse
 import base64
 import ssl
 from bson import ObjectId
 from datetime import datetime
-try:
-    import psycopg2
-    import psycopg2.extras
-except ImportError:
-    psycopg2 = None
 from .models import DatabaseConnection
 
 def mongo_json_default(obj):
@@ -27,41 +21,20 @@ def mongo_json_default(obj):
 class DBEngineFactory:
     @staticmethod
     def get_engine(conn: DatabaseConnection):
-        conn_type = getattr(conn, 'type', None) or getattr(conn, 'db_type', None)
-        if conn_type == 'mysql':
+        if conn.type == 'mysql':
             return MySQLEngine(conn)
-        elif conn_type == 'postgresql':
-            return PostgreSQLEngine(conn)
-        elif conn_type == 'redis':
+        elif conn.type == 'redis':
             return RedisEngine(conn)
-        elif conn_type == 'mongo':
+        elif conn.type == 'mongo':
             return MongoEngine(conn)
-        elif conn_type == 'rabbitmq':
+        elif conn.type == 'rabbitmq':
             return RabbitMQEngine(conn)
         else:
-            raise ValueError(f"Unsupported database type: {conn_type}")
+            raise ValueError(f"Unsupported database type: {conn.type}")
 
 class BaseEngine:
     def __init__(self, conn: DatabaseConnection):
         self.conn = conn
-
-    def _database(self):
-        return getattr(self.conn, 'database', None) or getattr(self.conn, 'default_database', None)
-
-    def _extra(self):
-        return getattr(self.conn, 'extra_config', None) or {}
-
-    def _username(self):
-        secret = getattr(self.conn, 'secret', None)
-        if secret is not None:
-            return getattr(secret, 'username', '') or ''
-        return getattr(self.conn, 'user', None) or ''
-
-    def _password(self):
-        secret = getattr(self.conn, 'secret', None)
-        if secret is not None and hasattr(secret, 'get_password'):
-            return secret.get_password() or ''
-        return getattr(self.conn, 'password', None) or ''
 
     def test(self):
         raise NotImplementedError
@@ -74,24 +47,22 @@ class BaseEngine:
         """Return { headers: [], rows: [] }"""
         raise NotImplementedError
 
-    def completion_items(self, db=None, keyword=""):
-        return []
-
 class MySQLEngine(BaseEngine):
     def _connect(self, db=None):
         connect_args = {
             "host": self.conn.host,
             "port": self.conn.port,
-            "user": self._username(),
-            "password": self._password(),
-            "database": db or self._database(),
+            "user": self.conn.user,
+            "password": self.conn.password,
+            "database": db or self.conn.database,
             "connect_timeout": 5,
             "read_timeout": 10,
             "write_timeout": 10,
             "cursorclass": pymysql.cursors.DictCursor
         }
 
-        extra = self._extra()
+        # Handle SSL Configuration
+        extra = self.conn.extra_config or {}
         if extra.get('ssl'):
             ssl_conf = extra.get('ssl')
             # If ssl is just True, use a default permissive context
@@ -185,7 +156,7 @@ class MySQLEngine(BaseEngine):
                         else:
                             # It's an INSERT/UPDATE/DELETE/DDL
                             msg = f"Query executed successfully. Affected rows: {c.rowcount}"
-                            return {"headers": ["Info"], "rows": [{"Info": msg}], "total": 0, "affected_rows": c.rowcount}
+                            return {"headers": ["Info"], "rows": [{"Info": msg}], "total": 0}
                             
                     except Exception as e:
                         return {"headers": ["Error"], "rows": [{"Error": str(e)}], "total": 0}
@@ -235,261 +206,10 @@ class MySQLEngine(BaseEngine):
         finally:
             conn.close()
 
-    def explain(self, db, sql):
-        conn = self._connect(db)
-        try:
-            with conn.cursor() as c:
-                c.execute(f"EXPLAIN FORMAT=JSON {sql}")
-                rows = c.fetchall()
-                rows = json.loads(json.dumps(rows, default=mongo_json_default))
-                return {"headers": list(rows[0].keys()) if rows else [], "rows": rows, "total": len(rows)}
-        finally:
-            conn.close()
-
-    def execute_sql(self, db, sql):
-        conn = self._connect(db)
-        try:
-            thread_id = conn.thread_id()
-            with conn.cursor() as c:
-                c.execute(sql)
-                if c.description:
-                    rows = c.fetchall()
-                    rows = json.loads(json.dumps(rows, default=mongo_json_default))
-                    headers = list(rows[0].keys()) if rows else []
-                    affected_rows = len(rows)
-                else:
-                    rows = []
-                    headers = []
-                    affected_rows = c.rowcount
-                conn.commit()
-                return {
-                    "headers": headers,
-                    "rows": rows,
-                    "affected_rows": affected_rows,
-                    "execution_context": {"thread_id": thread_id},
-                }
-        finally:
-            conn.close()
-
-    def cancel_query(self, thread_id):
-        if not thread_id:
-            return
-        conn = self._connect()
-        try:
-            with conn.cursor() as c:
-                c.execute(f"KILL QUERY {int(thread_id)}")
-        finally:
-            conn.close()
-
-    def completion_items(self, db=None, keyword=""):
-        conn = self._connect(db)
-        items = []
-        keyword_like = f"%{keyword or ''}%"
-        try:
-            with conn.cursor() as c:
-                c.execute(
-                    """
-                    SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME
-                    FROM information_schema.COLUMNS
-                    WHERE TABLE_SCHEMA NOT IN ('information_schema', 'performance_schema', 'sys', 'mysql')
-                      AND (%s = '%%' OR TABLE_NAME LIKE %s OR COLUMN_NAME LIKE %s OR TABLE_SCHEMA LIKE %s)
-                    ORDER BY TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION
-                    LIMIT 300
-                    """,
-                    (keyword_like, keyword_like, keyword_like, keyword_like),
-                )
-                for row in c.fetchall():
-                    items.append({
-                        "schema": row["TABLE_SCHEMA"],
-                        "table": row["TABLE_NAME"],
-                        "column": row["COLUMN_NAME"],
-                        "label": row["COLUMN_NAME"],
-                        "detail": f'{row["TABLE_SCHEMA"]}.{row["TABLE_NAME"]}',
-                    })
-        finally:
-            conn.close()
-        return items
-
-
-class PostgreSQLEngine(BaseEngine):
-    def _connect(self, db=None):
-        if psycopg2 is None:
-            raise ImportError("psycopg2 is not installed")
-        return psycopg2.connect(
-            host=self.conn.host,
-            port=self.conn.port,
-            user=self._username(),
-            password=self._password(),
-            dbname=db or self._database(),
-            connect_timeout=5,
-        )
-
-    def test(self):
-        try:
-            c = self._connect()
-            c.close()
-            return True, "Connected successfully"
-        except Exception as e:
-            return False, str(e)
-
-    def get_structure(self):
-        tree = {}
-        conn = self._connect()
-        try:
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as c:
-                c.execute("""
-                    SELECT table_schema, table_name
-                    FROM information_schema.tables
-                    WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
-                    ORDER BY table_schema, table_name
-                """)
-                for row in c.fetchall():
-                    schema = row["table_schema"]
-                    tree.setdefault(schema, []).append({
-                        "name": row["table_name"],
-                        "rows": 0,
-                        "size": "-",
-                        "engine": "PostgreSQL",
-                        "created": "-",
-                        "updated": "-",
-                    })
-        finally:
-            conn.close()
-        return tree
-
-    def query(self, db, table, params):
-        sql = params.get('sql')
-        where = params.get('where')
-        conn = self._connect(db)
-        try:
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as c:
-                if sql:
-                    try:
-                        c.execute(sql)
-                        if c.description:
-                            rows = c.fetchall()
-                            rows = json.loads(json.dumps(rows, default=mongo_json_default))
-                            headers = list(rows[0].keys()) if rows else ["Info"]
-                            if not rows:
-                                conn.commit()
-                                return {"headers": ["Info"], "rows": [{"Info": "Query executed successfully. No rows returned."}], "total": 0}
-                            conn.commit()
-                            return {"headers": headers, "rows": rows, "total": len(rows)}
-                        msg = f"Query executed successfully. Affected rows: {c.rowcount}"
-                        conn.commit()
-                        return {"headers": ["Info"], "rows": [{"Info": msg}], "total": 0, "affected_rows": c.rowcount}
-                    except Exception as e:
-                        conn.rollback()
-                        return {"headers": ["Error"], "rows": [{"Error": str(e)}], "total": 0}
-                page = int(params.get('page', 1))
-                page_size = int(params.get('pageSize', 100))
-                offset = (page - 1) * page_size
-                count_sql = f'SELECT COUNT(*) AS cnt FROM "{table}"'
-                if where:
-                    count_sql += f" WHERE {where}"
-                c.execute(count_sql)
-                total = c.fetchone()['cnt']
-                select_sql = f'SELECT * FROM "{table}"'
-                if where:
-                    select_sql += f" WHERE {where}"
-                select_sql += " LIMIT %s OFFSET %s"
-                c.execute(select_sql, (page_size, offset))
-                rows = c.fetchall()
-                rows = json.loads(json.dumps(rows, default=mongo_json_default))
-                headers = list(rows[0].keys()) if rows else []
-                return {"headers": headers, "rows": rows, "total": total}
-        finally:
-            conn.close()
-
-    def explain(self, db, sql):
-        conn = self._connect(db)
-        try:
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as c:
-                c.execute(f"EXPLAIN (FORMAT JSON) {sql}")
-                rows = c.fetchall()
-                rows = json.loads(json.dumps(rows, default=mongo_json_default))
-                return {"headers": list(rows[0].keys()) if rows else [], "rows": rows, "total": len(rows)}
-        finally:
-            conn.close()
-
-    def execute_sql(self, db, sql):
-        conn = self._connect(db)
-        try:
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as c:
-                c.execute("SELECT pg_backend_pid() AS pid")
-                backend_pid = c.fetchone()['pid']
-                c.execute(sql)
-                if c.description:
-                    rows = c.fetchall()
-                    rows = json.loads(json.dumps(rows, default=mongo_json_default))
-                    headers = list(rows[0].keys()) if rows else []
-                    affected_rows = len(rows)
-                else:
-                    rows = []
-                    headers = []
-                    affected_rows = c.rowcount
-                conn.commit()
-                return {
-                    "headers": headers,
-                    "rows": rows,
-                    "affected_rows": affected_rows,
-                    "execution_context": {"backend_pid": backend_pid},
-                }
-        finally:
-            conn.close()
-
-    def cancel_query(self, backend_pid):
-        if not backend_pid:
-            return
-        conn = self._connect()
-        try:
-            with conn.cursor() as c:
-                c.execute("SELECT pg_cancel_backend(%s)", (int(backend_pid),))
-                conn.commit()
-        finally:
-            conn.close()
-
-    def completion_items(self, db=None, keyword=""):
-        conn = self._connect(db)
-        items = []
-        keyword_like = f"%{keyword or ''}%"
-        try:
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as c:
-                c.execute(
-                    """
-                    SELECT table_schema, table_name, column_name
-                    FROM information_schema.columns
-                    WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
-                      AND (%s = '%%' OR table_name ILIKE %s OR column_name ILIKE %s OR table_schema ILIKE %s)
-                    ORDER BY table_schema, table_name, ordinal_position
-                    LIMIT 300
-                    """,
-                    (keyword_like, keyword_like, keyword_like, keyword_like),
-                )
-                for row in c.fetchall():
-                    items.append({
-                        "schema": row["table_schema"],
-                        "table": row["table_name"],
-                        "column": row["column_name"],
-                        "label": row["column_name"],
-                        "detail": f'{row["table_schema"]}.{row["table_name"]}',
-                    })
-        finally:
-            conn.close()
-        return items
-
 class RedisEngine(BaseEngine):
-    def _redis_mode(self):
-        dm = getattr(self.conn, 'deployment_mode', None)
-        if dm == 'cluster':
-            return 'cluster'
-        if dm == 'single':
-            return 'standalone'
-        return 'cluster' if self._extra().get('mode') == 'cluster' else 'standalone'
-
     def _connect(self, db=0):
-        mode = self._redis_mode()
-
+        mode = self.conn.extra_config.get('mode', 'standalone')
+        
         if mode == 'cluster':
             nodes = []
             if ',' in self.conn.host:
@@ -504,16 +224,16 @@ class RedisEngine(BaseEngine):
             # Pass username if provided (Redis 6+ ACL support)
             return RedisCluster(
                 startup_nodes=nodes, 
-                password=self._password() or None,
-                username=self._username() or None,
+                password=self.conn.password or None, 
+                username=self.conn.user or None, # Added username support
                 decode_responses=True
             )
         else:
             return redis.Redis(
                 host=self.conn.host,
                 port=self.conn.port,
-                password=self._password() or None,
-                username=self._username() or None,
+                password=self.conn.password or None,
+                username=self.conn.user or None, # Added username support
                 db=db,
                 socket_timeout=5,
                 decode_responses=True
@@ -531,7 +251,7 @@ class RedisEngine(BaseEngine):
     def get_structure(self):
         tree = {}
         r = self._connect()
-        mode = self._redis_mode()
+        mode = self.conn.extra_config.get('mode', 'standalone')
         try:
             # 1. Determine DBs to show
             dbs = []
@@ -640,7 +360,7 @@ class RedisEngine(BaseEngine):
         command = params.get('command')
         db_idx = int(db_name.replace('db', ''))
         
-        mode = self._redis_mode()
+        mode = self.conn.extra_config.get('mode', 'standalone')
         if mode == 'cluster': db_idx = 0
             
         r = self._connect(db_idx)
@@ -736,15 +456,15 @@ class MongoEngine(BaseEngine):
         
         # Build URI
         creds = ""
-        if self._username():
-            creds = f"{self._username()}:{self._password()}@"
+        if self.conn.user:
+            creds = f"{self.conn.user}:{self.conn.password}@"
             
-        default_db = self._database() if self._database() else 'admin'
+        default_db = self.conn.database if self.conn.database else 'admin'
         
         # Check if authSource is provided in extra_config
         auth_source = 'admin'
-        if self._extra() and self._extra().get('authSource'):
-            auth_source = self._extra()['authSource']
+        if self.conn.extra_config and self.conn.extra_config.get('authSource'):
+            auth_source = self.conn.extra_config['authSource']
             
         # Construct base URI
         uri = f"mongodb://{creds}{self.conn.host}:{self.conn.port}/{default_db}?authSource={auth_source}"
@@ -884,8 +604,8 @@ class MongoEngine(BaseEngine):
 
 class RabbitMQEngine(BaseEngine):
     def _connect(self):
-        credentials = pika.PlainCredentials(self._username(), self._password())
-        vhost = self._database() or '/'
+        credentials = pika.PlainCredentials(self.conn.user, self.conn.password)
+        vhost = self.conn.database or '/'
         params = pika.ConnectionParameters(
             host=self.conn.host,
             port=self.conn.port or 5672,
@@ -914,8 +634,8 @@ class RabbitMQEngine(BaseEngine):
             
             # Handle vhost in URL
             path = "/api/queues"
-            if self._database() and self._database() != '/':
-                vhost_enc = urllib.parse.quote(self._database(), safe='')
+            if self.conn.database and self.conn.database != '/':
+                vhost_enc = urllib.parse.quote(self.conn.database, safe='')
                 path = f"/api/queues/{vhost_enc}"
                 
             url = f"http://{host}:{mgmt_port}{path}"
@@ -923,8 +643,8 @@ class RabbitMQEngine(BaseEngine):
             req = urllib.request.Request(url)
             
             # Add Auth
-            if self._username() and self._password():
-                auth_str = f"{self._username()}:{self._password()}"
+            if self.conn.user and self.conn.password:
+                auth_str = f"{self.conn.user}:{self.conn.password}"
                 b64_auth = base64.b64encode(auth_str.encode()).decode()
                 req.add_header("Authorization", f"Basic {b64_auth}")
             

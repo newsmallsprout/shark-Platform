@@ -72,10 +72,6 @@
                 <el-icon><Monitor /></el-icon>
                 <span>{{ row.metrics.binlog_file }} : {{ row.metrics.binlog_pos }}</span>
               </div>
-              <div class="binlog-info" v-if="row.turbo?.enabled">
-                <el-icon><Setting /></el-icon>
-                <span>Turbo Pod: {{ row.turbo?.phase || '-' }} {{ row.turbo?.pod_name ? `(${row.turbo.pod_name})` : '' }}</span>
-              </div>
               
               <div class="error-msg" v-if="row.metrics.error">
                 <el-icon><Warning /></el-icon>
@@ -143,56 +139,9 @@
             <el-select v-model="perfPreset" style="width: 260px" @change="applyPerfPreset">
               <el-option label="Balanced (默认)" value="balanced" />
               <el-option label="High Throughput (追速)" value="fast" />
-              <el-option label="Turbo (极致吞吐)" value="turbo" />
               <el-option label="Conservative (稳一点)" value="safe" />
             </el-select>
           </el-form-item>
-          <el-divider content-position="left">Turbo Pod</el-divider>
-          <el-form-item label="Enable Turbo Pod">
-            <el-switch v-model="perfForm.turbo_enabled" />
-          </el-form-item>
-          <template v-if="perfForm.turbo_enabled">
-            <el-form-item label="Pod Namespace">
-              <el-input v-model="perfForm.turbo_pod_namespace" placeholder="default (empty = auto)" />
-            </el-form-item>
-            <el-form-item label="Turbo Shards">
-              <el-select v-model="perfForm.turbo_shard_count" style="width: 260px">
-                <el-option label="1 (单Pod)" :value="1" />
-                <el-option label="2" :value="2" />
-                <el-option label="4" :value="4" />
-                <el-option label="8" :value="8" />
-              </el-select>
-            </el-form-item>
-            <el-form-item label="No Resource Limits">
-              <el-switch v-model="perfForm.turbo_no_limit" />
-            </el-form-item>
-            <template v-if="!perfForm.turbo_no_limit">
-              <el-row :gutter="20">
-                <el-col :span="12">
-                  <el-form-item label="CPU Request">
-                    <el-input v-model="perfForm.turbo_cpu_request" placeholder="e.g. 500m" />
-                  </el-form-item>
-                </el-col>
-                <el-col :span="12">
-                  <el-form-item label="Memory Request">
-                    <el-input v-model="perfForm.turbo_mem_request" placeholder="e.g. 1Gi" />
-                  </el-form-item>
-                </el-col>
-              </el-row>
-              <el-row :gutter="20">
-                <el-col :span="12">
-                  <el-form-item label="CPU Limit">
-                    <el-input v-model="perfForm.turbo_cpu_limit" placeholder="e.g. 2000m" />
-                  </el-form-item>
-                </el-col>
-                <el-col :span="12">
-                  <el-form-item label="Memory Limit">
-                    <el-input v-model="perfForm.turbo_mem_limit" placeholder="e.g. 4Gi" />
-                  </el-form-item>
-                </el-col>
-              </el-row>
-            </template>
-          </template>
 
           <el-divider content-position="left">Batching</el-divider>
           <el-row :gutter="20">
@@ -252,36 +201,8 @@
               </el-form-item>
             </el-col>
             <el-col :span="12">
-              <el-form-item label="Min Sleep (ms)">
-                <el-input-number v-model="perfForm.min_sleep_ms" :min="0" :max="1000" style="width: 100%" />
-              </el-form-item>
-            </el-col>
-          </el-row>
-          <el-row :gutter="20">
-            <el-col :span="12">
               <el-form-item label="Max Sleep (ms)">
-                <el-input-number v-model="perfForm.max_sleep_ms" :min="0" :max="20000" style="width: 100%" />
-              </el-form-item>
-            </el-col>
-          </el-row>
-
-          <el-divider content-position="left">Reconnect</el-divider>
-          <el-row :gutter="20">
-            <el-col :span="12">
-              <el-form-item label="Max Retry (0=∞)">
-                <el-input-number v-model="perfForm.inc_reconnect_max_retry" :min="0" :max="1000" style="width: 100%" />
-              </el-form-item>
-            </el-col>
-            <el-col :span="12">
-              <el-form-item label="Backoff Base (sec)">
-                <el-input-number v-model="perfForm.inc_reconnect_backoff_base_sec" :min="0.1" :max="60" :step="0.1" style="width: 100%" />
-              </el-form-item>
-            </el-col>
-          </el-row>
-          <el-row :gutter="20">
-            <el-col :span="12">
-              <el-form-item label="Backoff Max (sec)">
-                <el-input-number v-model="perfForm.inc_reconnect_backoff_max_sec" :min="1" :max="600" style="width: 100%" />
+                <el-input-number v-model="perfForm.max_sleep_ms" :min="0" :max="2000" style="width: 100%" />
               </el-form-item>
             </el-col>
           </el-row>
@@ -296,18 +217,6 @@
             <el-col :span="12">
               <el-form-item label="Write Concern (w)">
                 <el-input-number v-model="perfForm.mongo_write_w" :min="0" :max="5" style="width: 100%" />
-              </el-form-item>
-            </el-col>
-          </el-row>
-          <el-row :gutter="20">
-            <el-col :span="12">
-              <el-form-item label="Socket Timeout (ms)">
-                <el-input-number v-model="perfForm.mongo_socket_timeout_ms" :min="5000" :max="300000" :step="1000" style="width: 100%" />
-              </el-form-item>
-            </el-col>
-            <el-col :span="12">
-              <el-form-item label="Connect Timeout (ms)">
-                <el-input-number v-model="perfForm.mongo_connect_timeout_ms" :min="2000" :max="120000" :step="1000" style="width: 100%" />
               </el-form-item>
             </el-col>
           </el-row>
@@ -584,7 +493,7 @@ const perfLoading = ref(false)
 const perfSaving = ref(false)
 const perfTaskId = ref('')
 const perfTaskStatus = ref('')
-const perfPreset = ref<'balanced' | 'fast' | 'turbo' | 'safe'>('balanced')
+const perfPreset = ref<'balanced' | 'fast' | 'safe'>('balanced')
 
 const perfForm = ref({
   progress_interval: 10,
@@ -596,24 +505,10 @@ const perfForm = ref({
   prefetch_queue_size: 4,
   rate_limit_enabled: true,
   max_load_avg_ratio: 2.5,
-  min_sleep_ms: 5,
   max_sleep_ms: 80,
-  inc_reconnect_max_retry: 0,
-  inc_reconnect_backoff_base_sec: 1,
-  inc_reconnect_backoff_max_sec: 30,
   mongo_max_pool_size: 100,
   mongo_write_w: 1,
   mongo_write_j: false,
-  mongo_socket_timeout_ms: 45000,
-  mongo_connect_timeout_ms: 20000,
-  turbo_enabled: false,
-  turbo_no_limit: true,
-  turbo_pod_namespace: '',
-  turbo_cpu_request: '',
-  turbo_mem_request: '',
-  turbo_cpu_limit: '',
-  turbo_mem_limit: '',
-  turbo_shard_count: 1,
 })
 
 const applyPerfPreset = () => {
@@ -629,16 +524,10 @@ const applyPerfPreset = () => {
       state_save_interval_sec: 2,
       rate_limit_enabled: true,
       max_load_avg_ratio: 1.5,
-      min_sleep_ms: 5,
       max_sleep_ms: 200,
-      inc_reconnect_max_retry: 0,
-      inc_reconnect_backoff_base_sec: 1,
-      inc_reconnect_backoff_max_sec: 30,
       mongo_max_pool_size: 50,
       mongo_write_w: 1,
       mongo_write_j: false,
-      mongo_socket_timeout_ms: 30000,
-      mongo_connect_timeout_ms: 15000,
     }
     return
   }
@@ -654,41 +543,10 @@ const applyPerfPreset = () => {
       state_save_interval_sec: 2,
       rate_limit_enabled: false,
       max_load_avg_ratio: 3.0,
-      min_sleep_ms: 0,
       max_sleep_ms: 20,
-      inc_reconnect_max_retry: 0,
-      inc_reconnect_backoff_base_sec: 1,
-      inc_reconnect_backoff_max_sec: 30,
       mongo_max_pool_size: 200,
       mongo_write_w: 1,
       mongo_write_j: false,
-      mongo_socket_timeout_ms: 60000,
-      mongo_connect_timeout_ms: 30000,
-    }
-    return
-  }
-  if (perfPreset.value === 'turbo') {
-    perfForm.value = {
-      ...perfForm.value,
-      progress_interval: 10,
-      mysql_fetch_batch: 20000,
-      mongo_bulk_batch: 20000,
-      prefetch_queue_size: 16,
-      inc_flush_batch: 100000,
-      inc_flush_interval_sec: 1,
-      state_save_interval_sec: 2,
-      rate_limit_enabled: false,
-      max_load_avg_ratio: 10,
-      min_sleep_ms: 0,
-      max_sleep_ms: 0,
-      inc_reconnect_max_retry: 0,
-      inc_reconnect_backoff_base_sec: 0.5,
-      inc_reconnect_backoff_max_sec: 10,
-      mongo_max_pool_size: 300,
-      mongo_write_w: 1,
-      mongo_write_j: false,
-      mongo_socket_timeout_ms: 120000,
-      mongo_connect_timeout_ms: 30000,
     }
     return
   }
@@ -703,54 +561,16 @@ const applyPerfPreset = () => {
     state_save_interval_sec: 2,
     rate_limit_enabled: true,
     max_load_avg_ratio: 2.5,
-    min_sleep_ms: 5,
     max_sleep_ms: 80,
-    inc_reconnect_max_retry: 0,
-    inc_reconnect_backoff_base_sec: 1,
-    inc_reconnect_backoff_max_sec: 30,
     mongo_max_pool_size: 100,
     mongo_write_w: 1,
     mongo_write_j: false,
-    mongo_socket_timeout_ms: 45000,
-    mongo_connect_timeout_ms: 20000,
   }
-}
-
-const inferPerfPreset = (p: Record<string, any>): 'balanced' | 'fast' | 'turbo' | 'safe' => {
-  if (
-    Number(p.mysql_fetch_batch) === 20000 &&
-    Number(p.mongo_bulk_batch) === 20000 &&
-    Number(p.inc_flush_batch) === 100000 &&
-    Number(p.prefetch_queue_size) === 16 &&
-    Number(p.inc_flush_interval_sec) === 1 &&
-    p.rate_limit_enabled === false &&
-    Number(p.mongo_max_pool_size) === 300
-  ) {
-    return 'turbo'
-  }
-  if (
-    Number(p.mysql_fetch_batch) === 10000 &&
-    Number(p.mongo_bulk_batch) === 10000 &&
-    Number(p.inc_flush_batch) === 50000 &&
-    Number(p.prefetch_queue_size) === 8
-  ) {
-    return 'fast'
-  }
-  if (
-    Number(p.mysql_fetch_batch) === 2000 &&
-    Number(p.mongo_bulk_batch) === 2000 &&
-    Number(p.inc_flush_batch) === 10000 &&
-    Number(p.prefetch_queue_size) === 2
-  ) {
-    return 'safe'
-  }
-  return 'balanced'
 }
 
 const openPerfConfig = async (row: any) => {
   perfTaskId.value = row.task_id
   perfTaskStatus.value = row.status
-  // Initialize with a neutral preset; after loading server config we infer actual preset.
   perfPreset.value = 'balanced'
   applyPerfPreset()
   perfDialogVisible.value = true
@@ -759,7 +579,6 @@ const openPerfConfig = async (row: any) => {
     const res = await taskApi.getTaskPerfConfig(row.task_id)
     const p = res.perf || {}
     perfForm.value = { ...perfForm.value, ...p }
-    perfPreset.value = inferPerfPreset(perfForm.value)
   } catch (e: any) {
     ElMessage.error(String(e?.message || e || 'Failed to load config'))
   } finally {

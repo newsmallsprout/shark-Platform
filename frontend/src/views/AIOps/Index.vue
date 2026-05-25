@@ -64,42 +64,6 @@
                 </div>
               </div>
 
-              <!-- Human-in-the-loop: paste command outputs -->
-              <div
-                v-if="currentDetail.status === 'awaiting_evidence' && (currentDetail.evidence_checklist?.length || 0) > 0"
-                class="evidence-box"
-              >
-                <h3 class="section-title"><el-icon><Monitor /></el-icon> 人工排查证据（平台不执行命令）</h3>
-                <p class="evidence-intro">
-                  请在告警关联节点或集群上执行下列命令，将终端输出粘贴到对应文本框，提交后由模型结合 Prometheus 与上下文生成结论。
-                </p>
-                <div
-                  v-for="step in currentDetail.evidence_checklist"
-                  :key="step.id"
-                  class="evidence-step"
-                >
-                  <div class="step-head">
-                    <span class="step-title">{{ step.title }}</span>
-                    <span class="step-purpose">{{ step.purpose }}</span>
-                  </div>
-                  <pre class="step-cmd">{{ step.command }}</pre>
-                  <p v-if="step.capture_hint" class="capture-hint">{{ step.capture_hint }}</p>
-                  <el-input
-                    v-model="evidenceDraft[step.id]"
-                    type="textarea"
-                    :rows="5"
-                    placeholder="在此粘贴该命令的完整输出…"
-                  />
-                </div>
-                <el-button
-                  type="primary"
-                  :loading="submittingEvidence"
-                  @click="submitEvidence"
-                >
-                  提交证据并生成分析
-                </el-button>
-              </div>
-
               <!-- AI Analysis -->
               <div v-if="currentDetail.report" class="ai-report-box">
                 <div class="report-header">
@@ -132,11 +96,6 @@
                     <p>{{ currentDetail.report.refactoring }}</p>
                   </div>
 
-                  <div class="analysis-section" v-if="currentDetail.report.platform_linkage">
-                    <div class="label">平台联动</div>
-                    <p>{{ currentDetail.report.platform_linkage }}</p>
-                  </div>
-
                   <div class="solutions" v-if="currentDetail.report.solutions?.length">
                     <div class="label">可执行命令</div>
                     <div class="cmd-list">
@@ -149,20 +108,14 @@
               </div>
               <div v-else-if="currentDetail.status === 'analyzing'" class="analyzing-state">
                 <el-icon class="is-loading"><Loading /></el-icon>
-                <span>{{ analyzingMessage }}</span>
-              </div>
-              <div v-else-if="currentDetail.status === 'awaiting_evidence'" class="no-report mild">
-                提交上方粘贴的证据后，将生成完整分析报告。
+                <span>AI 正在分析告警上下文...</span>
               </div>
               <div v-else class="no-report">
                 暂无分析报告
               </div>
 
               <!-- Metrics Chart -->
-              <div
-                v-if="chartDataKeys.length"
-                class="chart-section"
-              >
+              <div v-if="currentDetail.report && currentDetail.report.related_metrics && Object.keys(currentDetail.report.related_metrics).length" class="chart-section">
                 <h3 class="section-title"><el-icon><TrendCharts /></el-icon> 监控指标证据</h3>
                 <div ref="chartRef" class="metrics-chart"></div>
               </div>
@@ -208,18 +161,8 @@
         <el-form-item label="Temperature">
           <el-slider v-model="configForm.temperature" :min="0" :max="2" :step="0.1" show-input />
         </el-form-item>
-        <el-form-item label="启用 AI">
-          <el-switch v-model="configForm.enable_ai_analysis" />
-        </el-form-item>
-        <el-form-item label="证据先行流程">
-          <el-switch v-model="configForm.evidence_first_workflow" />
-          <span class="form-hint">关闭则恢复单次调用模型的旧流程</span>
-        </el-form-item>
         <el-form-item label="Prompt Template">
           <el-input v-model="configForm.prompt_template" type="textarea" :rows="6" />
-        </el-form-item>
-        <el-form-item label="最终分析 Prompt">
-          <el-input v-model="configForm.final_prompt_template" type="textarea" :rows="8" placeholder="留空使用内置模板；占位符含 {user_evidence} 等" />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -233,9 +176,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, nextTick, watch, onUnmounted, reactive } from 'vue'
+import { ref, onMounted, nextTick, watch, onUnmounted, reactive } from 'vue'
 import { aiOpsApi } from '@/api/ai_ops'
-import { Refresh, ArrowRight, Warning, Cpu, Loading, TrendCharts, Setting, Monitor } from '@element-plus/icons-vue'
+import { Refresh, ArrowRight, Warning, Cpu, Loading, TrendCharts, Setting } from '@element-plus/icons-vue'
 import * as echarts from 'echarts'
 import { ElMessage } from 'element-plus'
 
@@ -247,19 +190,6 @@ const currentDetail = ref<any>(null)
 const chartRef = ref<HTMLElement>()
 let chartInstance: echarts.ECharts | null = null
 
-const evidenceDraft = reactive<Record<string, string>>({})
-const submittingEvidence = ref(false)
-
-const chartDataKeys = computed(() => {
-  const m =
-    currentDetail.value?.chart_metrics ||
-    currentDetail.value?.report?.related_metrics ||
-    {}
-  return Object.keys(m || {})
-})
-
-const analyzingMessage = computed(() => '正在拉取上下文或生成结论，请稍候…')
-
 // Config State
 const configVisible = ref(false)
 const configForm = reactive({
@@ -269,10 +199,7 @@ const configForm = reactive({
   model: '',
   max_tokens: 2000,
   temperature: 0.7,
-  prompt_template: '',
-  final_prompt_template: '',
-  enable_ai_analysis: true,
-  evidence_first_workflow: true,
+  prompt_template: ''
 })
 
 const openConfig = async () => {
@@ -305,14 +232,6 @@ const fetchIncidents = async () => {
   }
 }
 
-function initEvidenceDraft(res: any) {
-  Object.keys(evidenceDraft).forEach((k) => delete evidenceDraft[k])
-  const fromUser = res.user_evidence || {}
-  for (const s of res.evidence_checklist || []) {
-    evidenceDraft[s.id] = fromUser[s.id] != null ? String(fromUser[s.id]) : ''
-  }
-}
-
 const selectIncident = async (inc: any) => {
   selectedId.value = inc.id
   detailLoading.value = true
@@ -320,35 +239,17 @@ const selectIncident = async (inc: any) => {
   try {
     const res = await aiOpsApi.getIncidentDetail(inc.id) as any
     currentDetail.value = res
-    initEvidenceDraft(res)
-    const metrics = res.chart_metrics || res.report?.related_metrics
-    if (metrics && Object.keys(metrics).length) {
-      nextTick(() => renderChart(metrics))
+    if (res.report?.related_metrics) {
+        nextTick(() => renderChart(res.report.related_metrics))
     }
   } finally {
     detailLoading.value = false
   }
 }
 
-const submitEvidence = async () => {
-  if (!selectedId.value) return
-  submittingEvidence.value = true
-  try {
-    await aiOpsApi.submitIncidentEvidence(selectedId.value, { ...evidenceDraft })
-    ElMessage.success('已提交，正在生成分析')
-    await selectIncident({ id: selectedId.value })
-    await fetchIncidents()
-  } catch {
-    ElMessage.error('提交失败')
-  } finally {
-    submittingEvidence.value = false
-  }
-}
-
 const getStatusType = (status: string) => {
   if (status === 'analyzed') return 'success'
   if (status === 'analyzing') return 'warning'
-  if (status === 'awaiting_evidence') return 'info'
   if (status === 'resolved') return 'info'
   return 'danger'
 }
@@ -402,23 +303,12 @@ const renderChart = (metrics: any) => {
   })
 }
 
-let pollTimer: ReturnType<typeof setTimeout> | null = null
-function scheduleDetailPoll() {
-  if (pollTimer) clearTimeout(pollTimer)
-  const id = selectedId.value
-  if (!id || currentDetail.value?.status !== 'analyzing') return
-  pollTimer = setTimeout(async () => {
-    if (selectedId.value === id) {
-      await selectIncident({ id })
-      scheduleDetailPoll()
+watch(selectedId, () => {
+    // Poll for status update if analyzing
+    if (currentDetail.value?.status === 'analyzing') {
+        setTimeout(() => selectIncident({ id: selectedId.value }), 5000)
     }
-  }, 5000)
-}
-
-watch(
-  () => [selectedId.value, currentDetail.value?.status],
-  () => scheduleDetailPoll()
-)
+})
 
 onMounted(() => {
   fetchIncidents()
@@ -426,8 +316,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
-  if (pollTimer) clearTimeout(pollTimer)
-  chartInstance?.dispose()
+    chartInstance?.dispose()
 })
 </script>
 
@@ -618,67 +507,4 @@ onUnmounted(() => {
 .analyzing-state .el-icon { font-size: 32px; color: #3b82f6; }
 
 .empty-detail { height: 100%; }
-
-.evidence-box {
-  margin-bottom: 24px;
-  padding: 20px;
-  background: #fffbeb;
-  border: 1px solid #fcd34d;
-  border-radius: 12px;
-}
-.evidence-intro {
-  font-size: 14px;
-  color: #78350f;
-  line-height: 1.6;
-  margin: 0 0 16px;
-}
-.evidence-step {
-  margin-bottom: 20px;
-  padding-bottom: 16px;
-  border-bottom: 1px dashed #fde68a;
-}
-.evidence-step:last-of-type {
-  border-bottom: none;
-}
-.step-head {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin-bottom: 8px;
-}
-.step-title {
-  font-weight: 700;
-  color: #92400e;
-}
-.step-purpose {
-  font-size: 13px;
-  color: #a16207;
-}
-.step-cmd {
-  margin: 0 0 8px;
-  padding: 12px;
-  background: #1e293b;
-  color: #e2e8f0;
-  border-radius: 8px;
-  font-size: 12px;
-  overflow-x: auto;
-  white-space: pre-wrap;
-  word-break: break-all;
-}
-.capture-hint {
-  font-size: 12px;
-  color: #78716c;
-  margin: 0 0 8px;
-}
-.no-report.mild {
-  color: #64748b;
-  font-size: 14px;
-  padding: 16px;
-  text-align: center;
-}
-.form-hint {
-  margin-left: 8px;
-  font-size: 12px;
-  color: #94a3b8;
-}
 </style>

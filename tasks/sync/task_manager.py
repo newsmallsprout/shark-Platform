@@ -7,52 +7,23 @@ from tasks.models import SyncTask
 from tasks.utils import save_task_config, delete_task_config
 from core.logging import log
 from .worker import SyncWorker
-from .turbo_runner import TurboPodRunner
 
 class TaskManager:
     def __init__(self):
         self._lock = threading.Lock()
         self._tasks: Dict[str, SyncWorker] = {}
-        self._turbo = TurboPodRunner()
 
     def is_running(self, task_id: str) -> bool:
         with self._lock:
             w = self._tasks.get(task_id)
-            if bool(w and getattr(w, "_status", None) == "running"):
-                return True
-        try:
-            t = SyncTask.objects.get(task_id=task_id)
-            return t.status == "running"
-        except SyncTask.DoesNotExist:
-            return False
-
-    def _apply_turbo_fields(self, t: SyncTask, cfg: SyncTaskRequest):
-        t.turbo_enabled = bool(getattr(cfg, "turbo_enabled", False))
-        t.turbo_no_limit = bool(getattr(cfg, "turbo_no_limit", True))
-        t.turbo_pod_namespace = getattr(cfg, "turbo_pod_namespace", None)
-        t.turbo_cpu_request = getattr(cfg, "turbo_cpu_request", None)
-        t.turbo_mem_request = getattr(cfg, "turbo_mem_request", None)
-        t.turbo_cpu_limit = getattr(cfg, "turbo_cpu_limit", None)
-        t.turbo_mem_limit = getattr(cfg, "turbo_mem_limit", None)
-        t.turbo_shard_count = int(getattr(cfg, "turbo_shard_count", 1) or 1)
+            return bool(w and getattr(w, "_status", None) == "running")
 
     def start(self, cfg: SyncTaskRequest):
         save_task_config(cfg)
-
-        # Update status in DB and route execution mode.
+        
+        # Update status in DB
         try:
             t = SyncTask.objects.get(task_id=cfg.task_id)
-            self._apply_turbo_fields(t, cfg)
-            if t.turbo_enabled:
-                pod_names = self._turbo.start_task_pods(t)
-                t.status = "running"
-                t.turbo_pod_name = ",".join(pod_names)
-                t.turbo_phase = "Pending"
-                t.save()
-                log(cfg.task_id, f"Turbo pods started: {pod_names}")
-                return
-            t.turbo_pod_name = None
-            t.turbo_phase = None
             t.status = "running"
             t.save()
         except SyncTask.DoesNotExist:
@@ -67,38 +38,50 @@ class TaskManager:
         try:
             t = SyncTask.objects.get(task_id=task_id)
             cfg = SyncTaskRequest(**t.config)
-            self.start(cfg)
+            
+            t.status = "running"
+            t.save()
+            
+            w = SyncWorker(cfg)
+            with self._lock:
+                self._tasks[task_id] = w
+            threading.Thread(target=w.run, daemon=True).start()
         except SyncTask.DoesNotExist:
             raise FileNotFoundError("Task config not found")
 
     def stop(self, task_id: str):
-        stopped_worker = False
         with self._lock:
             w = self._tasks.get(task_id)
             if w is not None:
                 w.stop()
                 del self._tasks[task_id]
-                stopped_worker = True
-
+        
         try:
             t = SyncTask.objects.get(task_id=task_id)
-            if t.turbo_enabled and t.turbo_pod_name:
-                self._turbo.stop_task_pod(t)
-                t.turbo_pod_name = None
-                t.turbo_phase = "Stopped"
+            t.status = "stopped"
+            t.save()
+        except SyncTask.DoesNotExist:
+            pass
+            
+        log(task_id, "Task stopped")
+
+    def stop_soft(self, task_id: str):
+        with self._lock:
+            w = self._tasks.get(task_id)
+            if w is not None:
+                w.stop()
+                try:
+                    w._status = "stopped"
+                except Exception:
+                    pass
+        
+        try:
+            t = SyncTask.objects.get(task_id=task_id)
             t.status = "stopped"
             t.save()
         except SyncTask.DoesNotExist:
             pass
 
-        if stopped_worker:
-            log(task_id, "Task stopped")
-        else:
-            log(task_id, "Task stopped (turbo pod)")
-
-    def stop_soft(self, task_id: str):
-        # Turbo mode has no "soft stop" semantics: fallback to stop.
-        self.stop(task_id)
         log(task_id, "Task stopped (soft)")
 
     def delete(self, task_id: str):
@@ -135,24 +118,11 @@ class TaskManager:
         db_tasks = SyncTask.objects.all()
         for t in db_tasks:
             if t.task_id not in running_ids:
-                turbo = {
-                    "enabled": bool(t.turbo_enabled),
-                    "pod_name": t.turbo_pod_name or "",
-                    "phase": t.turbo_phase or "",
-                    "namespace": t.turbo_pod_namespace or "",
-                    "shard_count": int(t.turbo_shard_count or 1),
-                }
-                if t.turbo_enabled and t.turbo_pod_name and t.status == "running":
-                    try:
-                        turbo["phase"] = self._turbo.get_pod_phase(t) or turbo["phase"]
-                    except Exception as e:
-                        turbo["phase"] = f"Error: {str(e)[:120]}"
                 res.append({
                     "task_id": t.task_id,
-                    "status": t.status or "stopped",
+                    "status": "stopped",
                     "metrics": t.state.get("metrics", {}),
-                    "config": {"mode": "turbo" if t.turbo_enabled else "normal"},
-                    "turbo": turbo,
+                    "config": {} # Populate if needed
                 })
         return res
 
@@ -166,24 +136,11 @@ class TaskManager:
         # Check DB
         try:
             t = SyncTask.objects.get(task_id=task_id)
-            turbo = {
-                "enabled": bool(t.turbo_enabled),
-                "pod_name": t.turbo_pod_name or "",
-                "phase": t.turbo_phase or "",
-                "namespace": t.turbo_pod_namespace or "",
-                "shard_count": int(t.turbo_shard_count or 1),
-            }
-            if t.turbo_enabled and t.turbo_pod_name and t.status == "running":
-                try:
-                    turbo["phase"] = self._turbo.get_pod_phase(t) or turbo["phase"]
-                except Exception as e:
-                    turbo["phase"] = f"Error: {str(e)[:120]}"
             return {
                 "task_id": t.task_id,
-                "status": t.status or "stopped",
+                "status": "stopped",
                 "metrics": t.state.get("metrics", {}),
-                "config": {"mode": "turbo" if t.turbo_enabled else "normal"},
-                "turbo": turbo,
+                "config": {} 
             }
         except SyncTask.DoesNotExist:
             return None

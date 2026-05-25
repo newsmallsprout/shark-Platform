@@ -8,10 +8,6 @@ class MonitorConfig(AppConfig):
     def ready(self):
         import os
         import sys
-
-        # Dedicated sync-task process in turbo pod should not start monitor engine.
-        if os.environ.get("RUN_SYNC_TASK_ONLY") == "1":
-            return
         
         # Determine if we are running in the main process (Gunicorn) 
         # or the inner process of runserver.

@@ -847,6 +847,134 @@ def monitor_log_download(request):
     return HttpResponseNotFound("File not found")
 
 
+@api_view(['GET'])
+@permission_classes([HasRolePermission])
+def monitor_log_merge_download(request):
+    """按时间范围+服务名合并S3日志分片为单文件下载
+    
+    Query params:
+        task_id    - 监控任务ID (必填)
+        start      - 起始时间 ISO格式 (必填)
+        end        - 结束时间 ISO格式 (必填)
+        log_type   - raw/error (默认 raw)
+        namespace  - K8s命名空间 (可选，过滤)
+        pod_name   - Pod名 (可选，过滤)
+    """
+    task_id = request.query_params.get('task_id')
+    start_str = request.query_params.get('start')
+    end_str = request.query_params.get('end')
+    log_type = (request.query_params.get('log_type') or 'raw').lower()
+    namespace_filter = (request.query_params.get('namespace') or '').strip()
+    pod_filter = (request.query_params.get('pod_name') or '').strip()
+
+    if not task_id or not start_str or not end_str:
+        return Response({"error": "task_id, start, end required"}, status=400)
+    if log_type not in ('raw', 'error'):
+        return Response({"error": "log_type must be raw or error"}, status=400)
+
+    try:
+        task = MonitorTask.objects.get(pk=task_id)
+    except MonitorTask.DoesNotExist:
+        return Response({"error": "Task not found"}, status=404)
+
+    s3_client = _get_s3_client(task)
+    if not s3_client:
+        return Response({"error": "S3 archive not enabled for this task"}, status=400)
+
+    # 解析时间
+    now = timezone.now()
+    try:
+        start_dt = datetime.datetime.fromisoformat(start_str)
+    except Exception:
+        return Response({"error": "Invalid start format, use ISO 8601"}, status=400)
+    try:
+        end_dt = datetime.datetime.fromisoformat(end_str)
+    except Exception:
+        return Response({"error": "Invalid end format, use ISO 8601"}, status=400)
+    
+    if timezone.is_naive(start_dt):
+        start_dt = timezone.make_aware(start_dt, timezone.get_current_timezone())
+    if timezone.is_naive(end_dt):
+        end_dt = timezone.make_aware(end_dt, timezone.get_current_timezone())
+
+    # 扫描 S3 日志文件
+    prefix = f"logs/monitor/{task_id}/{log_type}/"
+    matched_keys = []
+    
+    try:
+        paginator = s3_client.get_paginator('list_objects_v2')
+        for page in paginator.paginate(Bucket=task.s3_bucket, Prefix=prefix):
+            for obj in page.get('Contents', []) or []:
+                key = obj.get('Key') or ''
+                # Key格式: logs/monitor/{id}/{log_type}/{ns}/{pod}/{date}/{stamp}.log
+                parts = key.split('/')
+                if len(parts) < 8:
+                    continue
+                
+                ns = parts[4]
+                pod = parts[5]
+                date_str = parts[6]
+                
+                # namespace/pod 过滤
+                if namespace_filter and ns != namespace_filter:
+                    continue
+                if pod_filter and pod != pod_filter:
+                    continue
+                
+                # 日期范围过滤
+                try:
+                    file_date = datetime.date.fromisoformat(date_str)
+                    file_dt = datetime.datetime.combine(file_date, datetime.time.min)
+                    if timezone.is_naive(file_dt):
+                        file_dt = timezone.make_aware(file_dt, timezone.get_current_timezone())
+                except Exception:
+                    continue
+                
+                if not (start_dt <= file_dt <= end_dt):
+                    continue
+                
+                lm = obj.get('LastModified')
+                matched_keys.append({
+                    'key': key,
+                    'mtime': lm.timestamp() if lm else 0,
+                    'size': int(obj.get('Size') or 0),
+                })
+    except Exception as e:
+        return Response({"error": f"S3 list failed: {str(e)}"}, status=500)
+
+    if not matched_keys:
+        return Response({"error": "No log files found in the specified range"}, status=404)
+
+    # 按 key 排序（key 中包含时间戳，自然排序即可）
+    matched_keys.sort(key=lambda x: x['key'])
+
+    # 生成下载文件名
+    date_tag = f"{start_dt.strftime('%Y%m%d')}-{end_dt.strftime('%Y%m%d')}"
+    filter_tag = ""
+    if namespace_filter:
+        filter_tag += f"_{namespace_filter}"
+    if pod_filter:
+        filter_tag += f"_{pod_filter}"
+    download_name = f"{log_type}_logs_{date_tag}{filter_tag}.log"
+
+    # 流式合并下载
+    def merged_stream():
+        buffer = bytearray()
+        for item in matched_keys:
+            try:
+                obj = s3_client.get_object(Bucket=task.s3_bucket, Key=item['key'])
+                yield f"\n# === {item['key']} ===\n".encode('utf-8')
+                for chunk in iter(lambda: obj['Body'].read(64 * 1024), b''):
+                    yield chunk
+            except Exception:
+                yield f"\n# === ERROR reading {item['key']} ===\n".encode('utf-8')
+
+    resp = StreamingHttpResponse(merged_stream(), content_type='text/plain; charset=utf-8')
+    resp['Content-Disposition'] = f'attachment; filename="{download_name}"'
+    resp['X-Total-Files'] = str(len(matched_keys))
+    return resp
+
+
 @api_view(['POST'])
 @permission_classes([HasRolePermission])
 def monitor_log_batch_search(request):

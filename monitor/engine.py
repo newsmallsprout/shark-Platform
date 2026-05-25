@@ -401,13 +401,11 @@ class MonitorEngine:
                     )
                     
                     if s3_only:
-                        # Prepare S3 Keys for Raw Logs
+                        # Prepare S3 Keys for Raw and Error Logs
                         stamp = timezone.now().strftime("%H%M%S_%f")
                         base_prefix = self._get_s3_prefix(task).rstrip('/')
-                        # Use raw/namespace/pod/date/stamp.log structure
                         raw_s3_key = f"{base_prefix}/raw/{namespace}/{pod_name}/{today_str}/{stamp}.log"
-                        # Error logs are always local, but we can also backup to S3 if desired.
-                        # For now, let's keep error logs LOCAL as primary, and optional S3 backup in _process_log_stream
+                        error_s3_key = f"{base_prefix}/error/{namespace}/{pod_name}/{today_str}/{stamp}.log"
                         
                         self._process_log_stream(
                             response,
@@ -417,7 +415,8 @@ class MonitorEngine:
                             log_file_path, # Empty string means don't write raw to local
                             s3_client=s3_client,
                             s3_bucket=task.s3_bucket,
-                            raw_s3_key=raw_s3_key
+                            raw_s3_key=raw_s3_key,
+                            error_s3_key=error_s3_key
                         )
                     else:
                         # Local Mode
@@ -837,11 +836,6 @@ class MonitorEngine:
             except Exception:
                 pass
             
-            # Optional: Upload error log to S3 as well if configured (using error_s3_key)
-            # Currently we assume error_s3_key is provided if raw_s3_key is provided?
-            # In fetch_k8s_logs we didn't pass error_s3_key.
-            # But let's check args.
-            
             uploaded_error_key = None
             if error_s3_key and error_output:
                  try:
@@ -857,8 +851,10 @@ class MonitorEngine:
                  except Exception:
                     pass
 
+            # 兜底: S3模式下告警链接用S3 key,如果没上传成功则用本地error文件名
+            alert_link_ref = uploaded_error_key or (os.path.basename(error_file_path) if error_file_path else None)
             if alerts:
-                self._send_slack_alert(alerts, task, source_name, log_dir, uploaded_error_key)
+                self._send_slack_alert(alerts, task, source_name, log_dir, alert_link_ref)
             return
         
         # If not S3, we still send alerts if any

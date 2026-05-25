@@ -37,14 +37,6 @@
           </template>
         </el-table-column>
 
-        <el-table-column label="部署" width="100">
-          <template #default="{ row }">
-            <el-tag size="small" :type="row.deployment_mode === 'cluster' ? 'warning' : 'info'" effect="plain">
-              {{ row.deployment_mode === 'cluster' ? '集群' : '单点' }}
-            </el-tag>
-          </template>
-        </el-table-column>
-
         <el-table-column prop="host" label="Endpoint" min-width="200">
           <template #default="{ row }">
             <div class="endpoint-info">
@@ -102,17 +94,11 @@
               </el-form-item>
             </el-col>
             <el-col :span="12">
-              <el-form-item label="部署模式">
-                <el-radio-group v-model="form.deployment_mode">
-                  <el-radio-button label="single">单点</el-radio-button>
-                  <el-radio-button label="cluster">集群</el-radio-button>
-                </el-radio-group>
+              <el-form-item label="Connection ID" required>
+                <el-input v-model="form.id" :disabled="editMode" placeholder="e.g. prod_mysql_01" />
               </el-form-item>
             </el-col>
           </el-row>
-          <el-form-item label="Connection ID" required>
-            <el-input v-model="form.id" :disabled="editMode" placeholder="e.g. prod_mysql_01" />
-          </el-form-item>
           <el-form-item label="Display Name" required>
             <el-input v-model="form.name" placeholder="Friendly name for this connection" />
           </el-form-item>
@@ -238,7 +224,6 @@ const form = reactive({
   id: '',
   name: '',
   type: 'mysql',
-  deployment_mode: 'single' as 'single' | 'cluster',
   host: 'localhost',
   port: 3306,
   user: 'root',
@@ -260,7 +245,6 @@ const handleCreate = () => {
     id: '',
     name: '',
     type: 'mysql',
-    deployment_mode: 'single',
     host: 'localhost',
     port: 3306,
     user: 'root',
@@ -278,7 +262,6 @@ const handleEdit = (row: any) => {
   editMode.value = true
   Object.assign(form, {
     ...row,
-    deployment_mode: row.deployment_mode === 'cluster' ? 'cluster' : 'single',
     port: row.port || (row.type === 'mysql' ? 3306 : 27017)
   })
   dialogVisible.value = true

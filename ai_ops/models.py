@@ -4,7 +4,6 @@ class Incident(models.Model):
     STATUS_CHOICES = [
         ('open', 'Open'),
         ('analyzing', 'Analyzing'),
-        ('awaiting_evidence', 'Awaiting user evidence'),
         ('analyzed', 'Analyzed'),
         ('resolved', 'Resolved'),
     ]
@@ -27,20 +26,7 @@ class Incident(models.Model):
     fingerprint = models.CharField(max_length=255, db_index=True, help_text="Unique hash of the alert labels", default='')
     occurrence_count = models.IntegerField(default=1)
     last_analyzed_at = models.DateTimeField(null=True, blank=True)
-
-    evidence_checklist = models.JSONField(
-        default=list,
-        help_text="Suggested commands and hints; operators paste outputs in UI.",
-    )
-    user_evidence = models.JSONField(
-        default=dict,
-        help_text="Map step_id -> pasted command output from operator.",
-    )
-    prefetched_metrics = models.JSONField(
-        default=dict,
-        help_text="Prometheus snapshot from phase-1 for charts before final report.",
-    )
-
+    
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
@@ -55,11 +41,7 @@ class AnalysisReport(models.Model):
     mitigation = models.TextField(help_text="Immediate actions to fix", default="")
     prevention = models.TextField(help_text="Long term prevention", default="")
     refactoring = models.TextField(help_text="Architectural improvements", default="")
-    platform_linkage = models.TextField(
-        help_text="与监控/发布/容量等平台动作的联动建议",
-        default="",
-    )
-
+    
     # Data
     solutions = models.JSONField(help_text="List of actionable steps", default=list)
     related_metrics = models.JSONField(help_text="Metrics data for visualization", default=dict)
@@ -87,7 +69,7 @@ class AIConfig(models.Model):
     max_tokens = models.IntegerField(default=2000)
     temperature = models.FloatField(default=0.7)
     
-    # Prompt Template (legacy single-shot; used when evidence_first_workflow is False)
+    # Prompt Template
     prompt_template = models.TextField(default="""
 你是一个Kubernetes和系统运维专家。请分析以下告警并以JSON格式输出分析报告。
 请严格使用中文回答。
@@ -116,18 +98,8 @@ class AIConfig(models.Model):
 }
 """)
 
-    final_prompt_template = models.TextField(
-        blank=True,
-        default="",
-        help_text="User pasted evidence pass; placeholders: {alert_name},{raw_data},{metrics},{logs},{evidence_checklist},{user_evidence}",
-    )
-
     is_active = models.BooleanField(default=True)
     enable_ai_analysis = models.BooleanField(default=True, help_text="Switch to enable/disable AI analysis. If disabled, uses Prometheus metrics only.")
-    evidence_first_workflow = models.BooleanField(
-        default=True,
-        help_text="Phase 1: metrics + checklist only; final LLM after user pastes command outputs.",
-    )
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):

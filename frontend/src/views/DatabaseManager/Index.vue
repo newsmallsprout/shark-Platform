@@ -527,13 +527,15 @@
             <el-option label="RabbitMQ" value="rabbitmq" />
           </el-select>
         </el-form-item>
-        <el-form-item label="部署模式">
-          <el-radio-group v-model="form.deployment_mode">
-            <el-radio-button label="single">单点</el-radio-button>
-            <el-radio-button label="cluster">集群</el-radio-button>
-          </el-radio-group>
-          <div class="form-tip">Redis 集群会按节点列表连接；其余类型请在 Host 中填写 VIP、代理或分片入口。</div>
-        </el-form-item>
+        
+        <template v-if="form.type === 'redis'">
+          <el-form-item label="Mode">
+            <el-radio-group v-model="formMode">
+              <el-radio label="standalone">Standalone</el-radio>
+              <el-radio label="cluster">Cluster</el-radio>
+            </el-radio-group>
+          </el-form-item>
+        </template>
         
         <template v-if="form.type === 'mongo'">
           <el-form-item label="Mode">
@@ -635,19 +637,19 @@ const connActiveTabs = reactive<Record<string, string>>({}) // { connId: activeT
 const form = reactive<DBConnection>({
   name: '',
   type: 'mysql',
-  deployment_mode: 'single',
   host: 'localhost',
   port: 3306,
   user: 'root',
   password: '',
   database: ''
 })
+const formMode = ref('standalone')
 const useUri = ref(false)
 const useSSL = ref(false)
 
 // Watch type change to reset defaults
 watch(() => form.type, (newType) => {
-  form.deployment_mode = 'single'
+  formMode.value = 'standalone'
   useUri.value = false
   useSSL.value = false
   
@@ -683,7 +685,7 @@ const getConnTabs = (connId: string) => {
 
 const getHostPlaceholder = computed(() => {
   if (useUri.value) return 'mongodb://user:pass@host:port/db'
-  if (form.type === 'redis' && form.deployment_mode === 'cluster') return 'node1:6379,node2:6379'
+  if (form.type === 'redis' && formMode.value === 'cluster') return 'node1:6379,node2:6379'
   return 'localhost'
 })
 
@@ -1453,6 +1455,7 @@ const testConnection = async () => {
   try {
     const payload: any = { ...form }
     payload.extra_config = {}
+    if (form.type === 'redis') payload.extra_config.mode = formMode.value
     
     const res = await dbApi.testConnection(payload)
     
@@ -1475,6 +1478,7 @@ const saveConnection = async () => {
   try {
     const payload: any = { ...form }
     payload.extra_config = {}
+    if (form.type === 'redis') payload.extra_config.mode = formMode.value
     if (form.type === 'mysql' && useSSL.value) {
        payload.extra_config.ssl = true
     }

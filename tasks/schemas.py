@@ -1,11 +1,10 @@
 from typing import Optional, Dict, List
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
 class ConnectionConfig(BaseModel):
     id: str
     name: str
     type: str  # "mysql" or "mongo"
-    deployment_mode: str = "single"
     host: str
     port: int
     user: str
@@ -19,13 +18,6 @@ class ConnectionConfig(BaseModel):
     
     # MySQL specific
     use_ssl: bool = False
-
-    @field_validator("deployment_mode")
-    @classmethod
-    def _deployment_mode(cls, v: str) -> str:
-        if v not in ("single", "cluster"):
-            return "single"
-        return v
 
 class DBConfig(BaseModel):
     host: Optional[str] = None
@@ -133,24 +125,3 @@ class SyncTaskRequest(BaseModel):
     max_load_avg_ratio: float = 3.5
     min_sleep_ms: int = 5
     max_sleep_ms: int = 20000
-
-    # Turbo Pod execution (optional)
-    turbo_enabled: bool = False
-    turbo_no_limit: bool = True
-    turbo_pod_namespace: Optional[str] = None
-    turbo_cpu_request: Optional[str] = None
-    turbo_mem_request: Optional[str] = None
-    turbo_cpu_limit: Optional[str] = None
-    turbo_mem_limit: Optional[str] = None
-    turbo_shard_count: int = 1
-
-    # Runtime shard overrides (used by turbo worker pod command line)
-    shard_total: int = 1
-    shard_index: int = 0
-
-    @field_validator("turbo_shard_count")
-    @classmethod
-    def _validate_turbo_shard_count(cls, v: int) -> int:
-        if v not in (1, 2, 4, 8):
-            raise ValueError("turbo_shard_count must be one of 1/2/4/8")
-        return v

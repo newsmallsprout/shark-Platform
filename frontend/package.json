@@ -1,7 +1,7 @@
 {
   "name": "frontend",
   "private": true,
-  "version": "1.2.0",
+  "version": "0.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -11,12 +11,10 @@
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",
-    "@monaco-editor/loader": "^1.5.0",
     "@types/node": "^25.0.10",
     "axios": "^1.13.2",
-    "echarts": "~5.5.1",
+    "echarts": "^6.0.0",
     "element-plus": "^2.13.1",
-    "monaco-editor": "^0.52.2",
     "pinia": "^3.0.4",
     "sass": "^1.97.3",
     "vue": "^3.2.37",

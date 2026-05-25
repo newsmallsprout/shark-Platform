@@ -57,22 +57,19 @@ yarn-error.log*
 Thumbs.db
 
 # --- Project Specific ---
-logs/*
-!logs/.gitkeep
+logs/
 state/db.sqlite3
 state/*.json
 !state/.gitkeep
 .trae/
 deploy_artifacts/
 
-# GeoIP / 大二进制（勿提交仓库；在 K8s 或本机挂载）
-*.mmdb
-*.mmdb.gz
-
 # --- Environment Secrets ---
 .env
 .env.local
 .env.*.local
-infra/docker/.env.deploy
 
-# --- Docker (keep Dockerfile / compose in repo; use .dockerignore for build context) ---
+# --- Docker ---
+.dockerignore
+Dockerfile
+docker-compose.yml

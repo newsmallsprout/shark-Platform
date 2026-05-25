@@ -1,4 +1,9 @@
 <script setup lang="ts">
+import { onMounted } from 'vue'
+
+onMounted(() => {
+  console.log('Shark Platform Frontend v2026-02-04-Updated-Style')
+})
 </script>
 
 <template>

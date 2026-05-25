@@ -16,10 +16,6 @@ class InspectionConfig(AppConfig):
         if _scheduler_started:
             return
 
-        # Dedicated sync-task process in turbo pod should not start inspection scheduler.
-        if os.environ.get("RUN_SYNC_TASK_ONLY") == "1":
-            return
-
         is_runserver = 'runserver' in sys.argv
         should_start = (os.environ.get('RUN_MAIN') == 'true') if is_runserver else True
         if not should_start:

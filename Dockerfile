@@ -1,9 +1,8 @@
 # --- Stage 1: Build Frontend ---
 FROM node:18-slim AS frontend-builder
 WORKDIR /frontend
-COPY frontend/package.json frontend/package-lock.json frontend/.npmrc ./
-# legacy-peer-deps: echarts-gl peer is echarts@5; project uses echarts@6 (see frontend/.npmrc)
-RUN npm install --legacy-peer-deps
+COPY frontend/package*.json ./
+RUN npm install
 COPY frontend/ ./
 RUN npm run build
 

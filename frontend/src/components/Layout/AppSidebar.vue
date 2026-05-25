@@ -19,8 +19,8 @@
         @select="handleMenuSelect"
       >
         <el-menu-item index="/dashboard" v-if="canViewDashboard">
-          <el-icon><DataLine /></el-icon>
-          <template #title>Traffic Dashboard</template>
+          <el-icon><Odometer /></el-icon>
+          <template #title>Dashboard</template>
         </el-menu-item>
         
         <div class="menu-group-title" v-if="!isCollapsed">Data Pipeline</div>
@@ -32,13 +32,9 @@
           <el-icon><Link /></el-icon>
           <template #title>Data Sources</template>
         </el-menu-item>
-        <el-menu-item index="/database-manager" v-if="canViewDatabaseManager">
+        <el-menu-item index="/database-manager">
           <el-icon><Coin /></el-icon>
           <template #title>Database Manager</template>
-        </el-menu-item>
-        <el-menu-item index="/database-manager/permissions" v-if="canManageDbPermissions">
-          <el-icon><Lock /></el-icon>
-          <template #title>DB Permissions</template>
         </el-menu-item>
 
         <div class="menu-group-title" v-if="!isCollapsed">Operations</div>
@@ -82,7 +78,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
-import { DataLine, List, Link, Monitor, Setting, Upload, Fold, Expand, Lock, Calendar, Cpu } from '@element-plus/icons-vue'
+import { Odometer, List, Link, Monitor, Setting, Upload, Fold, Expand, Lock, Calendar, Cpu } from '@element-plus/icons-vue'
 import { useSystemStore } from '@/stores/system'
 
 const route = useRoute()
@@ -95,8 +91,6 @@ const canViewTasks = computed(() => systemStore.isAdmin || systemStore.hasPermis
 const canViewLogs = computed(() => systemStore.isAdmin || systemStore.hasPermission('view_logs'))
 const canViewSystem = computed(() => systemStore.isAdmin || systemStore.hasPermission('view_inspection'))
 const canViewDeploy = computed(() => systemStore.isAdmin || systemStore.hasPermission('view_deploy'))
-const canViewDatabaseManager = computed(() => systemStore.isAdmin || systemStore.hasPermission('view_db_manager'))
-const canManageDbPermissions = computed(() => systemStore.isAdmin || systemStore.hasPermission('manage_db_permissions') || systemStore.hasPermission('manage_db_instances'))
 
 const handleMenuSelect = () => {
   // Menu selection handling if needed
@@ -109,7 +103,6 @@ onMounted(() => {
 const activeMenu = computed(() => {
   const path = route.path
   if (path.startsWith('/tasks')) return '/tasks'
-  if (path.startsWith('/database-manager/permissions')) return '/database-manager/permissions'
   return path
 })
 </script>

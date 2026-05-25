@@ -5,7 +5,6 @@ import datetime
 from django.utils import timezone
 import requests
 from inspection.models import InspectionConfig
-from .evidence_checklist import build_checklist
 
 try:
     from kubernetes import client, config
@@ -14,40 +13,6 @@ except ImportError:
     K8S_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
-
-DEFAULT_FINAL_PROMPT = """
-你是资深 Kubernetes / Linux SRE。材料包含：告警、Prometheus 查询结果、平台自动收集的上下文、以及运维按清单粘贴的命令输出。
-要求：
-1. 严禁编造材料中未出现的 PID、路径、容器名或数值；若不足以定论，在 root_cause 中明确写「依据当前材料不足以确认根因，需补充：…」。
-2. 结论须引用用户粘贴输出或指标中的具体事实（例如挂载点、目录、进程名）。
-3. 仅输出一个 JSON 对象，不要使用 Markdown 代码块。
-
-告警名: {alert_name}
-原始告警 JSON: {raw_data}
-Prometheus 指标摘要 JSON: {metrics}
-自动上下文（含 Pod describe/日志摘要等）: {logs}
-排查步骤清单 JSON: {evidence_checklist}
-用户粘贴的命令输出（step_id -> 文本）JSON: {user_evidence}
-
-输出 JSON 字段（中文）：
-- phenomenon: 故障现象（一句话）
-- root_cause: 根本原因
-- mitigation: 临时处置
-- prevention: 预防措施
-- refactoring: 永久/架构改进
-- platform_linkage: 与监控阈值、容量、发布/回滚、工单等平台流程的联动建议
-- solutions: 字符串数组，可执行的后续操作建议
-"""
-
-
-def _parse_json_from_llm(content: str):
-    text = content.strip()
-    if "```json" in text:
-        text = text.split("```json", 1)[1].split("```", 1)[0].strip()
-    elif text.startswith("```"):
-        text = text.split("```", 2)[1].strip()
-    return json.loads(text)
-
 
 class DiagnosticStrategy:
     """
@@ -118,201 +83,48 @@ class FaultAnalyzer:
 
     def analyze(self):
         logger.info(f"Starting analysis for incident {self.incident.id}")
-        from ..models import AIConfig
+        self.incident.status = 'analyzing'
+        self.incident.save(update_fields=['status'])
 
-        ai_config = AIConfig.get_active_config()
-        if ai_config.evidence_first_workflow:
-            self._analyze_phase1()
-        else:
-            self._analyze_legacy_single_pass(ai_config)
-
-    def _analyze_phase1(self):
-        """Metrics + checklist only; operator pastes command outputs in UI for phase 2."""
-        self.incident.status = "analyzing"
-        self.incident.save(update_fields=["status"])
         try:
+            # 1. Parse Alert & Gather Context
             context_data = self._gather_context()
-            labels = (self.incident.raw_alert_data or {}).get("labels", {})
-            checklist = build_checklist(self.incident.alert_name, labels)
-            self.incident.evidence_checklist = checklist
-            self.incident.prefetched_metrics = context_data.get("metrics", {})
-            self.incident.user_evidence = {}
-            self.incident.status = "awaiting_evidence"
-            self.incident.save(
-                update_fields=[
-                    "evidence_checklist",
-                    "prefetched_metrics",
-                    "user_evidence",
-                    "status",
-                ]
-            )
-            logger.info(f"Phase 1 done; incident {self.incident.id} awaiting user evidence")
-        except Exception as e:
-            logger.error(f"Phase 1 failed: {e}", exc_info=True)
-            self.incident.status = "open"
-            self.incident.save(update_fields=["status"])
-
-    def _analyze_legacy_single_pass(self, ai_config):
-        self.incident.status = "analyzing"
-        self.incident.save(update_fields=["status"])
-        try:
-            context_data = self._gather_context()
+            
+            # 2. Check AI Switch
+            from ..models import AIConfig
+            ai_config = AIConfig.get_active_config()
+            
             if ai_config.enable_ai_analysis:
+                # Call AI
                 ai_result = self._call_ai_service(context_data)
             else:
+                # Self Analysis based on Prometheus metrics
                 ai_result = self._analyze_without_ai(context_data)
-            self._persist_report(context_data, ai_result)
-            self.incident.status = "analyzed"
-            self.incident.save(update_fields=["status"])
+            
+            # 3. Save Report
+            AnalysisReport.objects.create(
+                incident=self.incident,
+                phenomenon=ai_result.get('phenomenon', 'Unknown phenomenon'),
+                root_cause=ai_result.get('root_cause', 'Unknown root cause'),
+                mitigation=ai_result.get('mitigation', 'No immediate mitigation'),
+                prevention=ai_result.get('prevention', 'No prevention strategy'),
+                refactoring=ai_result.get('refactoring', 'No refactoring needed'),
+                solutions=ai_result.get('solutions', []),
+                related_metrics=context_data.get('metrics', {}),
+                diagnosis_logs=context_data.get('logs', []),
+                k8s_events=context_data.get('events', []),
+                k8s_pod_status=context_data.get('pod_status', {}),
+                raw_ai_response=json.dumps(ai_result)
+            )
+            
+            self.incident.status = 'analyzed'
+            self.incident.save(update_fields=['status'])
             logger.info(f"Analysis completed for incident {self.incident.id}")
+
         except Exception as e:
             logger.error(f"Analysis failed: {e}", exc_info=True)
-            self.incident.status = "open"
-            self.incident.save(update_fields=["status"])
-
-    def _persist_report(self, context_data, ai_result):
-        AnalysisReport.objects.filter(incident=self.incident).delete()
-        AnalysisReport.objects.create(
-            incident=self.incident,
-            phenomenon=ai_result.get("phenomenon", "Unknown phenomenon"),
-            root_cause=ai_result.get("root_cause", "Unknown root cause"),
-            mitigation=ai_result.get("mitigation", "No immediate mitigation"),
-            prevention=ai_result.get("prevention", "No prevention strategy"),
-            refactoring=ai_result.get("refactoring", "No refactoring needed"),
-            platform_linkage=ai_result.get("platform_linkage", ""),
-            solutions=ai_result.get("solutions", []),
-            related_metrics=context_data.get("metrics", {}),
-            diagnosis_logs=context_data.get("logs", []),
-            k8s_events=context_data.get("events", []),
-            k8s_pod_status=context_data.get("pod_status", {}),
-            raw_ai_response=json.dumps(ai_result, ensure_ascii=False),
-        )
-
-    def finalize_with_user_evidence(self, evidence_updates: dict):
-        """
-        Merge pasted outputs, run LLM (or rule fallback), persist report.
-        """
-        from ..models import AIConfig
-
-        merged = dict(self.incident.user_evidence or {})
-        merged.update(evidence_updates or {})
-        self.incident.user_evidence = merged
-        self.incident.save(update_fields=["user_evidence"])
-
-        self.incident.status = "analyzing"
-        self.incident.save(update_fields=["status"])
-        ai_config = AIConfig.get_active_config()
-        try:
-            context_data = self._gather_context()
-            context_data["user_evidence"] = merged
-            context_data["evidence_checklist"] = self.incident.evidence_checklist or []
-            checklist = self.incident.evidence_checklist or []
-
-            if ai_config.enable_ai_analysis:
-                ai_result = self._call_ai_service_final(context_data, ai_config)
-            else:
-                ai_result = self._analyze_without_ai_with_evidence(context_data)
-
-            diag_logs = list(context_data.get("logs", []))
-            diag_logs.extend(self._format_user_evidence_blocks(merged, checklist))
-            context_data["logs"] = diag_logs
-
-            self._persist_report(context_data, ai_result)
-            self.incident.status = "analyzed"
-            self.incident.save(update_fields=["status"])
-            logger.info(f"Final analysis completed for incident {self.incident.id}")
-        except Exception as e:
-            logger.error(f"Final analysis failed: {e}", exc_info=True)
-            self.incident.status = "awaiting_evidence"
-            self.incident.save(update_fields=["status"])
-            raise
-
-    @staticmethod
-    def _format_user_evidence_blocks(user_evidence: dict, checklist: list):
-        title_by_id = {s.get("id"): s.get("title", s.get("id")) for s in checklist}
-        blocks = []
-        for step_id, text in sorted(user_evidence.items()):
-            if not (text or "").strip():
-                continue
-            title = title_by_id.get(step_id, step_id)
-            blocks.append(f"--- 用户粘贴: {title} ({step_id}) ---\n{(text or '').strip()}")
-        return blocks
-
-    def _analyze_without_ai_with_evidence(self, context):
-        base = self._analyze_without_ai(context)
-        merged = context.get("user_evidence") or {}
-        non_empty = [k for k, v in merged.items() if (v or "").strip()]
-        if non_empty:
-            base["root_cause"] = (
-                base.get("root_cause", "")
-                + f" 已收到 {len(non_empty)} 条人工粘贴输出，请结合下方「诊断日志证据」阅读。"
-            )
-            base["platform_linkage"] = (
-                "AI 已关闭：请在平台侧手动创建工单，并关联本告警 fingerprint；"
-                "建议将粘贴输出附加到工单。"
-            )
-        else:
-            base["platform_linkage"] = "未收到粘贴输出，无法基于命令结果深化结论。"
-        return base
-
-    def _call_ai_service_final(self, context, ai_config):
-        from ..models import AIConfig
-
-        cfg = ai_config or AIConfig.get_active_config()
-        template = (cfg.final_prompt_template or "").strip() or DEFAULT_FINAL_PROMPT
-        alert_name = self.incident.alert_name
-        prompt = template
-        prompt = prompt.replace("{alert_name}", str(alert_name))
-        prompt = prompt.replace(
-            "{raw_data}", json.dumps(self.incident.raw_alert_data, ensure_ascii=False)
-        )
-        prompt = prompt.replace(
-            "{metrics}", json.dumps(context.get("metrics", {}), ensure_ascii=False)
-        )
-        prompt = prompt.replace("{logs}", "\n".join(context.get("logs", [])))
-        prompt = prompt.replace(
-            "{evidence_checklist}",
-            json.dumps(context.get("evidence_checklist", []), ensure_ascii=False),
-        )
-        prompt = prompt.replace(
-            "{user_evidence}",
-            json.dumps(context.get("user_evidence", {}), ensure_ascii=False),
-        )
-        logger.info("AI final prompt prepared")
-
-        if cfg.api_key:
-            try:
-                headers = {
-                    "Authorization": f"Bearer {cfg.api_key}",
-                    "Content-Type": "application/json",
-                }
-                payload = {
-                    "model": cfg.model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": cfg.temperature,
-                    "max_tokens": cfg.max_tokens,
-                }
-                response = requests.post(
-                    f"{cfg.api_base}/chat/completions",
-                    headers=headers,
-                    json=payload,
-                    timeout=60,
-                )
-                response.raise_for_status()
-                content = response.json()["choices"][0]["message"]["content"]
-                return _parse_json_from_llm(content)
-            except Exception as e:
-                logger.error(f"AI final call failed: {e}", exc_info=True)
-
-        return {
-            "phenomenon": "模型调用失败或未配置 API Key，无法生成基于粘贴证据的结论。",
-            "root_cause": "请检查 AI 配置或稍后重试。",
-            "mitigation": "根据清单中的命令输出人工判断。",
-            "prevention": "完善监控与磁盘/容量告警。",
-            "refactoring": "无。",
-            "platform_linkage": "在平台记录本次告警与粘贴证据，便于复盘。",
-            "solutions": [],
-        }
+            self.incident.status = 'open'
+            self.incident.save(update_fields=['status'])
 
     def _analyze_without_ai(self, context):
         """
@@ -347,8 +159,7 @@ class FaultAnalyzer:
             "mitigation": "Check the highlighted pods/processes.",
             "prevention": "Adjust resource limits or scale out.",
             "refactoring": "Analyze application performance profiles.",
-            "platform_linkage": "在监控平台为该 fingerprint 配置关联面板与升级策略。",
-            "solutions": ["kubectl top pod", "kubectl get events"],
+            "solutions": ["kubectl top pod", "kubectl get events"]
         }
 
 
@@ -673,10 +484,14 @@ class FaultAnalyzer:
                 
                 result = response.json()
                 content = result['choices'][0]['message']['content']
-                parsed = _parse_json_from_llm(content)
-                if "platform_linkage" not in parsed:
-                    parsed["platform_linkage"] = ""
-                return parsed
+                
+                # Attempt to parse JSON from content (it might be wrapped in ```json ... ```)
+                if '```json' in content:
+                    content = content.split('```json')[1].split('```')[0].strip()
+                elif '```' in content:
+                    content = content.split('```')[1].strip()
+                    
+                return json.loads(content)
             except Exception as e:
                 logger.error(f"AI Service Call Failed: {e}. Falling back to rule-based mock.")
         
@@ -688,7 +503,6 @@ class FaultAnalyzer:
                 "mitigation": "1. 暂时使用 `ionice` 限制备份进程的 I/O 优先级。\n2. 如果严重影响生产业务，建议终止备份任务。",
                 "prevention": "为所有备份 CronJob 配置 `ionice`。在备份容器上设置 IOPS 限制 (Docker/K8s limits)。",
                 "refactoring": "架构优化：启用专用的只读从库 (Read-Replica) 进行备份，避免影响主库性能。",
-                "platform_linkage": "在监控平台为该备份任务增加磁盘 IO 与耗时告警；发布窗口避开备份高峰。",
                 "solutions": ["kill 1234", "ionice -c3 -p 1234"]
             }
         
@@ -699,7 +513,6 @@ class FaultAnalyzer:
                 "mitigation": "重启该 Pod。",
                 "prevention": "设置 CPU Limit，防止单应用耗尽节点资源。",
                 "refactoring": "优化代码逻辑，修复死循环 Bug。",
-                "platform_linkage": "为 payment-service 配置 HPA 与 CPU 告警升级策略。",
                 "solutions": ["kubectl delete pod payment-service-xxx"]
             }
 
@@ -709,7 +522,6 @@ class FaultAnalyzer:
             "mitigation": "检查系统日志。",
             "prevention": "完善监控指标。",
             "refactoring": "暂无建议。",
-            "platform_linkage": "将本告警关联到值班工单并补充指标面板链接。",
             "solutions": []
         }
 

@@ -60,7 +60,6 @@ def connection_list(request):
                 "id": c.id,
                 "name": c.name,
                 "type": c.type,
-                "deployment_mode": getattr(c, "deployment_mode", "single") or "single",
                 "host": c.host,
                 "port": c.port,
                 "user": c.user,
@@ -81,7 +80,6 @@ def connection_list(request):
                 defaults={
                     "name": cfg.name,
                     "type": cfg.type,
-                    "deployment_mode": cfg.deployment_mode,
                     "host": cfg.host,
                     "port": cfg.port,
                     "user": cfg.user,
@@ -107,7 +105,6 @@ def connection_detail(request, conn_id):
                 "id": c.id,
                 "name": c.name,
                 "type": c.type,
-                "deployment_mode": getattr(c, "deployment_mode", "single") or "single",
                 "host": c.host,
                 "port": c.port,
                 "user": c.user,
@@ -265,17 +262,6 @@ def task_config(request, task_id: str):
             "mongo_socket_timeout_ms",
             "mongo_connect_timeout_ms",
             "mongo_compressors",
-            "inc_reconnect_max_retry",
-            "inc_reconnect_backoff_base_sec",
-            "inc_reconnect_backoff_max_sec",
-            "turbo_enabled",
-            "turbo_no_limit",
-            "turbo_pod_namespace",
-            "turbo_cpu_request",
-            "turbo_mem_request",
-            "turbo_cpu_limit",
-            "turbo_mem_limit",
-            "turbo_shard_count",
         ]
         out = {k: cfg.get(k) for k in perf_keys if k in cfg}
         return Response({"task_id": task_id, "perf": out})
@@ -296,14 +282,6 @@ def task_config(request, task_id: str):
         return Response({"detail": str(e)}, status=400)
 
     t.config = validated.model_dump()
-    t.turbo_enabled = bool(validated.turbo_enabled)
-    t.turbo_no_limit = bool(validated.turbo_no_limit)
-    t.turbo_pod_namespace = validated.turbo_pod_namespace
-    t.turbo_cpu_request = validated.turbo_cpu_request
-    t.turbo_mem_request = validated.turbo_mem_request
-    t.turbo_cpu_limit = validated.turbo_cpu_limit
-    t.turbo_mem_limit = validated.turbo_mem_limit
-    t.turbo_shard_count = int(validated.turbo_shard_count or 1)
     t.save()
     return Response({"msg": "updated", "task_id": task_id})
 
