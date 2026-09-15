@@ -4,6 +4,7 @@ from rest_framework.permissions import IsAuthenticated
 from api.views import HasRolePermission
 import os
 import json
+from datetime import datetime, timedelta
 from .models import InspectionConfig, InspectionReport
 from .engine import inspection_engine
 
@@ -69,12 +70,20 @@ def history(request):
     for r in reports:
         content = r.content
         health = content.get('health_summary', {}) or content.get('risk_summary', {})
-        health_score = health.get('score', 0)
+        health_score = health.get('score')
+        if health.get('level') == 'unknown':
+            health_score = None
             
         results.append({
             "report_id": r.report_id,
             "score": health_score,
-            "summary": content.get('ai_analysis', '')[:100] + '...' if content.get('ai_analysis') else 'No analysis available'
+            "verdict": content.get("verdict") or "",
+            "findings_count": len(content.get("findings") or []),
+            "summary": (
+                content.get("verdict")
+                or ((content.get("ai_analysis") or "")[:100] + ("..." if content.get("ai_analysis") else ""))
+                or "No analysis available"
+            ),
         })
     
     # Handle legacy file items if any

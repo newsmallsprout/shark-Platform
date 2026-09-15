@@ -44,6 +44,17 @@ export interface InspectionReport {
     top_alerts?: { name: string; count: number }[]
   }
   servers?: any[]
+  verdict?: string
+  findings?: string[]
+  checklist?: { id?: string; name: string; level: string; result: string; source?: string; detail?: string[] }[]
+  pvc_usage?: { key: string; namespace?: string; pvc?: string; service: string; pct: number; used_bytes: number; capacity_bytes: number; baseline?: string }[]
+  services?: { service: string; status: string; summary: string; baseline?: string }[]
+  elasticsearch?: {
+    available?: boolean
+    clusters?: { cluster: string; status?: string; nodes?: number; data_nodes?: number; unassigned_shards?: number; active_shards?: number }[]
+    heap_nodes?: { cluster: string; node: string; heap_pct: number; used_bytes: number; max_bytes: number }[]
+  }
+  known_normals?: string[]
   trend_7d?: { date: string; score?: number; firing?: number; critical?: number; avg_cpu?: number; avg_mem?: number; avg_disk?: number }[]
   forecast_7_15_30?: any
 }
