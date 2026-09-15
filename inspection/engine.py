@@ -396,6 +396,7 @@ class InspectionEngine:
                 "checks": cluster.get("checks"),
                 "elasticsearch": cluster.get("elasticsearch"),
                 "pvc": (cluster.get("pvc") or {}).get("items"),
+                "workloads": (cluster.get("workloads") or {}).get("groups"),
                 "known_normals": cluster.get("known_normals"),
                 "targets": {"total": total_targets, "down": down_targets},
                 "alerts": {"firing": firing},
@@ -406,6 +407,7 @@ class InspectionEngine:
                 "请基于我提供的巡检数据，输出一份可执行的中文巡检报告。"
                 "Elasticsearch 用 elasticsearch-exporter 的集群色/节点/堆，不要说没查到。"
                 "PVC 必须按每一块盘写用量，不要合并成一个服务。"
+                "workloads 一眼是 Deploy/STS 的 Ready n/m；pods 里才是 Pod 名、Pod IP、节点 IP。"
                 "known_normals 里的项不要当成故障。"
                 "checks 里 level=skip 表示缺指标，请写明未覆盖，不要写成健康。"
                 "不要输出安全漏洞/CVE/风险扫描相关内容。"
@@ -413,9 +415,10 @@ class InspectionEngine:
                 "1) 总览（对应 verdict）\n"
                 "2) 检查清单\n"
                 "3) Elasticsearch\n"
-                "4) 全部 PVC 用量\n"
-                "5) 资源热点与告警\n"
-                "6) 处置建议（P0/P1/P2）\n"
+                "4) 工作负载（一眼 n/m，展开看 Pod/IP）\n"
+                "5) 全部 PVC 用量\n"
+                "6) 资源热点与告警\n"
+                "7) 处置建议（P0/P1/P2）\n"
                 f"\n报告生成时间：{datetime.now().strftime('%Y-%m-%d')}\n"
             )
             
@@ -554,6 +557,8 @@ class InspectionEngine:
             "findings": cluster.get("findings") or [],
             "verdict": cluster.get("verdict") or "",
             "pvc_usage": (cluster.get("pvc") or {}).get("items") or [],
+            "workloads": (cluster.get("workloads") or {}).get("groups") or [],
+            "workload_pods": (cluster.get("workloads") or {}).get("items") or [],
             "services": cluster.get("services") or [],
             "elasticsearch": cluster.get("elasticsearch") or {},
             "known_normals": cluster.get("known_normals") or [],

@@ -132,6 +132,50 @@
           </el-table>
         </div>
 
+        <div class="analysis-section" v-if="workloadRows.length">
+          <div class="section-header">
+            <el-icon><Monitor /></el-icon>
+            <span>工作负载（{{ workloadRows.length }} 个，展开看 Pod / IP）</span>
+          </div>
+          <el-table :data="workloadRows" size="small" style="width: 100%" max-height="460" row-key="key">
+            <el-table-column type="expand">
+              <template #default="{ row }">
+                <div v-if="!(row.pods && row.pods.length)" class="form-tip">无 Pod 明细</div>
+                <el-table v-else :data="row.pods" size="small" style="width: 100%">
+                  <el-table-column prop="pod" label="Pod" min-width="200" />
+                  <el-table-column prop="phase" label="相位" width="100" />
+                  <el-table-column label="Ready" width="80">
+                    <template #default="{ row: pod }">{{ pod.ready == null ? '-' : (pod.ready ? '是' : '否') }}</template>
+                  </el-table-column>
+                  <el-table-column prop="pod_ip" label="Pod IP" width="130">
+                    <template #default="{ row: pod }">{{ pod.pod_ip || '-' }}</template>
+                  </el-table-column>
+                  <el-table-column prop="node" label="节点" min-width="140">
+                    <template #default="{ row: pod }">{{ pod.node || '-' }}</template>
+                  </el-table-column>
+                  <el-table-column prop="host_ip" label="节点 IP" width="130">
+                    <template #default="{ row: pod }">{{ pod.host_ip || '-' }}</template>
+                  </el-table-column>
+                  <el-table-column prop="restarts" label="重启" width="70" />
+                  <el-table-column prop="waiting" label="等待原因" min-width="120">
+                    <template #default="{ row: pod }">{{ pod.waiting || '-' }}</template>
+                  </el-table-column>
+                </el-table>
+              </template>
+            </el-table-column>
+            <el-table-column prop="service" label="服务" min-width="120" />
+            <el-table-column prop="kind" label="类型" width="110" />
+            <el-table-column label="对象" min-width="200">
+              <template #default="{ row }">{{ row.namespace }}/{{ row.name }}</template>
+            </el-table-column>
+            <el-table-column label="Ready" width="100">
+              <template #default="{ row }">
+                <el-tag :type="checkTagType(row.level)" size="small" effect="plain">{{ row.ready }}/{{ row.desired }}</el-tag>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
+
         <div class="analysis-section" v-if="esClusters.length">
           <div class="section-header">
             <el-icon><Box /></el-icon>
@@ -386,7 +430,7 @@ import {
   Setting, Search, Calendar, 
   MagicStick, Warning, CircleCheck,
   DataLine, Histogram, Document, Refresh, Download,
-  List, Box, Coin, InfoFilled
+  List, Box, Coin, InfoFilled, Monitor
 } from '@element-plus/icons-vue'
 import { taskApi } from '@/api/task'
 import { opsTicketsApi } from '@/api/ops_tickets'
@@ -542,6 +586,25 @@ const getProgressStatus = (score: number) => {
 
 const esClusters = computed(() => currentReport.value?.elasticsearch?.clusters || [])
 const esHeapNodes = computed(() => currentReport.value?.elasticsearch?.heap_nodes || [])
+const workloadRows = computed(() => {
+  const rows = currentReport.value?.workloads || []
+  if (!rows.length) return []
+  const first = rows[0] as { pod?: string; kind?: string; pods?: unknown[] }
+  if (first.pod && !first.kind && !Array.isArray(first.pods)) {
+    return rows.map((p: any) => ({
+      key: p.key || `${p.namespace || ''}/${p.pod}`,
+      kind: 'Pod',
+      namespace: p.namespace,
+      name: p.pod,
+      service: p.service,
+      ready: p.phase === 'running' && !p.waiting ? 1 : 0,
+      desired: 1,
+      level: p.level,
+      pods: [p],
+    }))
+  }
+  return rows
+})
 
 const esStatusType = (status?: string) => {
   if (status === 'green') return 'success'

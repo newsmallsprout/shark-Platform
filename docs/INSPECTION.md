@@ -9,7 +9,9 @@
 | Shark **System Inspection** | 定时 08:00 + 页面手动 Run | Prometheus 即时查询 |
 | [`scripts/inspect-prd.sh`](../scripts/inspect-prd.sh) | ops-host 上手动（先 `kauth-prd-admin`） | kubectl + Prom 代理 |
 
-清单对齐 `inspect-prd.sh`：**节点 / 异常 Pod / OOM 与重启 / 全部 PVC 用量 / Elasticsearch（exporter）/ firing / Blackbox / ArgoCD / 副本**。缺指标的项标成 **未覆盖**，不写成健康。
+清单对齐 `inspect-prd.sh`：**节点 / 按 Pod 名的工作负载 / 异常 Pod / OOM 与重启 / 全部 PVC 用量 / Elasticsearch（exporter）/ firing / Blackbox / ArgoCD / 副本**。缺指标的项标成 **未覆盖**，不写成健康。
+
+工作负载一眼看 Deploy/STS 的 **Ready n/m**（等价 `kubectl get deploy`）。展开才是 Pod 名、Pod IP、节点 IP。节点 CPU/内存/磁盘仍在原来的机器表（node-exporter 的 instance IP）。不扫 `kube-system`。PVC 用量仍走 `pvc_stats_*`。
 
 ## PVC 用量
 

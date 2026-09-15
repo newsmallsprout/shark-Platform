@@ -11,6 +11,7 @@ from .catalog import (
     PVC_WARN_PCT,
     display_name,
     resolve_service,
+    watch_namespaces,
 )
 
 PVC_USED_QUERIES = [
@@ -239,6 +240,288 @@ def collect_elasticsearch(query_fn):
     }
 
 
+def _pod_key(metric):
+    m = metric or {}
+    ns = m.get("namespace") or ""
+    pod = m.get("pod") or ""
+    return f"{ns}/{pod}", ns, pod
+
+
+def _index_named(rows, *name_keys):
+    out = {}
+    for row in rows or []:
+        m = _metric(row)
+        ns = m.get("namespace") or ""
+        name = ""
+        for key in name_keys:
+            if m.get(key):
+                name = m.get(key)
+                break
+        if not name:
+            continue
+        out[(ns, name)] = int(_num(row))
+    return out
+
+
+def _strip_replicaset_hash(name):
+    parts = (name or "").rsplit("-", 1)
+    if len(parts) == 2 and 5 <= len(parts[1]) <= 16 and parts[1].isalnum():
+        return parts[0]
+    return name
+
+
+def _clean_owner(kind, name):
+    kind = (kind or "").strip()
+    name = (name or "").strip()
+    if kind.lower() in ("", "<none>", "none"):
+        return "", ""
+    return kind, name
+
+
+def _workload_level(ready, desired, pods):
+    if any(p.get("level") == "critical" for p in pods):
+        return "critical"
+    if desired is not None and ready is not None and desired > 0 and ready < desired:
+        return "warning"
+    if any(p.get("level") == "warning" for p in pods):
+        return "warning"
+    if desired is not None and desired > 0 and (ready or 0) == 0:
+        return "critical"
+    return "ok"
+
+
+def collect_workloads(query_fn):
+    """一眼：Deploy/STS Ready n/m；展开：Pod 名 + Pod IP + 节点 IP。不扫 kube-system。"""
+    phase_rows = query_fn("kube_pod_status_phase == 1") or query_fn("kube_pod_status_phase") or []
+    waiting_rows = query_fn(
+        'kube_pod_container_status_waiting_reason{reason=~"CrashLoopBackOff|ImagePullBackOff|ErrImagePull|CreateContainerError"} == 1'
+    ) or []
+    ready_rows = query_fn('kube_pod_status_ready{condition="true"} == 1') or []
+    info_rows = query_fn("kube_pod_info") or []
+    owner_rows = query_fn("kube_pod_owner") or []
+    rs_owner_rows = query_fn('kube_replicaset_owner{owner_kind="Deployment"}') or query_fn("kube_replicaset_owner") or []
+    restart_rows = query_fn("kube_pod_container_status_restarts_total") or []
+
+    waiting = {}
+    for row in waiting_rows:
+        if _num(row) != 1:
+            continue
+        key, _, _ = _pod_key(_metric(row))
+        waiting[key] = _metric(row).get("reason") or "waiting"
+
+    ready_set = set()
+    for row in ready_rows:
+        if _num(row) != 1:
+            continue
+        key, _, _ = _pod_key(_metric(row))
+        if not key.endswith("/"):
+            ready_set.add(key)
+
+    info = {}
+    for row in info_rows:
+        m = _metric(row)
+        key, _, _ = _pod_key(m)
+        info[key] = {
+            "pod_ip": m.get("pod_ip") or m.get("pod_ips") or "",
+            "host_ip": m.get("host_ip") or "",
+            "node": m.get("node") or m.get("node_name") or "",
+            "created_by_kind": m.get("created_by_kind") or "",
+            "created_by_name": m.get("created_by_name") or "",
+        }
+
+    owners = {}
+    for row in owner_rows:
+        m = _metric(row)
+        key, _, _ = _pod_key(m)
+        owners[key] = {
+            "owner_kind": m.get("owner_kind") or m.get("created_by_kind") or "",
+            "owner_name": m.get("owner_name") or m.get("created_by_name") or "",
+        }
+
+    rs_to_deploy = {}
+    for row in rs_owner_rows:
+        m = _metric(row)
+        if (m.get("owner_kind") or "") != "Deployment" and "owner_kind" in m:
+            continue
+        ns = m.get("namespace") or ""
+        rs = m.get("replicaset") or m.get("replicasetname") or ""
+        deploy = m.get("owner_name") or ""
+        if ns and rs and deploy:
+            rs_to_deploy[(ns, rs)] = deploy
+
+    restarts = {}
+    for row in restart_rows:
+        key, _, _ = _pod_key(_metric(row))
+        restarts[key] = restarts.get(key, 0) + int(_num(row))
+
+    watched = watch_namespaces()
+    items = []
+    seen = set()
+    for row in phase_rows:
+        if _num(row) != 1:
+            continue
+        m = _metric(row)
+        key, ns, pod = _pod_key(m)
+        if not pod or key in seen:
+            continue
+        seen.add(key)
+        phase = (m.get("phase") or "unknown").lower()
+        alias = resolve_service(namespace=ns, name=pod, instance=pod)
+        wait_reason = waiting.get(key) or ""
+        watch = ns.lower() in watched or bool(alias)
+        abnormal = phase not in ("running", "succeeded") or bool(wait_reason)
+        if phase == "succeeded" and not alias:
+            continue
+        if not watch and not abnormal:
+            continue
+        if phase in ("failed", "unknown") or wait_reason:
+            level = "critical"
+        elif phase == "pending":
+            level = "warning"
+        elif phase != "running":
+            level = "info"
+        else:
+            level = "ok"
+        meta = info.get(key) or {}
+        own = owners.get(key) or {}
+        owner_kind, owner_name = _clean_owner(own.get("owner_kind"), own.get("owner_name"))
+        if not owner_kind:
+            owner_kind, owner_name = _clean_owner(meta.get("created_by_kind"), meta.get("created_by_name"))
+        items.append({
+            "key": key,
+            "namespace": ns,
+            "pod": pod,
+            "phase": phase,
+            "ready": key in ready_set if ready_set else None,
+            "waiting": wait_reason,
+            "service": alias["service"] if alias else (f"{ns}/{pod}" if ns else pod),
+            "aliased": bool(alias),
+            "level": level,
+            "pod_ip": meta.get("pod_ip") or "",
+            "host_ip": meta.get("host_ip") or "",
+            "node": meta.get("node") or "",
+            "restarts": restarts.get(key, 0),
+            "owner_kind": owner_kind,
+            "owner_name": owner_name,
+        })
+
+    deploy_spec = _index_named(query_fn("kube_deployment_spec_replicas") or [], "deployment")
+    deploy_ready = _index_named(query_fn("kube_deployment_status_replicas_ready") or [], "deployment")
+    sts_spec = _index_named(query_fn("kube_statefulset_replicas") or [], "statefulset")
+    sts_ready = _index_named(query_fn("kube_statefulset_status_replicas_ready") or [], "statefulset")
+    ds_spec = _index_named(query_fn("kube_daemonset_status_desired_number_scheduled") or [], "daemonset")
+    ds_ready = _index_named(query_fn("kube_daemonset_status_number_ready") or [], "daemonset")
+
+    groups_map = {}
+
+    def ensure_group(kind, ns, name, service=""):
+        key = f"{kind}/{ns}/{name}"
+        if key not in groups_map:
+            alias = resolve_service(namespace=ns, name=name, instance=name)
+            groups_map[key] = {
+                "key": key,
+                "kind": kind,
+                "namespace": ns,
+                "name": name,
+                "service": (alias["service"] if alias else None) or service or f"{ns}/{name}",
+                "desired": None,
+                "ready": None,
+                "pods": [],
+            }
+        elif service and groups_map[key]["service"].endswith(name):
+            groups_map[key]["service"] = service
+        return groups_map[key]
+
+    def keep_ctrl(ns, name):
+        if (ns or "").lower() == "kube-system":
+            return False
+        if (ns or "").lower() in watched:
+            return True
+        return bool(resolve_service(namespace=ns, name=name, instance=name))
+
+    def find_controller(ns, pod_name):
+        best = None
+        best_len = -1
+        for g in groups_map.values():
+            if g.get("namespace") != ns:
+                continue
+            if g.get("kind") not in ("Deployment", "StatefulSet", "DaemonSet"):
+                continue
+            name = g.get("name") or ""
+            if not name:
+                continue
+            if pod_name == name or pod_name.startswith(name + "-"):
+                if len(name) > best_len:
+                    best = g
+                    best_len = len(name)
+        return best
+
+    for (ns, name), desired in deploy_spec.items():
+        if keep_ctrl(ns, name):
+            g = ensure_group("Deployment", ns, name)
+            g["desired"] = desired
+            g["ready"] = deploy_ready.get((ns, name), 0)
+    for (ns, name), desired in sts_spec.items():
+        if keep_ctrl(ns, name):
+            g = ensure_group("StatefulSet", ns, name)
+            g["desired"] = desired
+            g["ready"] = sts_ready.get((ns, name), 0)
+    for (ns, name), desired in ds_spec.items():
+        if keep_ctrl(ns, name):
+            g = ensure_group("DaemonSet", ns, name)
+            g["desired"] = desired
+            g["ready"] = ds_ready.get((ns, name), 0)
+
+    for pod in items:
+        ns = pod["namespace"]
+        kind = pod.get("owner_kind") or ""
+        oname = pod.get("owner_name") or ""
+        if kind == "ReplicaSet":
+            deploy = rs_to_deploy.get((ns, oname)) or _strip_replicaset_hash(oname)
+            g = ensure_group("Deployment", ns, deploy, pod.get("service"))
+        elif kind in ("StatefulSet", "DaemonSet", "Job", "Deployment"):
+            g = ensure_group(kind, ns, oname, pod.get("service"))
+        else:
+            g = find_controller(ns, pod["pod"]) or ensure_group("Pod", ns, pod["pod"], pod.get("service"))
+        g["pods"].append(pod)
+        if pod.get("aliased") and not resolve_service(namespace=g["namespace"], name=g["name"]):
+            g["service"] = pod["service"]
+
+    groups = []
+    for g in groups_map.values():
+        if (g.get("namespace") or "").lower() == "kube-system" and not any(p.get("level") != "ok" for p in g["pods"]):
+            continue
+        pods = g["pods"]
+        if not pods and (g.get("desired") or 0) == 0:
+            continue
+        running = sum(1 for p in pods if p.get("phase") == "running" and not p.get("waiting"))
+        if g["desired"] is None:
+            g["desired"] = len(pods) if pods else 0
+        if g["ready"] is None:
+            g["ready"] = running
+        g["level"] = _workload_level(g["ready"], g["desired"], pods)
+        g["summary"] = f"{g['ready']}/{g['desired']}"
+        pods.sort(key=lambda p: ({"critical": 0, "warning": 1, "info": 2, "ok": 3}.get(p.get("level"), 9), p.get("pod") or ""))
+        groups.append(g)
+
+    groups.sort(key=lambda g: (
+        {"critical": 0, "warning": 1, "info": 2, "ok": 3}.get(g["level"], 9),
+        g.get("service") or "",
+        g.get("name") or "",
+    ))
+    items.sort(key=lambda x: (
+        {"critical": 0, "warning": 1, "info": 2, "ok": 3}.get(x["level"], 9),
+        x.get("service") or "",
+        x.get("pod") or "",
+    ))
+    return {
+        "available": bool(phase_rows or deploy_spec or sts_spec),
+        "items": items,
+        "groups": groups,
+        "query": "kube_pod_status_phase / kube_deployment_status_replicas_ready",
+    }
+
+
 def collect_cluster_checks(query_fn, firing_alerts=None, down_targets=None, servers=None):
     firing_alerts = firing_alerts or []
     down_targets = down_targets or []
@@ -246,6 +529,7 @@ def collect_cluster_checks(query_fn, firing_alerts=None, down_targets=None, serv
 
     pvc = collect_pvc_usage(query_fn)
     es = collect_elasticsearch(query_fn)
+    workloads = collect_workloads(query_fn)
     checks = []
     findings = []
 
@@ -416,6 +700,43 @@ def collect_cluster_checks(query_fn, firing_alerts=None, down_targets=None, serv
     else:
         checks.append(_check("elasticsearch", "Elasticsearch", "skip", "无 elasticsearch_cluster_health_status，确认 elasticsearch-exporter 已被抓取", source="elasticsearch-exporter"))
 
+    if workloads.get("available"):
+        groups = workloads.get("groups") or []
+        witems = workloads.get("items") or []
+        bad_g = [g for g in groups if g.get("level") in ("warning", "critical")]
+        level = "ok"
+        if any(g.get("level") == "critical" for g in bad_g):
+            level = "critical"
+        elif bad_g:
+            level = "warning"
+        checks.append(_check(
+            "workloads", "工作负载",
+            level,
+            f"{len(groups)} 个负载，未就绪 {len(bad_g)} 个",
+            [f"{g.get('service')} {g.get('ready')}/{g.get('desired')} {g.get('namespace')}/{g.get('name')}" for g in groups[:40]],
+            "kube-state-metrics",
+        ))
+        covered = set()
+        for g in bad_g:
+            bad_pods = [p for p in (g.get("pods") or []) if p.get("level") in ("warning", "critical")]
+            extra = ""
+            if bad_pods:
+                extra = "；" + ", ".join(
+                    f"{p.get('pod')} {p.get('phase')}" + (f"/{p.get('waiting')}" if p.get("waiting") else "")
+                    for p in bad_pods[:6]
+                )
+            findings.append(
+                f"{g.get('service')} Ready {g.get('ready')}/{g.get('desired')}（{g.get('kind')} {g.get('namespace')}/{g.get('name')}）{extra}"
+            )
+            covered.update(p.get("key") for p in bad_pods if p.get("key"))
+        for x in witems:
+            if x.get("level") not in ("warning", "critical") or x.get("key") in covered:
+                continue
+            extra = f" {x['waiting']}" if x.get("waiting") else ""
+            findings.append(f"Pod {x.get('phase')}{extra}：{x.get('service')} ({x.get('key')})")
+    else:
+        checks.append(_check("workloads", "工作负载", "skip", "无 kube_pod_status_phase / Deployment 副本指标", source="kube-state-metrics"))
+
     # PVC usage：列出全部，不合并成一张服务卡
     if pvc["available"]:
         hot = [x for x in pvc["items"] if x["pct"] >= PVC_WARN_PCT and x.get("usage_alert")]
@@ -511,6 +832,7 @@ def collect_cluster_checks(query_fn, firing_alerts=None, down_targets=None, serv
         "pvc": pvc,
         "services": services,
         "elasticsearch": es,
+        "workloads": workloads,
         "known_normals": KNOWN_NORMALS,
         "data_insufficient": data_insufficient,
         "middleware_todo": [
