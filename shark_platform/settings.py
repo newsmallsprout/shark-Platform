@@ -13,6 +13,7 @@ https://docs.djangoproject.com/en/4.2/ref/settings/
 from pathlib import Path
 import os
 import warnings
+from datetime import timedelta
 
 # Suppress FutureWarning from google.auth and google.oauth2 regarding Python 3.9 EOL
 warnings.filterwarnings("ignore", category=FutureWarning, module="google.auth")
@@ -39,6 +40,7 @@ CSRF_TRUSTED_ORIGINS = os.environ.get('CSRF_TRUSTED_ORIGINS', 'http://localhost,
 # Application definition
 
 INSTALLED_APPS = [
+    'daphne',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -48,20 +50,15 @@ INSTALLED_APPS = [
     
     # Third-party
     'rest_framework',
+    'rest_framework_simplejwt',
+    'channels',
     'corsheaders',
     
     # Local
-    'core',
     'api',
-    'deploy',
     'monitor',
-    'inspection',
-    'ops_tickets',
-    'tasks',
     'schedules',
-    'ai_ops',
-    'db_manager',
-    'traffic',
+    'security',
 ]
 
 MIDDLEWARE = [
@@ -145,7 +142,7 @@ USE_TZ = True
 STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 STATICFILES_DIRS = [
-    BASE_DIR / "frontend/dist/assets", # Allow finding assets if needed by static finder
+    # 前端已改为 Next.js（构建产物在 frontend/.next），不再由 Django 提供 SPA 静态资源
 ]
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedStaticFilesStorage'
 WHITENOISE_MANIFEST_STRICT = False
@@ -162,6 +159,7 @@ PUBLIC_URL = os.environ.get('PUBLIC_URL', 'http://localhost:5173')
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
         'rest_framework.authentication.SessionAuthentication',
         'rest_framework.authentication.BasicAuthentication',
     ],
@@ -169,6 +167,32 @@ REST_FRAMEWORK = {
         'rest_framework.permissions.IsAuthenticated',
     ]
 }
+
+# JWT (pentest 认证方式，替换 session 为主认证)
+SIMPLE_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=int(os.environ.get('JWT_EXPIRE_MINUTES', '1440'))),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
+    'ROTATE_REFRESH_TOKENS': False,
+    'SIGNING_KEY': os.environ.get('JWT_SECRET', SECRET_KEY),
+    'ALGORITHM': 'HS256',
+    'AUTH_HEADER_TYPES': ('Bearer',),
+}
+
+# WebSocket (Django Channels — 渗透扫描实时进度)
+ASGI_APPLICATION = 'shark_platform.asgi.application'
+CHANNEL_LAYERS = {
+    'default': {
+        'BACKEND': 'channels_redis.core.RedisChannelLayer',
+        'CONFIG': {
+            'hosts': [os.environ.get('CHANNEL_REDIS_URL', 'redis://localhost:6379/3')],
+        },
+    },
+}
+
+# LLM (pentest 扫描引擎 AI 分析，复用 DeepSeek)
+DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY', '')
+DEEPSEEK_BASE_URL = os.environ.get('DEEPSEEK_BASE_URL', 'https://api.deepseek.com/v1')
+DEEPSEEK_MODEL = os.environ.get('DEEPSEEK_MODEL', 'deepseek-chat')
 
 # Auth
 LOGIN_URL = '/login'

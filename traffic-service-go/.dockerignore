@@ -1,3 +1,0 @@
-# 若构建上下文为 traffic-service-go 目录则生效
-*.md
-.git

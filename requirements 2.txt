@@ -1,0 +1,34 @@
+Django==4.2.11
+djangorestframework==3.14.0
+djangorestframework-simplejwt==5.3.1
+django-cors-headers==4.3.1
+django-filter==24.2
+gunicorn==21.2.0
+pymysql==1.1.0
+psycopg2-binary==2.9.9
+pymongo==4.6.1
+mysql-replication==1.0.12
+pydantic==2.9.2
+cryptography==41.0.7
+requests==2.31.0
+kubernetes==34.1.0
+boto3==1.37.38
+urllib3>=1.25.4,<1.27
+whitenoise
+psutil==5.9.8
+redis==5.0.1
+pika==1.3.2
+WeasyPrint==61.2
+celery==5.3.6
+numpy==1.26.4
+scipy==1.11.4
+APScheduler==3.10.4
+geoip2==4.8.0
+# Optional: Traffic minute rollups in ClickHouse (set CLICKHOUSE_HOST)
+clickhouse-connect>=0.7.0
+# Pentest 安全模块依赖 (合并新增)
+channels
+channels-redis
+daphne
+langgraph
+langchain-openai

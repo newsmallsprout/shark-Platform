@@ -5,8 +5,6 @@ from django.contrib.auth.models import User, Group, Permission
 from django.contrib.auth import authenticate, login, logout
 from django.contrib.contenttypes.models import ContentType
 import psutil
-from inspection.models import InspectionConfig, InspectionReport
-from tasks.models import SyncTask
 from monitor.models import MonitorTask
 import requests
 import datetime
@@ -177,27 +175,6 @@ def system_stats(request):
         "desc": f"{active_monitors} active tasks",
         "status": "online" if active_monitors > 0 else "warning"
     })
-    
-    # Sync Tasks Status
-    error_tasks = SyncTask.objects.filter(status='error').count()
-    health_items.append({
-        "name": "Data Sync Pipeline",
-        "desc": f"{error_tasks} tasks with errors" if error_tasks > 0 else "All tasks healthy",
-        "status": "online" if error_tasks == 0 else "warning"
-    })
-
-    # Recent Inspection
-    latest_report = InspectionReport.objects.order_by('-created_at').first()
-    if latest_report:
-        content = latest_report.content or {}
-        score = content.get('health_summary', {}).get('score')
-        if score is None:
-            score = content.get('risk_summary', {}).get('score', 0)
-        health_items.append({
-            "name": "System Inspection",
-            "desc": f"Last score: {score}%",
-            "status": "online" if score > 80 else "warning"
-        })
 
     return Response({
         "resources": {
