@@ -15,6 +15,11 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(alias["service"], "撮合引擎")
         self.assertFalse(alias["usage_alert"])
 
+    def test_exchange_match_pvc_alias(self):
+        alias = resolve_service(namespace="biz-system", name="exchange-match-pvc")
+        self.assertIsNotNone(alias)
+        self.assertEqual(alias["service"], "撮合引擎")
+
     def test_display_falls_back_to_ns_name(self):
         self.assertEqual(display_name(namespace="biz", name="unknown-pvc"), "biz/unknown-pvc")
 
@@ -68,6 +73,7 @@ class ClusterCheckTests(unittest.TestCase):
         by_id = {c["id"]: c for c in cluster["checks"]}
         self.assertEqual(by_id["pvc_usage"]["level"], "skip")
         self.assertEqual(by_id["nodes"]["level"], "skip")
+        self.assertEqual(by_id["workloads"]["level"], "skip")
         self.assertEqual(by_id["prom_alerts"]["level"], "ok")
         self.assertTrue(cluster["data_insufficient"])
         self.assertIn("无法判定", cluster["verdict"])
@@ -182,6 +188,118 @@ class ClusterCheckTests(unittest.TestCase):
         self.assertIn("mysql", pvc_check["result"])
         self.assertNotIn("撮合", pvc_check["result"])
         self.assertEqual(pvc_check["level"], "warning")
+
+    def test_workloads_by_pod_name(self):
+        from inspection.simulate_inspection import Prom
+
+        prom = Prom({
+            "kube_pod_status_phase": [
+                _vec({"namespace": "biz-system", "pod": "exchange-match-engine-0", "phase": "Running"}, 1),
+                _vec({"namespace": "flink-system", "pod": "major-job-taskmanager-1", "phase": "Pending"}, 1),
+                _vec({"namespace": "kube-system", "pod": "coredns-abc", "phase": "Running"}, 1),
+            ],
+            'kube_pod_status_ready{condition="true"}': [
+                _vec({"namespace": "biz-system", "pod": "exchange-match-engine-0", "condition": "true"}, 1),
+            ],
+            "kube_pod_info": [
+                _vec({"namespace": "biz-system", "pod": "exchange-match-engine-0", "pod_ip": "10.1.2.8", "host_ip": "10.10.0.71", "node": "n1"}, 1),
+            ],
+        })
+        cluster = collect_cluster_checks(prom, servers=[{"instance": "10.0.0.1:9100", "mem_pct": 20, "cpu_pct": 10, "disk_pct": 10}])
+        pods = [x["pod"] for x in cluster["workloads"]["items"]]
+        self.assertIn("exchange-match-engine-0", pods)
+        self.assertIn("major-job-taskmanager-1", pods)
+        self.assertNotIn("coredns-abc", pods)
+        match = next(x for x in cluster["workloads"]["items"] if x["pod"] == "exchange-match-engine-0")
+        self.assertEqual(match["service"], "撮合引擎")
+        self.assertEqual(match["phase"], "running")
+        self.assertEqual(match["pod_ip"], "10.1.2.8")
+        self.assertTrue(any("major-job-taskmanager" in f or "Pending" in f or "pending" in f for f in cluster["findings"]))
+        wl = next(c for c in cluster["checks"] if c["id"] == "workloads")
+        self.assertEqual(wl["level"], "warning")
+        groups = cluster["workloads"]["groups"]
+        self.assertTrue(any("match-engine" in (g.get("name") or "") or g.get("service") == "撮合引擎" for g in groups))
+        self.assertFalse(any((g.get("namespace") or "").lower() == "kube-system" for g in groups))
+        flink = next(g for g in groups if "taskmanager" in (g.get("name") or "") or g.get("service") == "Flink Job")
+        self.assertEqual(flink["level"], "warning")
+        self.assertLess(flink["ready"], max(flink["desired"], 1))
+        self.assertFalse(any(g.get("pod_ip") for g in groups))
+        pod_findings = [f for f in cluster["findings"] if "taskmanager" in f.lower() or "pending" in f.lower()]
+        self.assertEqual(len(pod_findings), 1)
+
+    def test_workloads_attach_without_owner(self):
+        from inspection.simulate_inspection import Prom
+        from inspection.cluster_checks import collect_workloads
+
+        w = collect_workloads(Prom({
+            "kube_pod_status_phase": [
+                _vec({"namespace": "biz-system", "pod": "exchange-match-engine-0", "phase": "Running"}, 1),
+                _vec({"namespace": "biz-system", "pod": "exchange-match-engine-1", "phase": "Running"}, 1),
+            ],
+            "kube_deployment_spec_replicas": [
+                _vec({"namespace": "biz-system", "deployment": "exchange-match-engine"}, 2),
+            ],
+            "kube_deployment_status_replicas_ready": [
+                _vec({"namespace": "biz-system", "deployment": "exchange-match-engine"}, 2),
+            ],
+        }))
+        names = [g["name"] for g in w["groups"]]
+        self.assertEqual(names, ["exchange-match-engine"])
+        self.assertEqual(len(w["groups"][0]["pods"]), 2)
+        self.assertEqual(w["groups"][0]["kind"], "Deployment")
+
+    def test_workloads_created_by_on_pod_info(self):
+        from inspection.simulate_inspection import Prom
+        from inspection.cluster_checks import collect_workloads
+
+        w = collect_workloads(Prom({
+            "kube_pod_status_phase": [
+                _vec({"namespace": "flink-system", "pod": "major-job-taskmanager-1", "phase": "Running"}, 1),
+            ],
+            "kube_pod_info": [
+                _vec({
+                    "namespace": "flink-system", "pod": "major-job-taskmanager-1",
+                    "pod_ip": "10.1.2.9", "created_by_kind": "StatefulSet",
+                    "created_by_name": "major-job-taskmanager",
+                }, 1),
+            ],
+            "kube_statefulset_replicas": [
+                _vec({"namespace": "flink-system", "statefulset": "major-job-taskmanager"}, 1),
+            ],
+            "kube_statefulset_status_replicas_ready": [
+                _vec({"namespace": "flink-system", "statefulset": "major-job-taskmanager"}, 1),
+            ],
+        }))
+        self.assertEqual(len(w["groups"]), 1)
+        self.assertEqual(w["groups"][0]["kind"], "StatefulSet")
+        self.assertEqual(w["groups"][0]["pods"][0]["pod_ip"], "10.1.2.9")
+
+    def test_workloads_crashloop_not_false_green(self):
+        from inspection.simulate_inspection import Prom
+
+        waiting_q = 'kube_pod_container_status_waiting_reason{reason=~"CrashLoopBackOff|ImagePullBackOff|ErrImagePull|CreateContainerError"}'
+        cluster = collect_cluster_checks(Prom({
+            "kube_pod_status_phase": [
+                _vec({"namespace": "biz-system", "pod": "exchange-match-engine-0", "phase": "Running"}, 1),
+            ],
+            waiting_q: [
+                _vec({"namespace": "biz-system", "pod": "exchange-match-engine-0", "reason": "CrashLoopBackOff"}, 1),
+            ],
+            "kube_deployment_spec_replicas": [
+                _vec({"namespace": "biz-system", "deployment": "exchange-match-engine"}, 1),
+            ],
+            "kube_deployment_status_replicas_ready": [
+                _vec({"namespace": "biz-system", "deployment": "exchange-match-engine"}, 1),
+            ],
+        }), servers=[{"instance": "10.0.0.1:9100", "mem_pct": 20, "cpu_pct": 10, "disk_pct": 10}])
+        groups = cluster["workloads"]["groups"]
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]["level"], "critical")
+        self.assertEqual(groups[0]["kind"], "Deployment")
+        wl = next(c for c in cluster["checks"] if c["id"] == "workloads")
+        self.assertEqual(wl["level"], "critical")
+        crash = [f for f in cluster["findings"] if "CrashLoopBackOff" in f or "exchange-match-engine" in f]
+        self.assertEqual(len(crash), 1)
 
 
 if __name__ == "__main__":

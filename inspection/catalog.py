@@ -9,7 +9,7 @@ SERVICE_ALIASES = [
     {
         "id": "match_engine",
         "service": "撮合引擎",
-        "match_pvc": ["exchange-match-engine", "match-engine"],
+        "match_pvc": ["exchange-match-engine", "match-engine", "exchange-match"],
         "match_ns": [],
         "match_instance": ["match-engine", "exchange-match"],
         "baseline": "以 Prom 用量表为准（现网可能很低）",
@@ -64,6 +64,25 @@ KNOWN_NORMALS = [
 
 PVC_WARN_PCT = 85
 PVC_CRIT_PCT = 95
+
+# 按 Pod 名列出工作负载时关注的命名空间（再加 alias 的 match_ns）
+WATCH_NAMESPACES = (
+    "biz-system",
+    "flink-system",
+    "traefik-system",
+    "logging-system",
+    "middleware-system",
+    "exchange",
+)
+
+
+def watch_namespaces():
+    ns = {x.lower() for x in WATCH_NAMESPACES}
+    for alias in SERVICE_ALIASES:
+        for item in alias.get("match_ns") or []:
+            if item:
+                ns.add(item.lower())
+    return ns
 
 
 def resolve_service(namespace="", name="", instance=""):

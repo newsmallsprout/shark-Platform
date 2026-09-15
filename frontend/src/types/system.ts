@@ -48,6 +48,18 @@ export interface InspectionReport {
   findings?: string[]
   checklist?: { id?: string; name: string; level: string; result: string; source?: string; detail?: string[] }[]
   pvc_usage?: { key: string; namespace?: string; pvc?: string; service: string; pct: number; used_bytes: number; capacity_bytes: number; baseline?: string }[]
+  workloads?: {
+    key?: string
+    kind?: string
+    namespace?: string
+    name?: string
+    service: string
+    desired?: number
+    ready?: number
+    level?: string
+    pods?: { pod: string; phase: string; ready?: boolean | null; waiting?: string; pod_ip?: string; host_ip?: string; node?: string; restarts?: number; level?: string }[]
+  }[]
+  workload_pods?: { key: string; namespace?: string; pod: string; phase: string; ready?: boolean | null; waiting?: string; service: string; aliased?: boolean; level: string; pod_ip?: string; host_ip?: string; node?: string }[]
   services?: { service: string; status: string; summary: string; baseline?: string }[]
   elasticsearch?: {
     available?: boolean

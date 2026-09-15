@@ -34,7 +34,7 @@ class Prom:
     def _match(self, q):
         if q in self.series:
             return self.series[q]
-        # comparator queries: "metric == 0" / "> 10"
+        # 只认「完整 key + 比较符」。带 {{label}} 的查询必须用同样选择器的 key，避免假阳。
         for key, rows in self.series.items():
             if q.startswith(key) and q != key:
                 rest = q[len(key):].strip()
@@ -45,7 +45,6 @@ class Prom:
                     rhs = float(rest[1:].strip())
                     return [r for r in rows if float(r["value"][1]) > rhs]
                 if rest.startswith("!="):
-                    # not used as suffix on raw metric in our code except pvc phase in selector
                     return rows
         return []
 
@@ -74,6 +73,12 @@ def dump(title, cluster, health):
             for c in es["clusters"]
         ])
         print("- es heap:", [f"{h['node']} {h['heap_pct']}%" for h in (es.get("heap_nodes") or [])[:5]])
+    wls = (cluster.get("workloads") or {}).get("items") or []
+    groups = (cluster.get("workloads") or {}).get("groups") or []
+    if groups:
+        print("- workloads:", [f"{g.get('service')} {g.get('ready')}/{g.get('desired')} {g.get('kind')} {g.get('name')}" for g in groups])
+    if wls:
+        print("- pods:", [f"{x.get('phase')} {x.get('service')} {x.get('pod')} ip={x.get('pod_ip') or '-'}" for x in wls])
 
 
 def ksm_ok():
@@ -113,6 +118,38 @@ def scenario_prd_normal():
     series = {
         **ksm_ok(),
         **es_green_heap(),
+        "kube_pod_status_phase": [
+            _vec({"namespace": "biz-system", "pod": "exchange-match-engine-0", "phase": "Running"}, 1),
+            _vec({"namespace": "flink-system", "pod": "major-job-taskmanager-1", "phase": "Running"}, 1),
+            _vec({"namespace": "kube-system", "pod": "coredns-xxx", "phase": "Running"}, 1),
+        ],
+        'kube_pod_status_ready{condition="true"}': [
+            _vec({"namespace": "biz-system", "pod": "exchange-match-engine-0", "condition": "true"}, 1),
+            _vec({"namespace": "flink-system", "pod": "major-job-taskmanager-1", "condition": "true"}, 1),
+        ],
+        "kube_deployment_spec_replicas": [
+            _vec({"namespace": "biz-system", "deployment": "exchange-match-engine"}, 1),
+        ],
+        "kube_deployment_status_replicas_ready": [
+            _vec({"namespace": "biz-system", "deployment": "exchange-match-engine"}, 1),
+        ],
+        "kube_statefulset_replicas": [
+            _vec({"namespace": "flink-system", "statefulset": "major-job-taskmanager"}, 1),
+        ],
+        "kube_statefulset_status_replicas_ready": [
+            _vec({"namespace": "flink-system", "statefulset": "major-job-taskmanager"}, 1),
+        ],
+        "kube_pod_owner": [
+            _vec({"namespace": "biz-system", "pod": "exchange-match-engine-0", "owner_kind": "ReplicaSet", "owner_name": "exchange-match-engine-5d4f8c9b7d"}, 1),
+            _vec({"namespace": "flink-system", "pod": "major-job-taskmanager-1", "owner_kind": "StatefulSet", "owner_name": "major-job-taskmanager"}, 1),
+        ],
+        "kube_replicaset_owner": [
+            _vec({"namespace": "biz-system", "replicaset": "exchange-match-engine-5d4f8c9b7d", "owner_kind": "Deployment", "owner_name": "exchange-match-engine"}, 1),
+        ],
+        "kube_pod_info": [
+            _vec({"namespace": "biz-system", "pod": "exchange-match-engine-0", "pod_ip": "10.1.2.8", "host_ip": "10.10.0.71", "node": "ip-10-10-0-71"}, 1),
+            _vec({"namespace": "flink-system", "pod": "major-job-taskmanager-1", "pod_ip": "10.1.2.9", "host_ip": "10.20.10.72", "node": "ip-10-20-10-72"}, 1),
+        ],
         "pvc_stats_used_bytes": [
             _vec({"namespace": "flink-system", "persistentvolumeclaim": "major-job-tm-pvc"}, 33e9),
             _vec({"namespace": "flink-system", "persistentvolumeclaim": "single-job-tm-pvc"}, 25e9),
@@ -138,37 +175,6 @@ def scenario_prd_normal():
         {"instance": "10.20.10.72:9100", "cpu_pct": 20, "mem_pct": 40, "disk_pct": 55},
         {"instance": "10.10.0.71:9100", "cpu_pct": 15, "mem_pct": 82, "disk_pct": 40},
     ]
-    return Prom(series), [], [], servers
-    """PRD 常态：撮合 PVC 高、ES/JMS 内存高、其余健康。"""
-    series = {
-        "pvc_stats_used_bytes": [
-            _vec({"namespace": "exchange", "persistentvolumeclaim": "exchange-match-engine-major-pvc"}, 460e9),
-            _vec({"namespace": "logging-system", "persistentvolumeclaim": "loki-data"}, 20e9),
-            _vec({"namespace": "flink-system", "persistentvolumeclaim": "flink-checkpoints"}, 30e9),
-        ],
-        "pvc_stats_capacity_bytes": [
-            _vec({"namespace": "exchange", "persistentvolumeclaim": "exchange-match-engine-major-pvc"}, 500e9),
-            _vec({"namespace": "logging-system", "persistentvolumeclaim": "loki-data"}, 200e9),
-            _vec({"namespace": "flink-system", "persistentvolumeclaim": "flink-checkpoints"}, 100e9),
-        ],
-        "kube_node_status_condition": [_vec({"node": "ip-10-0-1-1", "condition": "Ready"}, 1)],
-        'kube_node_status_condition{condition="Ready",status="true"}': [
-            _vec({"node": "ip-10-0-1-1"}, 1),
-            _vec({"node": "ip-10-0-1-2"}, 1),
-        ],
-        "kube_pod_status_phase": [_vec({"phase": "Running", "pod": "x"}, 1)],
-        "kube_persistentvolumeclaim_status_phase": [_vec({"phase": "Bound"}, 1)],
-        "kube_deployment_spec_replicas": [_vec({"deployment": "web"}, 2)],
-        "kube_pod_container_status_restarts_total": [_vec({"pod": "web-1"}, 1)],
-        "probe_success": [_vec({"instance": "https://es.etz.com"}, 1)],
-    }
-    servers = [
-        {"instance": "10.0.1.11:9100", "cpu_pct": 20, "mem_pct": 40, "disk_pct": 55},
-        {"instance": "jumpserver-0:9100", "cpu_pct": 15, "mem_pct": 82, "disk_pct": 40},
-        {"instance": "elasticsearch-data-0:9100", "cpu_pct": 30, "mem_pct": 82, "disk_pct": 60},
-    ]
-    for s in servers:
-        s["service"] = display_name(instance=s["instance"])
     return Prom(series), [], [], servers
 
 
@@ -277,6 +283,25 @@ def main():
         problems.append(f"现网形态不应有撮合/ES 告警: {cluster['findings']}")
     if h[0] != 100:
         problems.append(f"现网形态健康分应 100，实际 {h}")
+    pod_names = [x["pod"] for x in (cluster.get("workloads") or {}).get("items") or []]
+    if "exchange-match-engine-0" not in pod_names:
+        problems.append(f"应按 Pod 名列出撮合：{pod_names}")
+    if "coredns-xxx" in pod_names:
+        problems.append("kube-system 不应进工作负载表")
+    groups = (cluster.get("workloads") or {}).get("groups") or []
+    match_g = [g for g in groups if g.get("name") == "exchange-match-engine"]
+    if not match_g or match_g[0].get("ready") != 1 or match_g[0].get("desired") != 1:
+        problems.append(f"撮合应一眼 1/1：{groups}")
+    match_pods = (match_g[0].get("pods") or []) if match_g else []
+    if match_pods and match_pods[0].get("pod_ip") != "10.1.2.8":
+        problems.append(f"展开应带 Pod IP：{match_pods}")
+    if match_g and match_g[0].get("kind") != "Deployment":
+        problems.append(f"撮合应归到 Deployment：{match_g[0]}")
+    flink_g = [g for g in groups if g.get("name") == "major-job-taskmanager"]
+    if not flink_g or flink_g[0].get("ready") != 1 or flink_g[0].get("kind") != "StatefulSet":
+        problems.append(f"Flink 应一眼 STS 1/1：{groups}")
+    if any(g.get("pod_ip") for g in groups):
+        problems.append("一眼行不应混入 Pod IP")
 
     # 2 Prometheus 全挂
     prom, firing, down, servers = scenario_prom_down()
