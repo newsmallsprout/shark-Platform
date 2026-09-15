@@ -13,6 +13,7 @@
 
 | 文档 | 说明 |
 |------|------|
+| [INSPECTION.md](./INSPECTION.md) | **巡检清单**：PVC exporter、inspect-prd.sh、业务服务别名 |
 | [TRAFFIC_DASHBOARD.md](./TRAFFIC_DASHBOARD.md) | Traffic Dashboard：Nginx 日志、GeoIP、Blackbox、ingest API |
 | [FILEBEAT_NGINX_TRAFFIC.md](./FILEBEAT_NGINX_TRAFFIC.md) | Nginx + Filebeat/Logstash 推送日志 |
 | [SCHEDULE_API.md](./SCHEDULE_API.md) | 排班相关 API |

@@ -1,0 +1,94 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pvc-stats-exporter
+  namespace: monitor
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: pvc-stats-exporter
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "nodes/proxy", "nodes/stats"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: pvc-stats-exporter
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: pvc-stats-exporter
+subjects:
+  - kind: ServiceAccount
+    name: pvc-stats-exporter
+    namespace: monitor
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pvc-stats-exporter
+  namespace: monitor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pvc-stats-exporter
+  template:
+    metadata:
+      labels:
+        app: pvc-stats-exporter
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9100"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: pvc-stats-exporter
+      securityContext:
+        fsGroup: 65534
+      containers:
+        - name: exporter
+          image: 197461532043.dkr.ecr.ap-northeast-1.amazonaws.com/etz/pvc-stats-exporter:v1.1.0
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 9100
+              name: metrics
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+          resources:
+            requests:
+              cpu: 20m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 9100
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 9100
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pvc-stats-exporter
+  namespace: monitor
+  labels:
+    app: pvc-stats-exporter
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9100"
+    prometheus.io/path: "/metrics"
+spec:
+  ports:
+    - port: 9100
+      targetPort: 9100
+      name: metrics
+  selector:
+    app: pvc-stats-exporter
