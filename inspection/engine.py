@@ -4,6 +4,8 @@ import os
 import datetime
 from datetime import datetime, timezone, timedelta
 from .models import InspectionConfig, InspectionReport
+from .cluster_checks import collect_cluster_checks, compute_health_score
+from .catalog import display_name
 
 from core.logging import log
 
@@ -131,80 +133,27 @@ class InspectionEngine:
         except Exception as e:
             return f"AI analysis error: {e}"
 
-    def _calculate_health_score(self, down_targets, firing_alerts, servers):
-        """
-        Calculate dynamic health score (0-100) based on current metrics.
-        Base score: 100
-        Deductions:
-          - Down Target: -20 each
-          - Critical Alert: -15 each
-          - Warning Alert: -5 each
-          - Resource Usage (CPU/Mem): >90% -> -10, >80% -> -5
-          - Disk Usage: >95% -> -15, >85% -> -5
-        """
-        score = 100.0
-        reasons = []
-
-        # 1. Down Targets
-        if down_targets:
-            deduction = len(down_targets) * 20
-            score -= deduction
-            reasons.append(f"Down Targets ({len(down_targets)}): -{deduction}")
-
-        # 2. Alerts
-        for alert in firing_alerts:
-            severity = alert.get('severity', 'warning').lower()
-            if severity in ['critical', 'high']:
-                score -= 15
-                reasons.append(f"Critical Alert ({alert.get('name')}): -15")
-            else:
-                score -= 5
-                reasons.append(f"Warning Alert ({alert.get('name')}): -5")
-
-        # 3. Resource Usage
-        if servers:
-            max_cpu = max((float(s.get('cpu_pct') or 0) for s in servers), default=0)
-            max_mem = max((float(s.get('mem_pct') or 0) for s in servers), default=0)
-            max_disk = max((float(s.get('disk_pct') or 0) for s in servers), default=0)
-
-            if max_cpu > 95:
-                score -= 10
-                reasons.append(f"CPU热点(最高{round(max_cpu,1)}%): -10")
-            elif max_cpu > 85:
-                score -= 5
-                reasons.append(f"CPU偏高(最高{round(max_cpu,1)}%): -5")
-
-            if max_mem > 95:
-                score -= 10
-                reasons.append(f"内存热点(最高{round(max_mem,1)}%): -10")
-            elif max_mem > 85:
-                score -= 5
-                reasons.append(f"内存偏高(最高{round(max_mem,1)}%): -5")
-
-            if max_disk > 95:
-                score -= 15
-                reasons.append(f"磁盘临界(最高{round(max_disk,1)}%): -15")
-            elif max_disk > 90:
-                score -= 5
-                reasons.append(f"磁盘偏高(最高{round(max_disk,1)}%): -5")
-
-        score = max(0.0, score)
-        level = "ok"
-        if score < 60:
-            level = "critical"
-        elif score < 85:
-            level = "warning"
-            
-        if not reasons:
-            reasons.append("System Healthy")
-            
-        return round(score, 1), level, reasons
+    def _calculate_health_score(self, down_targets, firing_alerts, servers, pvc_items=None, data_insufficient=False, elasticsearch=None):
+        return compute_health_score(
+            down_targets,
+            firing_alerts,
+            servers,
+            pvc_items=pvc_items,
+            data_insufficient=data_insufficient,
+            elasticsearch=elasticsearch,
+        )
 
     def _predict_future_scores(self, current_score):
         """
         Simple prediction based on last 7 days history.
         Uses simple linear trend or moving average.
         """
+        if current_score is None:
+            return {
+                "7d": {"risk_score": None},
+                "15d": {"risk_score": None},
+                "30d": {"risk_score": None},
+            }
         # Get last 7 reports
         today = datetime.now().date()
         history_scores = []
@@ -371,6 +320,8 @@ class InspectionEngine:
                 pass
 
         servers = list(by_instance.values())
+        for s in servers:
+            s['service'] = display_name(instance=s.get('instance') or '')
         servers.sort(key=lambda x: float(x.get('cpu_pct') or 0), reverse=True)
 
         def _avg(key):
@@ -404,6 +355,35 @@ class InspectionEngine:
             "labels": {}, "value": fleet_summary["avg_disk_pct"], "unit": "%", "level": "ok", "status": "success", "query": disk_query
         })
 
+        log("inspection", "Collecting cluster checklist (PVC / kube-state / blackbox)...")
+        try:
+            cluster = collect_cluster_checks(
+                self._query_prometheus,
+                firing_alerts=firing,
+                down_targets=down_targets,
+                servers=servers,
+            )
+        except Exception as e:
+            log("inspection", f"Cluster checklist failed: {e}")
+            cluster = {
+                "verdict": "无法判定（清单采集失败）",
+                "findings": [str(e)],
+                "checks": [],
+                "pvc": {"available": False, "items": [], "top": [], "source": ""},
+                "services": [],
+                "elasticsearch": {},
+                "known_normals": [],
+                "data_insufficient": True,
+                "middleware_todo": [],
+            }
+        pvc_items = (cluster.get("pvc") or {}).get("items") or []
+        metrics_summary.append({
+            "category": "storage", "name": "pvc_count", "display": "PVC 用量样本",
+            "labels": {}, "value": len(pvc_items), "unit": "count",
+            "level": "ok" if cluster.get("pvc", {}).get("available") else "warning",
+            "status": "success",
+        })
+
         # 2. AI Analysis
         log("inspection", "Starting AI analysis...")
         ai_analysis = "AI analysis failed or not configured."
@@ -411,19 +391,31 @@ class InspectionEngine:
         if self.config.ark_api_key:
             prompt = json.dumps({
                 "timestamp": datetime.now(timezone.utc).isoformat(),
+                "verdict": cluster.get("verdict"),
+                "findings": cluster.get("findings"),
+                "checks": cluster.get("checks"),
+                "elasticsearch": cluster.get("elasticsearch"),
+                "pvc": (cluster.get("pvc") or {}).get("items"),
+                "known_normals": cluster.get("known_normals"),
                 "targets": {"total": total_targets, "down": down_targets},
                 "alerts": {"firing": firing},
                 "fleet": fleet_summary,
             }, ensure_ascii=False, indent=2)
             system_prompt = (
                 "你是一名专业资深的系统运维工程师（偏 SRE）。"
-                "请基于我提供的巡检数据，输出一份可执行的中文巡检报告，聚焦：服务器资源使用状况、告警分析、影响面、处置建议与优先级。"
+                "请基于我提供的巡检数据，输出一份可执行的中文巡检报告。"
+                "Elasticsearch 用 elasticsearch-exporter 的集群色/节点/堆，不要说没查到。"
+                "PVC 必须按每一块盘写用量，不要合并成一个服务。"
+                "known_normals 里的项不要当成故障。"
+                "checks 里 level=skip 表示缺指标，请写明未覆盖，不要写成健康。"
                 "不要输出安全漏洞/CVE/风险扫描相关内容。"
                 "输出结构必须包含：\n"
-                "1) 总览（健康评分/关键结论）\n"
-                "2) 资源热点（按CPU/内存/磁盘列出最需要关注的主机与原因）\n"
-                "3) 告警分析（按严重度统计、Top告警、可能根因）\n"
-                "4) 处置建议（P0/P1/P2，给出具体操作方向）\n"
+                "1) 总览（对应 verdict）\n"
+                "2) 检查清单\n"
+                "3) Elasticsearch\n"
+                "4) 全部 PVC 用量\n"
+                "5) 资源热点与告警\n"
+                "6) 处置建议（P0/P1/P2）\n"
                 f"\n报告生成时间：{datetime.now().strftime('%Y-%m-%d')}\n"
             )
             
@@ -441,18 +433,22 @@ class InspectionEngine:
         else:
             log("inspection", "AI analysis skipped (not configured)")
 
-        # 3. Comparison with yesterday
+        # 3. Calculate score then compare with yesterday
         log("inspection", "Comparing with yesterday's report...")
         yesterday_id = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
-        # yesterday_path = os.path.join(self.reports_dir, f"{yesterday_id}.json") # Deprecated
         compare_data = {"yesterday_id": yesterday_id, "delta": {"risk_score": 0.0, "down_targets": 0, "firing_alerts": 0}}
         
-        # Define these variables early to avoid UnboundLocalError
         down_count = len(down_targets)
         firing_count = len(firing)
 
+        health_score, health_level, health_reasons = self._calculate_health_score(
+            down_targets, firing, servers,
+            pvc_items=pvc_items,
+            data_insufficient=bool(cluster.get("data_insufficient")),
+            elasticsearch=cluster.get("elasticsearch"),
+        )
+
         try:
-            # Try to load from DB first
             y_report = InspectionReport.objects.filter(report_id=yesterday_id).first()
             if y_report:
                 y_data = y_report.content
@@ -461,7 +457,6 @@ class InspectionEngine:
                 y_down = len(y_data.get('down_targets', []))
                 y_firing = len(y_data.get('firing_alerts', []))
                 
-                # Compat Logic
                 is_legacy = False
                 if y_reasons and isinstance(y_reasons, list):
                     if "resource_max=OK" in y_reasons or "alerts_or_targets_down" in y_reasons:
@@ -470,17 +465,23 @@ class InspectionEngine:
                 y_health = y_risk
                 if is_legacy:
                     y_health = 100 - y_risk
+                else:
+                    y_health = y_data.get('health_summary', {}).get('score', y_risk)
                 
-                compare_data["delta"] = {
-                    "risk_score": round(health_score - y_health, 2),
-                    "down_targets": down_count - y_down,
-                    "firing_alerts": firing_count - y_firing
-                }
-        except:
+                if health_score is None:
+                    compare_data["delta"] = {
+                        "risk_score": 0.0,
+                        "down_targets": down_count - y_down,
+                        "firing_alerts": firing_count - y_firing
+                    }
+                else:
+                    compare_data["delta"] = {
+                        "risk_score": round(health_score - y_health, 2),
+                        "down_targets": down_count - y_down,
+                        "firing_alerts": firing_count - y_firing
+                    }
+        except Exception:
             pass
-
-        # 4. Calculate Dynamic Score
-        health_score, health_level, health_reasons = self._calculate_health_score(down_targets, firing, servers)
         
         # 5. Predict Future
         forecast_data = self._predict_future_scores(health_score)
@@ -548,6 +549,14 @@ class InspectionEngine:
                 "predictions": forecast_data
             },
             "trend_7d": trend,
+            "cluster": cluster,
+            "checklist": cluster.get("checks") or [],
+            "findings": cluster.get("findings") or [],
+            "verdict": cluster.get("verdict") or "",
+            "pvc_usage": (cluster.get("pvc") or {}).get("items") or [],
+            "services": cluster.get("services") or [],
+            "elasticsearch": cluster.get("elasticsearch") or {},
+            "known_normals": cluster.get("known_normals") or [],
         }
         
         # Save to DB

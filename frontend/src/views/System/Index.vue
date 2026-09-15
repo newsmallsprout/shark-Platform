@@ -3,7 +3,7 @@
     <div class="page-header">
       <div class="header-info">
         <h2 class="page-title">System Inspection</h2>
-        <p class="page-subtitle">全量服务器资源与告警巡检；异常可通过「系统工单」交由人工处置。</p>
+        <p class="page-subtitle">集群检查清单 + PVC/业务服务 + 资源告警；异常可通过「系统工单」交由人工处置。</p>
       </div>
       <div class="header-actions">
         <el-button @click="router.push('/system/tickets')" v-if="canViewInspection">系统工单</el-button>
@@ -29,7 +29,7 @@
         <el-table-column label="Health Status" width="160">
           <template #default="{ row }">
             <div class="score-wrapper">
-              <template v-if="row.score !== undefined">
+              <template v-if="row.score != null">
                 <el-progress 
                   type="circle" 
                   :percentage="row.score" 
@@ -43,7 +43,7 @@
               </template>
               <template v-else>
                 <el-icon class="status-icon-placeholder"><CircleCheck /></el-icon>
-                <el-tag type="info" size="small" effect="plain" class="score-tag">N/A</el-tag>
+                <el-tag type="info" size="small" effect="plain" class="score-tag">未覆盖</el-tag>
               </template>
             </div>
           </template>
@@ -69,7 +69,7 @@
     <el-dialog 
       v-model="dialogVisible" 
       title="Inspection Report Analysis" 
-      width="800px"
+      width="1040px"
       class="report-dialog"
     >
       <div v-if="currentReport" class="report-content">
@@ -81,7 +81,7 @@
           <div class="meta-item">
             <span class="label">HEALTH SCORE</span>
             <div class="score-display">
-              <span :class="['score-value', getScoreType(currentReport.score)]">{{ currentReport.score }}</span>
+              <span :class="['score-value', getScoreType(currentReport.score)]">{{ currentReport.score == null ? '—' : currentReport.score }}</span>
               <span class="score-total">/100</span>
             </div>
           </div>
@@ -93,9 +93,113 @@
             <span class="label">FIRING ALERTS</span>
             <span class="value">{{ currentReport.alerts_summary?.firing_total ?? '-' }}</span>
           </div>
+          <div class="meta-item">
+            <span class="label">VERDICT</span>
+            <span class="value">{{ currentReport.verdict || '-' }}</span>
+          </div>
         </div>
 
         <el-divider />
+
+        <div class="analysis-section" v-if="(currentReport.checklist && currentReport.checklist.length) || (currentReport.findings && currentReport.findings.length)">
+          <div class="section-header">
+            <el-icon><List /></el-icon>
+            <span>检查清单</span>
+          </div>
+          <el-alert
+            v-if="currentReport.verdict"
+            :title="currentReport.verdict"
+            :type="verdictAlertType"
+            :closable="false"
+            show-icon
+            style="margin-bottom: 12px"
+          />
+          <div v-if="currentReport.findings && currentReport.findings.length" class="findings-list">
+            <div class="chart-title">发现问题</div>
+            <ol>
+              <li v-for="(item, idx) in currentReport.findings" :key="idx">{{ item }}</li>
+            </ol>
+          </div>
+          <el-table v-if="currentReport.checklist && currentReport.checklist.length" :data="currentReport.checklist" size="small" style="width: 100%">
+            <el-table-column prop="name" label="检查项" min-width="160" />
+            <el-table-column label="状态" width="100">
+              <template #default="{ row }">
+                <el-tag :type="checkTagType(row.level)" size="small" effect="plain">{{ checkLevelLabel(row.level) }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="result" label="结果" min-width="240" />
+            <el-table-column prop="source" label="数据源" width="160" />
+          </el-table>
+        </div>
+
+        <div class="analysis-section" v-if="esClusters.length">
+          <div class="section-header">
+            <el-icon><Box /></el-icon>
+            <span>Elasticsearch（elasticsearch-exporter）</span>
+          </div>
+          <el-table :data="esClusters" size="small" style="width: 100%">
+            <el-table-column prop="cluster" label="集群" min-width="140" />
+            <el-table-column label="状态" width="100">
+              <template #default="{ row }">
+                <el-tag :type="esStatusType(row.status)" size="small" effect="plain">{{ row.status || '-' }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="nodes" label="节点" width="80" />
+            <el-table-column prop="data_nodes" label="数据节点" width="90" />
+            <el-table-column prop="unassigned_shards" label="未分配分片" width="110" />
+            <el-table-column prop="active_shards" label="活跃分片" width="90" />
+          </el-table>
+          <el-table
+            v-if="esHeapNodes.length"
+            :data="esHeapNodes"
+            size="small"
+            style="width: 100%; margin-top: 12px"
+          >
+            <el-table-column prop="cluster" label="集群" min-width="120" />
+            <el-table-column prop="node" label="节点" min-width="160" />
+            <el-table-column label="堆使用率" width="100">
+              <template #default="{ row }">{{ row.heap_pct < 0 ? '-' : row.heap_pct + '%' }}</template>
+            </el-table-column>
+            <el-table-column label="已用" width="110">
+              <template #default="{ row }">{{ formatBytes(row.used_bytes) }}</template>
+            </el-table-column>
+            <el-table-column label="堆上限" width="110">
+              <template #default="{ row }">{{ formatBytes(row.max_bytes) }}</template>
+            </el-table-column>
+          </el-table>
+        </div>
+
+        <div class="analysis-section" v-if="currentReport.pvc_usage && currentReport.pvc_usage.length">
+          <div class="section-header">
+            <el-icon><Coin /></el-icon>
+            <span>PVC 用量（全部 {{ currentReport.pvc_usage.length }} 块）</span>
+          </div>
+          <el-table :data="currentReport.pvc_usage" size="small" style="width: 100%" max-height="420">
+            <el-table-column prop="namespace" label="Namespace" min-width="130" />
+            <el-table-column prop="pvc" label="PVC" min-width="200" />
+            <el-table-column prop="service" label="别名" min-width="110" />
+            <el-table-column label="使用率" width="90">
+              <template #default="{ row }">{{ row.pct < 0 ? '-' : row.pct + '%' }}</template>
+            </el-table-column>
+            <el-table-column label="已用" width="100">
+              <template #default="{ row }">{{ formatBytes(row.used_bytes) }}</template>
+            </el-table-column>
+            <el-table-column label="容量" width="100">
+              <template #default="{ row }">{{ formatBytes(row.capacity_bytes) }}</template>
+            </el-table-column>
+            <el-table-column prop="baseline" label="备注" min-width="160" />
+          </el-table>
+        </div>
+
+        <div class="analysis-section" v-if="currentReport.known_normals && currentReport.known_normals.length">
+          <div class="section-header">
+            <el-icon><InfoFilled /></el-icon>
+            <span>已知常态</span>
+          </div>
+          <ul class="known-normals">
+            <li v-for="(item, idx) in currentReport.known_normals" :key="idx">{{ item }}</li>
+          </ul>
+        </div>
 
         <div class="analysis-section">
           <div class="section-header">
@@ -137,6 +241,7 @@
             </el-col>
           </el-row>
           <el-table v-if="currentReport.servers && currentReport.servers.length" :data="currentReport.servers.slice(0, 50)" style="width: 100%; margin-top: 16px">
+            <el-table-column prop="service" label="服务" min-width="140" />
             <el-table-column prop="instance" label="Instance" min-width="220" />
             <el-table-column prop="cpu_pct" label="CPU%" width="110" />
             <el-table-column prop="mem_pct" label="Mem%" width="110" />
@@ -217,7 +322,7 @@
           <h3 class="section-title">Monitoring Data</h3>
           <el-form-item label="Prometheus Endpoint">
             <el-input v-model="configForm.prometheus_url" placeholder="http://prometheus:9090" />
-            <div class="form-tip">The inspection engine pulls real-time metrics from this source</div>
+            <div class="form-tip">巡检会拉 Prometheus：node-exporter、告警、pvc_stats_*（pvc-stats-exporter）、以及若存在的 kube-state-metrics / blackbox</div>
           </el-form-item>
         </div>
 
@@ -280,7 +385,8 @@ import type { InspectionReport } from '@/types/system'
 import { 
   Setting, Search, Calendar, 
   MagicStick, Warning, CircleCheck,
-  DataLine, Histogram, Document, Refresh, Download
+  DataLine, Histogram, Document, Refresh, Download,
+  List, Box, Coin, InfoFilled
 } from '@element-plus/icons-vue'
 import { taskApi } from '@/api/task'
 import { opsTicketsApi } from '@/api/ops_tickets'
@@ -434,15 +540,64 @@ const getProgressStatus = (score: number) => {
   return 'exception'
 }
 
+const esClusters = computed(() => currentReport.value?.elasticsearch?.clusters || [])
+const esHeapNodes = computed(() => currentReport.value?.elasticsearch?.heap_nodes || [])
+
+const esStatusType = (status?: string) => {
+  if (status === 'green') return 'success'
+  if (status === 'yellow') return 'warning'
+  if (status === 'red') return 'danger'
+  return 'info'
+}
+
+const checkTagType = (level?: string) => {
+  if (level === 'ok') return 'success'
+  if (level === 'warning') return 'warning'
+  if (level === 'critical') return 'danger'
+  if (level === 'info') return 'info'
+  return 'info'
+}
+
+const checkLevelLabel = (level?: string) => {
+  if (level === 'ok') return '正常'
+  if (level === 'warning') return '关注'
+  if (level === 'critical') return '严重'
+  if (level === 'skip') return '未覆盖'
+  if (level === 'info') return '常态'
+  return level || '-'
+}
+
+const verdictAlertType = computed(() => {
+  const v = currentReport.value?.verdict || ''
+  if (v.includes('需关注')) return 'warning'
+  if (v.includes('无法判定')) return 'warning'
+  if (v.includes('未见明显异常')) return 'success'
+  return 'info'
+})
+
+const formatBytes = (n?: number) => {
+  const val = Number(n || 0)
+  const units = ['B', 'Ki', 'Mi', 'Gi', 'Ti']
+  let size = val
+  let i = 0
+  while (size >= 1024 && i < units.length - 1) {
+    size /= 1024
+    i += 1
+  }
+  return `${size.toFixed(1)}${units[i]}`
+}
+
 const viewReport = async (row: any) => {
   await systemStore.fetchReportDetail(row.report_id)
   const rep: any = systemStore.currentReport || {}
   const score =
-    rep?.health_summary?.score ??
-    rep?.risk_summary?.score ??
-    rep?.score ??
-    row?.score ??
-    0
+    rep?.health_summary?.level === 'unknown'
+      ? null
+      : (rep?.health_summary?.score ??
+        rep?.risk_summary?.score ??
+        rep?.score ??
+        row?.score ??
+        null)
   currentReport.value = { ...rep, score }
   dialogVisible.value = true
 }
@@ -657,8 +812,25 @@ const fetchLogs = async (page = 1) => {
 
 .report-meta {
   display: flex;
-  gap: 48px;
+  flex-wrap: wrap;
+  gap: 32px 48px;
   margin-bottom: 24px;
+}
+
+.findings-list ol {
+  margin: 0 0 12px 18px;
+  padding: 0;
+  color: #334155;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.known-normals {
+  margin: 0;
+  padding-left: 18px;
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.8;
 }
 
 .meta-item {
