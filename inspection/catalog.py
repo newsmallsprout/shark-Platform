@@ -65,8 +65,9 @@ KNOWN_NORMALS = [
 PVC_WARN_PCT = 85
 PVC_CRIT_PCT = 95
 
-# CronJob 失败记录会长期留在 kube-state-metrics 里。超过这个窗口的历史失败不进发现问题。
+# CronJob / Failed Pod 会长期留在 kube-state-metrics 里。超过这个窗口的历史失败不进发现问题。
 JOB_FAIL_LOOKBACK_SEC = 24 * 3600
+POD_FAIL_LOOKBACK_SEC = JOB_FAIL_LOOKBACK_SEC
 
 # node-exporter 已从集群摘掉但仍留在 Prometheus 抓取列表里，HostDown 会一直响。
 # 这类进「已下线残留」，不进发现问题、不扣分，避免忘记摘 scrape。

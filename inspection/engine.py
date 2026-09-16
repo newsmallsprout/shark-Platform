@@ -5,9 +5,7 @@ import threading
 import datetime
 from datetime import datetime, timezone, timedelta
 from .models import InspectionConfig, InspectionReport
-from .cluster_checks import collect_cluster_checks, compute_health_score
-from .catalog import display_name
-
+from .cluster_checks import collect_cluster_checks, compute_health_score, label_servers
 from core.logging import log
 
 class InspectionEngine:
@@ -390,8 +388,7 @@ class InspectionEngine:
                 pass
 
         servers = list(by_instance.values())
-        for s in servers:
-            s['service'] = display_name(instance=s.get('instance') or '')
+        servers = label_servers(self._query_prometheus, servers)
         servers.sort(key=lambda x: float(x.get('cpu_pct') or 0), reverse=True)
 
         def _avg(key):

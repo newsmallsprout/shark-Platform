@@ -21,7 +21,7 @@
           <template #default="{ row }">
             <div class="report-id-cell">
               <el-icon class="report-icon"><Calendar /></el-icon>
-              <span>{{ formatIdToDate(row.report_id) }}</span>
+              <span>{{ formatReportTime(row) }}</span>
             </div>
           </template>
         </el-table-column>
@@ -29,7 +29,7 @@
         <el-table-column label="Health Status" width="160">
           <template #default="{ row }">
             <div class="score-wrapper">
-              <template v-if="row.score != null">
+              <template v-if="hasScore(row.score)">
                 <el-progress 
                   type="circle" 
                   :percentage="row.score" 
@@ -76,14 +76,15 @@
         <div class="report-meta">
           <div class="meta-item">
             <span class="label">TIMESTAMP</span>
-            <span class="value">{{ formatIdToDate(currentReport.report_id) }}</span>
+            <span class="value">{{ formatReportTime(currentReport) }}</span>
           </div>
           <div class="meta-item">
             <span class="label">HEALTH SCORE</span>
             <div class="score-display">
-              <span :class="['score-value', getScoreType(currentReport.score)]">{{ currentReport.score == null ? '—' : currentReport.score }}</span>
+              <span :class="['score-value', getScoreType(currentReport.score)]">{{ hasScore(currentReport.score) ? currentReport.score : '—' }}</span>
               <span class="score-total">/100</span>
             </div>
+            <div v-if="scoreReasons.length" class="score-reasons">{{ scoreReasons.join('；') }}</div>
           </div>
           <div class="meta-item">
             <span class="label">SERVERS</span>
@@ -120,7 +121,15 @@
               <li v-for="(item, idx) in currentReport.findings" :key="idx">{{ item }}</li>
             </ol>
           </div>
-          <el-table v-if="checklistCovered.length" :data="checklistCovered" size="small" style="width: 100%">
+          <el-table v-if="checklistCovered.length" :data="checklistCovered" size="small" row-key="_key" style="width: 100%">
+            <el-table-column type="expand">
+              <template #default="{ row }">
+                <div v-if="!(row.detail && row.detail.length)" class="form-tip">无明细</div>
+                <ul v-else class="check-detail-list">
+                  <li v-for="(item, idx) in row.detail" :key="idx">{{ item }}</li>
+                </ul>
+              </template>
+            </el-table-column>
             <el-table-column prop="name" label="检查项" min-width="160" />
             <el-table-column label="状态" width="100">
               <template #default="{ row }">
@@ -279,22 +288,28 @@
         </div>
 
         <div class="analysis-section" v-if="decommissionedRows.length">
-          <div class="section-header">
+          <button type="button" class="section-header section-header-toggle" @click="auxOpen.decommissioned = !auxOpen.decommissioned">
             <el-icon><InfoFilled /></el-icon>
             <span>已下线残留（{{ decommissionedRows.length }}）</span>
-          </div>
-          <p class="section-hint">Prometheus 还能扫到这些目标，但不在当前集群节点上，多半是关机后没摘抓取。不进发现问题、不扣健康分，记得清理 scrape。</p>
-          <el-table :data="decommissionedRows" size="small" style="width: 100%">
-            <el-table-column label="类型" width="90">
-              <template #default="{ row }">{{ row.kind === 'target' ? '抓取' : '告警' }}</template>
-            </el-table-column>
-            <el-table-column prop="name" label="名称" min-width="140">
-              <template #default="{ row }">{{ row.name || row.job || '-' }}</template>
-            </el-table-column>
-            <el-table-column prop="instance" label="实例" min-width="200">
-              <template #default="{ row }">{{ row.instance || '-' }}</template>
-            </el-table-column>
-          </el-table>
+            <el-icon class="toggle-caret">
+              <ArrowDown v-if="auxOpen.decommissioned" />
+              <ArrowRight v-else />
+            </el-icon>
+          </button>
+          <template v-if="auxOpen.decommissioned">
+            <p class="section-hint">Prometheus 还能扫到这些目标，但不在当前集群节点上，多半是关机后没摘抓取。不进发现问题、不扣健康分，记得清理 scrape。</p>
+            <el-table :data="decommissionedRows" size="small" style="width: 100%">
+              <el-table-column label="类型" width="90">
+                <template #default="{ row }">{{ row.kind === 'target' ? '抓取' : '告警' }}</template>
+              </el-table-column>
+              <el-table-column prop="name" label="名称" min-width="140">
+                <template #default="{ row }">{{ row.name || row.job || '-' }}</template>
+              </el-table-column>
+              <el-table-column prop="instance" label="实例" min-width="200">
+                <template #default="{ row }">{{ row.instance || '-' }}</template>
+              </el-table-column>
+            </el-table>
+          </template>
         </div>
 
         <div class="analysis-section" v-if="uncoveredLines.length">
@@ -354,7 +369,9 @@
             </el-col>
           </el-row>
           <el-table v-if="currentReport.servers && currentReport.servers.length" :data="currentReport.servers.slice(0, 50)" style="width: 100%; margin-top: 16px">
-            <el-table-column prop="service" label="服务" min-width="140" />
+            <el-table-column label="节点" min-width="160">
+              <template #default="{ row }">{{ serverLabel(row) }}</template>
+            </el-table-column>
             <el-table-column prop="instance" label="Instance" min-width="220" />
             <el-table-column prop="cpu_pct" label="CPU%" width="110" />
             <el-table-column prop="mem_pct" label="Mem%" width="110" />
@@ -597,20 +614,36 @@ const tableData = computed(() => {
   return reports.value || []
 })
 
-const formatIdToDate = (id: string) => {
+const formatReportTime = (row: any) => {
+  const ts = row?.timestamp
+  if (ts) {
+    const d = new Date(ts)
+    if (!isNaN(d.getTime())) return d.toLocaleString()
+  }
+  const id = row?.report_id || ''
+  if (/^\d{4}-\d{2}-\d{2}$/.test(id)) return id
   if (!id) return '-'
   try {
-    const d = new Date(id.replace(/-/g, '/'))
+    const d = new Date(String(id).replace(/-/g, '/'))
     return isNaN(d.getTime()) ? id : d.toLocaleString()
   } catch (e) {
     return id
   }
 }
 
+const hasScore = (score: unknown) => score !== null && score !== undefined && Number.isFinite(Number(score))
+
+const serverLabel = (row: any) => {
+  const svc = (row?.service || '').trim()
+  const inst = (row?.instance || '').trim()
+  if (!svc || svc === inst) return '-'
+  return svc
+}
+
 const dialogVisible = ref(false)
 const configVisible = ref(false)
 const currentReport = ref<InspectionReport | null>(null)
-const auxOpen = reactive({ normals: false, uncovered: false })
+const auxOpen = reactive({ normals: false, uncovered: false, decommissioned: false })
 
 const configForm = ref({
   prometheus_url: '',
@@ -641,24 +674,30 @@ const saveConfig = async () => {
 }
 
 const getScoreType = (score: number) => {
-  if (!score) return 'info'
+  if (!hasScore(score)) return 'info'
   if (score >= 90) return 'success'
   if (score >= 70) return 'warning'
   return 'danger'
 }
 
 const getProgressStatus = (score: number) => {
-  if (!score) return ''
+  if (!hasScore(score)) return ''
   if (score >= 90) return 'success'
   if (score >= 70) return 'warning'
   return 'exception'
 }
 
+const scoreReasons = computed(() => {
+  const reasons = currentReport.value?.health_summary?.reasons || []
+  return reasons.filter((r: string) => r && r !== 'System Healthy')
+})
 const esClusters = computed(() => currentReport.value?.elasticsearch?.clusters || [])
 const esHeapNodes = computed(() => currentReport.value?.elasticsearch?.heap_nodes || [])
 const middlewareRows = computed(() => currentReport.value?.middleware?.items || [])
 const checklistCovered = computed(() =>
-  (currentReport.value?.checklist || []).filter((c: any) => c.level !== 'skip' && c.id !== 'decommissioned')
+  (currentReport.value?.checklist || [])
+    .filter((c: any) => c.level !== 'skip' && c.id !== 'decommissioned')
+    .map((c: any, i: number) => ({ ...c, _key: `${c.id || 'check'}-${i}` }))
 )
 const decommissionedRows = computed(() => {
   const listed = currentReport.value?.decommissioned || []
@@ -717,7 +756,7 @@ const checkLevelLabel = (level?: string) => {
   if (level === 'warning') return '关注'
   if (level === 'critical') return '严重'
   if (level === 'skip') return '未覆盖'
-  if (level === 'info') return '常态'
+  if (level === 'info') return '记录'
   return level || '-'
 }
 
@@ -755,6 +794,7 @@ const viewReport = async (row: any) => {
   currentReport.value = { ...rep, score }
   auxOpen.normals = false
   auxOpen.uncovered = false
+  auxOpen.decommissioned = false
   dialogVisible.value = true
 }
 
@@ -1062,6 +1102,22 @@ const fetchLogs = async (page = 1) => {
 .section-header-toggle .toggle-caret {
   margin-left: auto;
   color: #94a3b8;
+}
+
+.check-detail-list {
+  margin: 0;
+  padding: 4px 8px 8px 28px;
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.score-reasons {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #64748b;
+  max-width: 280px;
+  line-height: 1.4;
 }
 
 .analysis-card {

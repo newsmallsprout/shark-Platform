@@ -23,6 +23,7 @@ export interface MonitorTask {
 
 export interface InspectionReport {
   report_id: string
+  timestamp?: string
   score: number
   summary: string
   ai_analysis?: string

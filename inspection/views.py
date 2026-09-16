@@ -97,6 +97,7 @@ def history(request):
             
         results.append({
             "report_id": r.report_id,
+            "timestamp": content.get("timestamp") or "",
             "score": health_score,
             "verdict": content.get("verdict") or "",
             "findings_count": len(content.get("findings") or []),

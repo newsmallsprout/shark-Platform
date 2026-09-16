@@ -11,6 +11,7 @@ import time
 from .catalog import (
     HIDE_NAMESPACES,
     JOB_FAIL_LOOKBACK_SEC,
+    POD_FAIL_LOOKBACK_SEC,
     KNOWN_NORMALS,
     METRIC_FAMILY_RECIPES,
     PVC_CRIT_PCT,
@@ -129,7 +130,7 @@ def collect_pvc_usage(query_fn):
     }
 
 
-def _series_names(rows, limit=20):
+def _series_names(rows, limit=40):
     names = []
     for row in rows[:limit]:
         m = _metric(row)
@@ -149,6 +150,9 @@ def _series_names(rows, limit=20):
         )
         svc = display_name(namespace=ns, name=name, instance=m.get("instance") or "")
         label = svc if svc != "-" else (f"{ns}/{name}" if ns and name else name or str(m))
+        phase = m.get("phase") or ""
+        if phase:
+            label = f"{label} {phase}"
         names.append(label)
     return names
 
@@ -625,6 +629,22 @@ def _pod_key(metric):
     return f"{ns}/{pod}", ns, pod
 
 
+def _pod_created_map(query_fn):
+    out = {}
+    for row in query_fn("kube_pod_created") or []:
+        key, _, pod = _pod_key(_metric(row))
+        if pod:
+            out[key] = _num(row)
+    return out
+
+
+def _pod_too_old(key, created_map, now, lookback, missing="drop"):
+    created = created_map.get(key) or 0
+    if created <= 0:
+        return missing == "drop"
+    return (now - created) > lookback
+
+
 def _job_key(row):
     m = _metric(row)
     return (m.get("namespace") or "", m.get("job_name") or m.get("job") or "")
@@ -683,6 +703,29 @@ def _cluster_hosts(query_fn):
         if m.get("internal_ip"):
             hosts.add(m["internal_ip"])
     return {h for h in hosts if h}
+
+
+def label_servers(query_fn, servers):
+    """机器表：有别名用别名；否则用 kube 节点名。不要把 IP 再填进服务列。"""
+    node_map = {}
+    for row in query_fn("kube_node_status_addresses") or []:
+        m = _metric(row)
+        node = (m.get("node") or "").strip()
+        addr = (m.get("address") or "").strip()
+        if node and addr:
+            node_map[addr] = node
+        if node:
+            node_map[node] = node
+    for s in servers or []:
+        inst = s.get("instance") or ""
+        alias = resolve_service(instance=inst)
+        if alias:
+            s["service"] = alias["service"]
+            continue
+        host = _host_from_instance(inst)
+        name = node_map.get(host) or node_map.get(inst) or ""
+        s["service"] = name if name and name != inst and name != host else ""
+    return servers
 
 
 def _is_stale_hostdown_name(name):
@@ -1111,9 +1154,31 @@ def collect_cluster_checks(query_fn, firing_alerts=None, down_targets=None, serv
     abn_q = 'kube_pod_status_phase{phase=~"Pending|Failed|Unknown"}'
     abn_rows = query_fn(f"{abn_q} == 1") or query_fn(abn_q) or []
     if presence("kube_pod_status_phase"):
-        n = len(abn_rows)
+        created_map = _pod_created_map(query_fn)
+        now = time.time()
+        current = []
+        ignored_failed = 0
+        for row in abn_rows:
+            m = _metric(row)
+            phase = (m.get("phase") or "").lower()
+            key, _, _ = _pod_key(m)
+            if phase == "failed" and _pod_too_old(
+                key, created_map, now, POD_FAIL_LOOKBACK_SEC, missing="drop",
+            ):
+                ignored_failed += 1
+                continue
+            current.append(row)
+        n = len(current)
+        result = str(n)
+        if ignored_failed:
+            result = f"{n}（忽略 Failed 历史 {ignored_failed} 个）"
         level = "ok" if n == 0 else "warning"
-        checks.append(_check("pods", "异常 Pod", level, str(n), _series_names(abn_rows), "kube-state-metrics"))
+        checks.append(_check(
+            "pods", "异常 Pod", level, result,
+            _series_names(current), "kube-state-metrics",
+        ))
+        if n:
+            findings.append(f"异常 Pod {n} 个")
     else:
         checks.append(_check("pods", "异常 Pod", "skip", "无 Pod 相位指标", source="kube-state-metrics"))
 
@@ -1122,19 +1187,39 @@ def collect_cluster_checks(query_fn, firing_alerts=None, down_targets=None, serv
     if presence("kube_pod_container_status_restarts_total") or presence(
         'kube_pod_container_status_last_terminated_reason'
     ):
-        n_oom = len(oom_rows)
+        created_map = _pod_created_map(query_fn)
+        now = time.time()
+        current_oom = []
+        ignored_oom = 0
+        for row in oom_rows:
+            key, _, _ = _pod_key(_metric(row))
+            if created_map and _pod_too_old(
+                key, created_map, now, POD_FAIL_LOOKBACK_SEC, missing="keep",
+            ):
+                ignored_oom += 1
+                continue
+            current_oom.append(row)
+        n_oom = len(current_oom)
         n_re = len(restart_rows)
-        level = "ok" if n_oom == 0 and n_re == 0 else "warning"
+        if n_oom:
+            level = "warning"
+        elif n_re:
+            level = "info"
+        else:
+            level = "ok"
+        result = f"{n_oom} / {n_re}"
+        if ignored_oom:
+            result += f"（忽略历史 OOM {ignored_oom} 个）"
+        if n_oom == 0 and n_re:
+            result += "（累计重启，未当当天故障）"
         checks.append(_check(
             "stability", "OOM / 重启>10",
-            level, f"{n_oom} / {n_re}",
-            _series_names(oom_rows + restart_rows),
+            level, result,
+            _series_names(current_oom + restart_rows),
             "kube-state-metrics",
         ))
         if n_oom:
             findings.append(f"OOMKilled {n_oom} 个")
-        if n_re:
-            findings.append(f"重启>10 的容器 {n_re} 个")
     else:
         checks.append(_check("stability", "OOM / 重启>10", "skip", "无容器终止/重启指标", source="kube-state-metrics"))
 
@@ -1151,10 +1236,11 @@ def collect_cluster_checks(query_fn, firing_alerts=None, down_targets=None, serv
     zero_rows = query_fn("kube_deployment_spec_replicas == 0") or []
     if presence("kube_deployment_spec_replicas"):
         n = len(zero_rows)
-        level = "ok" if n == 0 else "warning"
-        checks.append(_check("replicas", "零副本 Deployment", level, str(n), _series_names(zero_rows), "kube-state-metrics"))
-        if n:
-            findings.append(f"零副本 Deployment {n} 个")
+        level = "ok" if n == 0 else "info"
+        checks.append(_check(
+            "replicas", "零副本 Deployment", level, str(n),
+            _series_names(zero_rows), "kube-state-metrics",
+        ))
     else:
         checks.append(_check("replicas", "零副本 Deployment", "skip", "无 Deployment 副本指标", source="kube-state-metrics"))
 
@@ -1528,19 +1614,30 @@ def compute_health_score(down_targets, firing_alerts, servers, pvc_items=None, d
     score = 100.0
     reasons = []
 
+    # 按类目封顶，避免「7 个 down target × 20」直接打到 0 分。
     if down_targets:
-        deduction = len(down_targets) * 20
+        n = len(down_targets)
+        deduction = min(n * 8, 24)
         score -= deduction
-        reasons.append(f"Down Targets ({len(down_targets)}): -{deduction}")
+        reasons.append(f"Down Targets ({n}): -{deduction}")
 
+    crit_n = 0
+    warn_n = 0
     for alert in firing_alerts or []:
         severity = str(alert.get("severity") or "warning").lower()
         if severity in ["critical", "high"]:
-            score -= 15
-            reasons.append(f"Critical Alert ({alert.get('name')}): -15")
+            crit_n += 1
         else:
-            score -= 5
-            reasons.append(f"Warning Alert ({alert.get('name')}): -5")
+            warn_n += 1
+    alert_deduction = min(crit_n * 8 + warn_n * 4, 24)
+    if alert_deduction:
+        score -= alert_deduction
+        bits = []
+        if crit_n:
+            bits.append(f"critical {crit_n}")
+        if warn_n:
+            bits.append(f"warning {warn_n}")
+        reasons.append(f"Alerts ({', '.join(bits)}): -{alert_deduction}")
 
     if servers:
         max_cpu = max((float(s.get("cpu_pct") or 0) for s in servers), default=0)

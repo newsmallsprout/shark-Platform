@@ -564,7 +564,82 @@ class ClusterCheckTests(unittest.TestCase):
             [], cluster=cluster,
         )
         self.assertFalse(any("10.10.60.232" in r or "10.10.96.64" in r for r in reasons))
-        self.assertGreaterEqual(score, 50)
+        self.assertGreaterEqual(score, 70)
+
+    def test_old_failed_pods_are_ignored(self):
+        import time
+        from inspection.simulate_inspection import Prom
+
+        now = time.time()
+        old = now - 3 * 86400
+        recent = now - 3600
+        abn_q = 'kube_pod_status_phase{phase=~"Pending|Failed|Unknown"}'
+        cluster = collect_cluster_checks(Prom({
+            "kube_pod_status_phase": [_vec({"namespace": "app", "pod": "keep"}, 1)],
+            abn_q: [
+                _vec({"namespace": "app", "pod": "old-fail", "phase": "Failed"}, 1),
+                _vec({"namespace": "app", "pod": "new-fail", "phase": "Failed"}, 1),
+                _vec({"namespace": "app", "pod": "pending-now", "phase": "Pending"}, 1),
+            ],
+            f"{abn_q} == 1": [
+                _vec({"namespace": "app", "pod": "old-fail", "phase": "Failed"}, 1),
+                _vec({"namespace": "app", "pod": "new-fail", "phase": "Failed"}, 1),
+                _vec({"namespace": "app", "pod": "pending-now", "phase": "Pending"}, 1),
+            ],
+            "kube_pod_created": [
+                _vec({"namespace": "app", "pod": "old-fail"}, old),
+                _vec({"namespace": "app", "pod": "new-fail"}, recent),
+                _vec({"namespace": "app", "pod": "pending-now"}, recent),
+            ],
+        }), servers=[{"instance": "w:9100", "mem_pct": 20, "cpu_pct": 10, "disk_pct": 10}])
+        pods = next(c for c in cluster["checks"] if c["id"] == "pods")
+        self.assertEqual(pods["level"], "warning")
+        self.assertIn("忽略 Failed 历史 1", pods["result"])
+        blob = " ".join(pods["detail"] or [])
+        self.assertIn("new-fail", blob)
+        self.assertIn("pending-now", blob)
+        self.assertNotIn("old-fail", blob)
+
+    def test_zero_replica_is_record_not_finding(self):
+        from inspection.simulate_inspection import Prom
+
+        cluster = collect_cluster_checks(Prom({
+            "kube_deployment_spec_replicas": [
+                _vec({"namespace": "app", "deployment": "scaled-down"}, 0),
+                _vec({"namespace": "app", "deployment": "api"}, 2),
+            ],
+        }), servers=[{"instance": "w:9100", "mem_pct": 20, "cpu_pct": 10, "disk_pct": 10}])
+        replicas = next(c for c in cluster["checks"] if c["id"] == "replicas")
+        self.assertEqual(replicas["level"], "info")
+        self.assertTrue(any("scaled-down" in x for x in replicas["detail"]))
+        self.assertFalse(any("零副本" in (f or "") for f in cluster["findings"]))
+
+    def test_score_caps_many_down_targets(self):
+        downs = [{"job": "node-exporter", "instance": f"10.0.0.{i}:9100"} for i in range(10)]
+        score, _, reasons = compute_health_score(
+            downs, [],
+            [{"instance": "n:9100", "mem_pct": 20, "cpu_pct": 10, "disk_pct": 10}],
+            [],
+        )
+        self.assertGreaterEqual(score, 76)
+        self.assertLess(score, 100)
+        self.assertTrue(any("Down Targets (10): -24" in r for r in reasons))
+
+    def test_server_label_uses_node_name_not_ip(self):
+        from inspection.simulate_inspection import Prom
+        from inspection.cluster_checks import label_servers
+
+        servers = [
+            {"instance": "10.0.1.1:9100", "cpu_pct": 10},
+            {"instance": "jumpserver-0:9100", "cpu_pct": 10},
+        ]
+        labeled = label_servers(Prom({
+            "kube_node_status_addresses": [
+                _vec({"node": "test-k8s-worker-04", "address_type": "InternalIP", "address": "10.0.1.1"}, 1),
+            ],
+        }), servers)
+        self.assertEqual(labeled[0]["service"], "test-k8s-worker-04")
+        self.assertEqual(labeled[1]["service"], "JumpServer")
 
     def test_jumpserver_hostdown_stays_a_real_finding(self):
         from inspection.simulate_inspection import Prom
