@@ -66,7 +66,14 @@ export interface InspectionReport {
     clusters?: { cluster: string; status?: string; nodes?: number; data_nodes?: number; unassigned_shards?: number; active_shards?: number }[]
     heap_nodes?: { cluster: string; node: string; heap_pct: number; used_bytes: number; max_bytes: number }[]
   }
+  middleware?: {
+    available?: boolean
+    discovered_names?: number
+    items?: { id: string; name: string; source: string; level: string; result: string; up?: number; down?: number; cpu_pct?: number | null; mem_pct?: number | null; disk_pct?: number | null; mem_text?: string; disk_text?: string; instances?: string[]; metrics?: string[] }[]
+  }
+  discovery?: { scanned?: boolean; metric_name_count?: number; middleware_families?: number }
   known_normals?: string[]
+  decommissioned?: { kind?: string; name?: string; job?: string; instance?: string; label?: string }[]
   trend_7d?: { date: string; score?: number; firing?: number; critical?: number; avg_cpu?: number; avg_mem?: number; avg_disk?: number }[]
   forecast_7_15_30?: any
 }

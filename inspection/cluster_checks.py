@@ -3,15 +3,24 @@
 PVC 用量优先用已在 PRD 部署的 pvc-stats-exporter（pvc_stats_*），
 没有时再退回 kubelet_volume_stats_*。
 K8s 对象状态依赖 kube-state-metrics；没有对应指标时检查项为 skip，不假装正常。
+中间件先扫 Prom 指标名，对上前缀才检查，不写死实例。
 """
 
+import time
+
 from .catalog import (
+    HIDE_NAMESPACES,
+    JOB_FAIL_LOOKBACK_SEC,
     KNOWN_NORMALS,
+    METRIC_FAMILY_RECIPES,
     PVC_CRIT_PCT,
     PVC_WARN_PCT,
+    STALE_HOSTDOWN_NAMES,
+    UP_METRIC_DENY,
     display_name,
+    hidden_namespace,
+    recipe_covers_metric,
     resolve_service,
-    watch_namespaces,
 )
 
 PVC_USED_QUERIES = [
@@ -129,6 +138,9 @@ def _series_names(rows, limit=20):
             m.get("persistentvolumeclaim")
             or m.get("pod")
             or m.get("deployment")
+            or m.get("job_name")
+            or m.get("horizontalpodautoscaler")
+            or m.get("name")
             or m.get("node")
             or m.get("instance")
             or m.get("job")
@@ -150,6 +162,37 @@ def _check(cid, name, level, result, detail=None, source=""):
         "detail": detail or [],
         "source": source,
     }
+
+
+def _fold_uncovered(checks, middleware=None, metric_names=None):
+    """skip 项收到最后一条「未覆盖」，避免和正常/告警混在一起。"""
+    kept = [c for c in checks if c.get("level") != "skip"]
+    skipped = [c for c in checks if c.get("level") == "skip"]
+    names = [c.get("name") or c.get("id") for c in skipped]
+    details = [f"{c.get('name')}：{c.get('result')}" for c in skipped]
+    found_ids = {x.get("id") for x in (middleware or {}).get("items") or []}
+    mw_already = any(c.get("id") == "middleware" for c in skipped)
+    if metric_names and not mw_already:
+        for spec in METRIC_FAMILY_RECIPES:
+            if spec["id"] in found_ids:
+                continue
+            label = spec["name"]
+            if label in names:
+                continue
+            prefixes = " / ".join(spec.get("prefixes") or []) or spec.get("up") or spec["id"]
+            names.append(label)
+            details.append(f"{label}：未扫到 {prefixes} 指标")
+    if not names:
+        return kept
+    kept.append(_check(
+        "uncovered",
+        "未覆盖",
+        "skip",
+        "、".join(names),
+        details,
+        "prometheus",
+    ))
+    return kept
 
 
 def _es_cluster_key(metric):
@@ -240,11 +283,480 @@ def collect_elasticsearch(query_fn):
     }
 
 
+def _mw_instance(row):
+    m = _metric(row)
+    return (
+        m.get("addr")
+        or m.get("instance")
+        or m.get("dimension_DBInstanceIdentifier")
+        or m.get("dbinstance_identifier")
+        or m.get("cluster_id")
+        or m.get("service")
+        or m.get("job")
+        or ""
+    )
+
+
+def _metric_in(name_set, metric):
+    if not metric:
+        return False
+    if not name_set:
+        return True
+    return metric in name_set
+
+
+def _max_gauge(query_fn, metric):
+    if not metric:
+        return None, []
+    rows = query_fn(metric) or []
+    if not rows:
+        return None, []
+    return round(max(_num(r) for r in rows), 1), rows
+
+
+def _fmt_bytes(n):
+    try:
+        n = float(n or 0)
+    except (TypeError, ValueError):
+        return "-"
+    for unit, size in (("TB", 1e12), ("GB", 1e9), ("MB", 1e6), ("KB", 1e3)):
+        if abs(n) >= size:
+            val = n / size
+            return f"{val:.1f}{unit}" if val < 10 else f"{val:.0f}{unit}"
+    return f"{int(n)}B"
+
+
+def _resource_specs(spec, name_set):
+    specs = list(spec.get("resources") or [])
+    if not specs:
+        if spec.get("mem_pct_metric"):
+            specs.append({
+                "kind": "mem", "mode": "gauge_pct",
+                "metric": spec["mem_pct_metric"], "label": "内存",
+            })
+        if spec.get("mem_used") and spec.get("mem_max"):
+            specs.append({
+                "kind": "mem", "mode": "ratio",
+                "used": spec["mem_used"], "max": spec["mem_max"], "label": "内存",
+            })
+    picked = []
+    for item in specs:
+        mode = item.get("mode") or "ratio"
+        if mode == "gauge_pct":
+            if not _metric_in(name_set, item.get("metric")):
+                continue
+        elif mode == "used":
+            if not _metric_in(name_set, item.get("used")):
+                continue
+        elif mode == "free":
+            if not _metric_in(name_set, item.get("used")):
+                continue
+        else:
+            if not (_metric_in(name_set, item.get("used")) and _metric_in(name_set, item.get("max"))):
+                continue
+        picked.append(item)
+    return picked
+
+
+def _infer_leftover_resources(up_metric, name_set):
+    """未登记的 *_up：只认同前缀下非常明确的 used/max 字节对。"""
+    if not up_metric or not up_metric.endswith("_up"):
+        return []
+    prefix = up_metric[:-3] + "_"
+    pairs = [
+        ("memory_used_bytes", "memory_max_bytes", "mem", "内存"),
+        ("mem_used_bytes", "mem_limit_bytes", "mem", "内存"),
+        ("current_bytes", "limit_bytes", "mem", "内存"),
+        ("disk_used_bytes", "disk_total_bytes", "disk", "磁盘"),
+        ("storage_used_bytes", "storage_total_bytes", "disk", "磁盘"),
+    ]
+    out = []
+    seen = set()
+    for used_s, max_s, kind, label in pairs:
+        if kind in seen:
+            continue
+        used_m, max_m = prefix + used_s, prefix + max_s
+        if used_m in name_set and max_m in name_set:
+            out.append({"kind": kind, "mode": "ratio", "used": used_m, "max": max_m, "label": label})
+            seen.add(kind)
+    return out
+
+
+def _ratio_stats(query_fn, used_m, max_m):
+    used_rows = query_fn(used_m) or []
+    cap_map = {}
+    for row in query_fn(max_m) or []:
+        cap_map[_mw_instance(row) or "x"] = _num(row)
+    pcts, used_vals, max_vals, labels = [], [], [], []
+    unlimited = False
+    for row in used_rows:
+        key = _mw_instance(row) or "x"
+        used = _num(row)
+        cap = cap_map.get(key)
+        if cap is None and len(cap_map) == 1:
+            cap = next(iter(cap_map.values()))
+        cap = cap if cap is not None else 0
+        used_vals.append(used)
+        max_vals.append(cap)
+        if key and key not in labels:
+            labels.append(key)
+        if cap > 0:
+            pcts.append(used / cap * 100)
+        elif used > 0:
+            unlimited = True
+    return {
+        "pct": round(max(pcts), 1) if pcts else None,
+        "used": max(used_vals) if used_vals else 0,
+        "max": max(max_vals) if max_vals else 0,
+        "unlimited": unlimited and not pcts,
+        "instances": labels,
+    }
+
+
+def _evaluate_resources(query_fn, spec, name_set):
+    """只读该 exporter 自己的 used/max 或水位。没有就不编百分比。"""
+    bits = []
+    metrics = []
+    mem_pct = disk_pct = None
+    mem_text = disk_text = ""
+    warn = False
+    mem_warn = float(spec.get("mem_warn") or 85)
+    disk_warn = float(spec.get("disk_warn") or 85)
+    seen_kind = set()
+    for item in _resource_specs(spec, name_set):
+        kind = item.get("kind") or "mem"
+        if kind in seen_kind:
+            continue
+        mode = item.get("mode") or "ratio"
+        label = item.get("label") or ("磁盘" if kind == "disk" else "内存")
+        text = ""
+        pct = None
+        if mode == "gauge_pct":
+            metric = item.get("metric")
+            pct, rows = _max_gauge(query_fn, metric)
+            metrics.append(metric)
+            if pct is None:
+                continue
+            text = f"{label} {pct}%"
+        elif mode == "used":
+            metric = item.get("used")
+            value, rows = _max_gauge(query_fn, metric)
+            metrics.append(metric)
+            if value is None:
+                continue
+            text = f"{label} {_fmt_bytes(value)}"
+        elif mode == "free":
+            avail_m, limit_m = item.get("used"), item.get("max")
+            avail, rows = _max_gauge(query_fn, avail_m)
+            metrics.append(avail_m)
+            if avail is None:
+                continue
+            text = f"{label} {_fmt_bytes(avail)}"
+            if _metric_in(name_set, limit_m):
+                limit, _ = _max_gauge(query_fn, limit_m)
+                metrics.append(limit_m)
+                if limit and limit > 0:
+                    text += f"（水位 {_fmt_bytes(limit)}）"
+                    if avail < limit:
+                        warn = True
+        else:
+            used_m, max_m = item.get("used"), item.get("max")
+            stats = _ratio_stats(query_fn, used_m, max_m)
+            metrics.extend([used_m, max_m])
+            if stats["pct"] is not None:
+                pct = stats["pct"]
+                text = f"{label} {pct}%"
+            elif stats["unlimited"]:
+                text = f"{label} {_fmt_bytes(stats['used'])}（无上限）"
+            elif stats["used"]:
+                text = f"{label} {_fmt_bytes(stats['used'])}"
+            else:
+                continue
+        bits.append(text)
+        seen_kind.add(kind)
+        if kind == "disk":
+            disk_pct = pct
+            disk_text = text
+            if pct is not None and pct >= disk_warn:
+                warn = True
+        else:
+            mem_pct = pct
+            mem_text = text
+            if pct is not None and pct >= mem_warn:
+                warn = True
+    return {
+        "bits": bits,
+        "metrics": [m for m in metrics if m],
+        "mem_pct": mem_pct,
+        "disk_pct": disk_pct,
+        "mem_text": mem_text,
+        "disk_text": disk_text,
+        "warn": warn,
+    }
+
+
+def _evaluate_family(query_fn, spec, name_set):
+    up_metric = spec.get("up") or ""
+    cpu_metric = spec.get("cpu") or ""
+    lag_metric = spec.get("lag") or ""
+    up_n = 0
+    down_n = 0
+    instances = []
+    if up_metric and _metric_in(name_set, up_metric):
+        for row in query_fn(up_metric) or []:
+            label = _mw_instance(row) or up_metric
+            if _num(row) == 0:
+                down_n += 1
+                instances.append(label)
+            else:
+                up_n += 1
+                if label and label not in instances:
+                    instances.append(label)
+    bits = []
+    if up_n or down_n:
+        bits.append(f"up {up_n}/{up_n + down_n}")
+    cpu_max, cpu_rows = (None, [])
+    if cpu_metric and _metric_in(name_set, cpu_metric):
+        cpu_max, cpu_rows = _max_gauge(query_fn, cpu_metric)
+        if cpu_max is not None:
+            bits.append(f"cpu {cpu_max}%")
+            for row in cpu_rows[:8]:
+                label = _mw_instance(row)
+                if label and label not in instances:
+                    instances.append(label)
+    lag_max = None
+    if lag_metric and _metric_in(name_set, lag_metric):
+        lag_max, lag_rows = _max_gauge(query_fn, lag_metric)
+        if lag_max is not None:
+            bits.append(f"replica_lag {lag_max}s")
+            for row in lag_rows[:6]:
+                label = _mw_instance(row)
+                if label and label not in instances:
+                    instances.append(label)
+    resources = _evaluate_resources(query_fn, spec, name_set)
+    bits.extend(resources["bits"])
+    if not bits:
+        return None
+    level = "ok"
+    if down_n:
+        level = "critical"
+    elif cpu_max is not None and cpu_max >= float(spec.get("cpu_warn") or 80):
+        level = "warning"
+    elif lag_max is not None and lag_max >= float(spec.get("lag_warn") or 30):
+        level = "warning"
+    elif resources["warn"]:
+        level = "warning"
+    used_metrics = [up_metric, cpu_metric, lag_metric] + resources["metrics"]
+    return {
+        "id": spec["id"],
+        "name": spec["name"],
+        "source": spec.get("source") or "prometheus",
+        "level": level,
+        "result": "，".join(bits),
+        "up": up_n,
+        "down": down_n,
+        "cpu_pct": cpu_max,
+        "mem_pct": resources["mem_pct"],
+        "disk_pct": resources["disk_pct"],
+        "mem_text": resources["mem_text"],
+        "disk_text": resources["disk_text"],
+        "instances": instances[:12],
+        "metrics": [x for x in used_metrics if x and _metric_in(name_set, x)],
+    }
+
+
+def collect_middleware(query_fn, metric_names=None):
+    """先看 Prom 里有哪些指标名，再套食谱；没扫到的族不列出。"""
+    names = [str(n) for n in (metric_names or []) if n]
+    name_set = set(names)
+    items = []
+    seen = set()
+    if name_set:
+        for spec in METRIC_FAMILY_RECIPES:
+            if spec["id"] in seen:
+                continue
+            if not any(recipe_covers_metric(spec, n) for n in names):
+                continue
+            row = _evaluate_family(query_fn, spec, name_set)
+            if row:
+                seen.add(spec["id"])
+                items.append(row)
+        covered = set()
+        for spec in METRIC_FAMILY_RECIPES:
+            for prefix in spec.get("prefixes") or []:
+                covered.add(prefix.lower())
+        for n in names:
+            if not n.endswith("_up") or n in UP_METRIC_DENY:
+                continue
+            low = n.lower()
+            if low.startswith("node_") or low.startswith("kube_") or low.startswith("elasticsearch_"):
+                continue
+            if any(low.startswith(p) for p in covered):
+                continue
+            spec = {
+                "id": n,
+                "name": n[:-3].replace("_", " ").strip().title() or n,
+                "source": "prometheus",
+                "up": n,
+                "resources": _infer_leftover_resources(n, name_set),
+            }
+            row = _evaluate_family(query_fn, spec, name_set)
+            if row:
+                items.append(row)
+    else:
+        for spec in METRIC_FAMILY_RECIPES:
+            row = _evaluate_family(query_fn, spec, set())
+            if row:
+                items.append(row)
+    return {
+        "available": bool(items),
+        "items": items,
+        "discovered_names": len(names),
+    }
+
+
 def _pod_key(metric):
     m = metric or {}
     ns = m.get("namespace") or ""
     pod = m.get("pod") or ""
     return f"{ns}/{pod}", ns, pod
+
+
+def _job_key(row):
+    m = _metric(row)
+    return (m.get("namespace") or "", m.get("job_name") or m.get("job") or "")
+
+
+def _job_start_map(rows):
+    out = {}
+    for row in rows or []:
+        key = _job_key(row)
+        if key[1]:
+            out[key] = _num(row)
+    return out
+
+
+def _job_owner_kind_map(rows):
+    out = {}
+    for row in rows or []:
+        key = _job_key(row)
+        if key[1]:
+            out[key] = (_metric(row).get("owner_kind") or "").strip()
+    return out
+
+
+def _fmt_job_when(ts):
+    if not ts or ts <= 0:
+        return ""
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
+
+
+def _host_from_instance(instance):
+    inst = (instance or "").strip()
+    if "://" in inst:
+        inst = inst.split("://", 1)[-1]
+    host = inst.split("/")[0]
+    if host.startswith("[") and "]" in host:
+        host = host[1:host.index("]")]
+    else:
+        host = host.rsplit(":", 1)[0] if host.count(":") == 1 else host
+    return host.strip()
+
+
+def _cluster_hosts(query_fn):
+    hosts = set()
+    for row in query_fn("kube_node_status_addresses") or []:
+        m = _metric(row)
+        addr = m.get("address") or ""
+        if addr:
+            hosts.add(addr)
+        node = m.get("node") or ""
+        if node:
+            hosts.add(node)
+    for row in query_fn("kube_node_info") or []:
+        m = _metric(row)
+        if m.get("node"):
+            hosts.add(m["node"])
+        if m.get("internal_ip"):
+            hosts.add(m["internal_ip"])
+    return {h for h in hosts if h}
+
+
+def _is_stale_hostdown_name(name):
+    n = (name or "").lower().replace("_", "").replace("-", "")
+    return n in STALE_HOSTDOWN_NAMES or n.endswith("hostdown")
+
+
+def _is_node_exporter_job(job):
+    j = (job or "").lower()
+    if not j:
+        return True
+    return j in ("node", "node-exporter", "node_exporter", "nodes") or "node-exporter" in j
+
+
+def _is_known_non_cluster_instance(instance):
+    """JumpServer 等有别名的机器不是 kube 节点，宕机仍算真故障。"""
+    return bool(resolve_service(instance=instance or ""))
+
+
+def _is_stale_host_alert(alert, hosts):
+    if not hosts or not _is_stale_hostdown_name(alert.get("name")):
+        return False
+    inst = alert.get("instance") or ""
+    if _is_known_non_cluster_instance(inst):
+        return False
+    if not _is_node_exporter_job(alert.get("job")):
+        return False
+    host = _host_from_instance(inst)
+    return bool(host) and host not in hosts
+
+
+def _is_stale_node_target(target, hosts):
+    if not hosts:
+        return False
+    inst = target.get("instance") or ""
+    if _is_known_non_cluster_instance(inst):
+        return False
+    if not _is_node_exporter_job(target.get("job")):
+        return False
+    host = _host_from_instance(inst)
+    return bool(host) and host not in hosts
+
+
+def _decommissioned_item(kind, name, instance, job=""):
+    return {
+        "kind": kind,
+        "name": name or "",
+        "job": job or "",
+        "instance": instance or "",
+        "label": " ".join(x for x in (name or job, instance) if x),
+    }
+
+
+def _split_decommissioned(firing_alerts, down_targets, hosts):
+    """能扫到、但不在当前 kube 节点上：单独列出，不进发现问题。"""
+    if not hosts:
+        return firing_alerts, down_targets, []
+    kept_firing, kept_down, leftover = [], [], []
+    for alert in firing_alerts or []:
+        if _is_stale_host_alert(alert, hosts):
+            leftover.append(_decommissioned_item(
+                "alert", alert.get("name") or "HostDown", alert.get("instance") or "",
+                job=alert.get("job") or "",
+            ))
+        else:
+            kept_firing.append(alert)
+    for target in down_targets or []:
+        if _is_stale_node_target(target, hosts):
+            leftover.append(_decommissioned_item(
+                "target",
+                target.get("job") or "node-exporter",
+                target.get("instance") or "",
+                job=target.get("job") or "",
+            ))
+        else:
+            kept_down.append(target)
+    return kept_firing, kept_down, leftover
 
 
 def _index_named(rows, *name_keys):
@@ -354,7 +866,6 @@ def collect_workloads(query_fn):
         key, _, _ = _pod_key(_metric(row))
         restarts[key] = restarts.get(key, 0) + int(_num(row))
 
-    watched = watch_namespaces()
     items = []
     seen = set()
     for row in phase_rows:
@@ -368,11 +879,10 @@ def collect_workloads(query_fn):
         phase = (m.get("phase") or "unknown").lower()
         alias = resolve_service(namespace=ns, name=pod, instance=pod)
         wait_reason = waiting.get(key) or ""
-        watch = ns.lower() in watched or bool(alias)
         abnormal = phase not in ("running", "succeeded") or bool(wait_reason)
         if phase == "succeeded" and not alias:
             continue
-        if not watch and not abnormal:
+        if hidden_namespace(ns) and not abnormal:
             continue
         if phase in ("failed", "unknown") or wait_reason:
             level = "critical"
@@ -433,11 +943,7 @@ def collect_workloads(query_fn):
         return groups_map[key]
 
     def keep_ctrl(ns, name):
-        if (ns or "").lower() == "kube-system":
-            return False
-        if (ns or "").lower() in watched:
-            return True
-        return bool(resolve_service(namespace=ns, name=name, instance=name))
+        return not hidden_namespace(ns)
 
     def find_controller(ns, pod_name):
         best = None
@@ -489,9 +995,11 @@ def collect_workloads(query_fn):
 
     groups = []
     for g in groups_map.values():
-        if (g.get("namespace") or "").lower() == "kube-system" and not any(p.get("level") != "ok" for p in g["pods"]):
+        if hidden_namespace(g.get("namespace")) and not any(p.get("level") != "ok" for p in g["pods"]):
             continue
         pods = g["pods"]
+        if not pods and not (g.get("namespace") or ""):
+            continue
         if not pods and (g.get("desired") or 0) == 0:
             continue
         running = sum(1 for p in pods if p.get("phase") == "running" and not p.get("waiting"))
@@ -522,13 +1030,20 @@ def collect_workloads(query_fn):
     }
 
 
-def collect_cluster_checks(query_fn, firing_alerts=None, down_targets=None, servers=None):
+def collect_cluster_checks(query_fn, firing_alerts=None, down_targets=None, servers=None, metric_names=None):
     firing_alerts = firing_alerts or []
     down_targets = down_targets or []
     servers = servers or []
+    metric_names = list(metric_names) if metric_names is not None else None
+    name_set = set(metric_names or [])
+    cluster_hosts = _cluster_hosts(query_fn)
+    firing_alerts, down_targets, decommissioned = _split_decommissioned(
+        firing_alerts, down_targets, cluster_hosts,
+    )
 
     pvc = collect_pvc_usage(query_fn)
     es = collect_elasticsearch(query_fn)
+    middleware = collect_middleware(query_fn, metric_names=metric_names)
     workloads = collect_workloads(query_fn)
     checks = []
     findings = []
@@ -539,6 +1054,11 @@ def collect_cluster_checks(query_fn, firing_alerts=None, down_targets=None, serv
             # some Prometheuses reject count() wrapping; try raw
             return bool(query_fn(query))
         return _num(rows[0]) > 0
+
+    def discovered(metric):
+        if not name_set:
+            return presence(metric)
+        return metric in name_set
 
     # --- kube-state-metrics style checks ---
     node_ready_q = 'kube_node_status_condition{condition="Ready",status="true"}'
@@ -568,14 +1088,29 @@ def collect_cluster_checks(query_fn, firing_alerts=None, down_targets=None, serv
     else:
         checks.append(_check("rofs", "ReadonlyFilesystem", "skip", "无 kube-state-metrics 节点指标", source="kube-state-metrics"))
 
+    if presence("kube_node_status_condition"):
+        press_rows = query_fn(
+            'kube_node_status_condition{condition=~"MemoryPressure|DiskPressure|PIDPressure",status="true"} == 1'
+        ) or []
+        n = len(press_rows)
+        checks.append(_check(
+            "node_pressure", "节点 Pressure",
+            "ok" if n == 0 else "critical",
+            f"{n} True",
+            _series_names(press_rows),
+            "kube-state-metrics",
+        ))
+        if n:
+            findings.append(f"节点 Memory/Disk/PID Pressure {n} 个")
+    else:
+        checks.append(_check("node_pressure", "节点 Pressure", "skip", "无 kube-state-metrics 节点指标", source="kube-state-metrics"))
+
     abn_q = 'kube_pod_status_phase{phase=~"Pending|Failed|Unknown"}'
     abn_rows = query_fn(f"{abn_q} == 1") or query_fn(abn_q) or []
     if presence("kube_pod_status_phase"):
         n = len(abn_rows)
         level = "ok" if n == 0 else "warning"
         checks.append(_check("pods", "异常 Pod", level, str(n), _series_names(abn_rows), "kube-state-metrics"))
-        if n:
-            findings.append(f"异常 Pod {n} 个")
     else:
         checks.append(_check("pods", "异常 Pod", "skip", "无 Pod 相位指标", source="kube-state-metrics"))
 
@@ -620,6 +1155,99 @@ def collect_cluster_checks(query_fn, firing_alerts=None, down_targets=None, serv
     else:
         checks.append(_check("replicas", "零副本 Deployment", "skip", "无 Deployment 副本指标", source="kube-state-metrics"))
 
+    if discovered("kube_job_status_failed"):
+        job_rows = [r for r in (query_fn("kube_job_status_failed") or []) if _num(r) > 0]
+        start_map = _job_start_map(query_fn("kube_job_status_start_time") or [])
+        owner_map = _job_owner_kind_map(query_fn("kube_job_owner") or [])
+        now = time.time()
+        current = []
+        ignored_cron = 0
+        details = []
+        for row in job_rows:
+            ns, name = _job_key(row)
+            label = f"{ns}/{name}" if ns else name
+            started = start_map.get((ns, name)) or 0
+            owner = (owner_map.get((ns, name)) or "").lower()
+            when = _fmt_job_when(started)
+            if owner == "cronjob" and started > 0 and (now - started) > JOB_FAIL_LOOKBACK_SEC:
+                ignored_cron += 1
+                continue
+            current.append(row)
+            details.append(f"{label}" + (f" {when}" if when else "") + (f" ({owner})" if owner else ""))
+        n = len(current)
+        result = str(n)
+        if ignored_cron:
+            result = f"{n}（忽略 CronJob 历史 {ignored_cron} 个）"
+        checks.append(_check(
+            "jobs", "Job 失败",
+            "ok" if n == 0 else "warning",
+            result, details[:20], "kube-state-metrics",
+        ))
+        if n:
+            findings.append(f"失败 Job {n} 个")
+    else:
+        checks.append(_check("jobs", "Job 失败", "skip", "无 kube_job_status_failed", source="kube-state-metrics"))
+
+    if discovered("kube_horizontalpodautoscaler_spec_max_replicas"):
+        max_idx = _index_named(
+            query_fn("kube_horizontalpodautoscaler_spec_max_replicas") or [],
+            "horizontalpodautoscaler", "hpa",
+        )
+        des_idx = _index_named(
+            query_fn("kube_horizontalpodautoscaler_status_desired_replicas") or [],
+            "horizontalpodautoscaler", "hpa",
+        )
+        hot = []
+        for key, mx in max_idx.items():
+            des = des_idx.get(key, 0)
+            if mx and des >= mx:
+                ns, name = key
+                hot.append(f"{ns}/{name} {des}/{mx}")
+        checks.append(_check(
+            "hpa", "HPA 打满",
+            "ok" if not hot else "warning",
+            f"{len(hot)} / {len(max_idx)}",
+            hot[:20],
+            "kube-state-metrics",
+        ))
+        if hot:
+            findings.append(f"HPA 已到 max {len(hot)} 个")
+    else:
+        checks.append(_check("hpa", "HPA 打满", "skip", "无 kube_horizontalpodautoscaler_*", source="kube-state-metrics"))
+
+    cert_m = "certmanager_certificate_expiration_timestamp_seconds"
+    if discovered(cert_m):
+        now = time.time()
+        expired = []
+        soon = []
+        for row in query_fn(cert_m) or []:
+            ts = _num(row)
+            if ts <= 0:
+                continue
+            left = ts - now
+            m = _metric(row)
+            label = "/".join(x for x in (m.get("namespace"), m.get("name")) if x) or m.get("exported_namespace") or "cert"
+            if left <= 0:
+                expired.append(str(label))
+            elif left < 14 * 86400:
+                soon.append(str(label))
+        if expired:
+            level = "critical"
+            result = f"过期 {len(expired)}，14 天内 {len(soon)}"
+        elif soon:
+            level = "warning"
+            result = f"14 天内到期 {len(soon)}"
+        else:
+            level = "ok"
+            result = "未见 14 天内到期"
+        checks.append(_check("certs", "证书到期", level, result, (expired + soon)[:20], "cert-manager"))
+        if expired:
+            findings.append(f"证书已过期 {len(expired)} 张")
+        if soon:
+            findings.append(f"证书 14 天内到期 {len(soon)} 张")
+    else:
+        checks.append(_check("certs", "证书到期", "skip", "未发现 certmanager_certificate_expiration_timestamp_seconds", source="cert-manager"))
+
     argocd_rows = query_fn('argocd_app_info{sync_status!="Synced"}') or []
     if presence("argocd_app_info"):
         n = len(argocd_rows)
@@ -652,6 +1280,23 @@ def collect_cluster_checks(query_fn, firing_alerts=None, down_targets=None, serv
     ))
     if n_down:
         findings.append(f"Down Targets {n_down} 个")
+
+    if decommissioned:
+        n_alert = sum(1 for x in decommissioned if x.get("kind") == "alert")
+        n_target = sum(1 for x in decommissioned if x.get("kind") == "target")
+        bits = []
+        if n_alert:
+            bits.append(f"HostDown {n_alert} 个")
+        if n_target:
+            bits.append(f"node-exporter {n_target} 个")
+        checks.append(_check(
+            "decommissioned",
+            "已下线残留",
+            "info",
+            "、".join(bits) + " 仍在被抓取",
+            [x.get("label") for x in decommissioned if x.get("label")],
+            "prometheus",
+        ))
 
     probe_rows = query_fn("probe_success == 0") or []
     if presence("probe_success"):
@@ -699,6 +1344,25 @@ def collect_cluster_checks(query_fn, firing_alerts=None, down_targets=None, serv
             checks.append(_check("elasticsearch", "Elasticsearch", "warning", "有指标但无法解析集群色", source="elasticsearch-exporter"))
     else:
         checks.append(_check("elasticsearch", "Elasticsearch", "skip", "无 elasticsearch_cluster_health_status，确认 elasticsearch-exporter 已被抓取", source="elasticsearch-exporter"))
+
+    mw_items = middleware.get("items") or []
+    if mw_items:
+        for item in mw_items:
+            checks.append(_check(
+                f"mw_{item['id']}", item["name"], item["level"], item["result"],
+                item.get("instances") or [], item.get("source") or "prometheus",
+            ))
+            if item["level"] == "critical":
+                extra = "：" + ", ".join((item.get("instances") or [])[:6]) if item.get("instances") else ""
+                findings.append(f"{item['name']} down {item.get('down')}{extra}")
+            elif item["level"] == "warning":
+                findings.append(f"{item['name']} {item['result']}")
+    else:
+        checks.append(_check(
+            "middleware", "中间件 exporter", "skip",
+            "未扫到中间件 exporter 指标。先让 redis/mysql/pg 等 *_up 或 aws_rds_* 被 Prometheus 抓取，不在 Shark 里调 AWS API",
+            source="prometheus",
+        ))
 
     if workloads.get("available"):
         groups = workloads.get("groups") or []
@@ -825,6 +1489,8 @@ def collect_cluster_checks(query_fn, firing_alerts=None, down_targets=None, serv
             "pct": item["pct"],
         })
 
+    checks = _fold_uncovered(checks, middleware=middleware, metric_names=metric_names)
+
     return {
         "verdict": verdict,
         "findings": findings,
@@ -833,22 +1499,28 @@ def collect_cluster_checks(query_fn, firing_alerts=None, down_targets=None, serv
         "services": services,
         "elasticsearch": es,
         "workloads": workloads,
+        "middleware": middleware,
         "known_normals": KNOWN_NORMALS,
         "data_insufficient": data_insufficient,
-        "middleware_todo": [
-            "aws rds describe-db-instances",
-            "aws elasticache describe-cache-clusters",
-            "aws mq describe-brokers",
-            "Mongo rs.status()",
-            "Flink JobManager /jobs",
-        ],
+        "firing_alerts": firing_alerts,
+        "down_targets": down_targets,
+        "decommissioned": decommissioned,
+        "discovery": {
+            "scanned": metric_names is not None,
+            "metric_name_count": len(metric_names or []),
+            "middleware_families": len(mw_items),
+        },
     }
 
 
-def compute_health_score(down_targets, firing_alerts, servers, pvc_items=None, data_insufficient=False, elasticsearch=None):
+def compute_health_score(down_targets, firing_alerts, servers, pvc_items=None, data_insufficient=False, elasticsearch=None, cluster=None):
     """健康分。data_insufficient 时分数为空，避免「全 skip 却 100 分」。"""
     if data_insufficient:
         return None, "unknown", ["核心检查未覆盖，分数无效"]
+
+    cluster = cluster or {}
+    if elasticsearch is None:
+        elasticsearch = cluster.get("elasticsearch")
 
     score = 100.0
     reasons = []
@@ -905,15 +1577,33 @@ def compute_health_score(down_targets, firing_alerts, servers, pvc_items=None, d
     score += pvc_delta
     reasons.extend(pvc_reasons[:8])
 
-    for cluster in (elasticsearch or {}).get("clusters") or []:
-        name = cluster.get("cluster") or "elasticsearch"
-        status = (cluster.get("status") or "").lower()
+    for es_cluster in (elasticsearch or {}).get("clusters") or []:
+        name = es_cluster.get("cluster") or "elasticsearch"
+        status = (es_cluster.get("status") or "").lower()
         if status == "red":
             score -= 15
             reasons.append(f"Elasticsearch {name} red: -15")
         elif status == "yellow":
             score -= 5
             reasons.append(f"Elasticsearch {name} yellow: -5")
+
+    already = {"prom_alerts", "prom_targets", "pvc_usage", "elasticsearch", "node_mem", "node_disk"}
+    n_crit = 0
+    n_warn = 0
+    for check in cluster.get("checks") or []:
+        cid = check.get("id") or ""
+        level = check.get("level") or ""
+        if cid in already or level in ("ok", "skip", "info"):
+            continue
+        name = check.get("name") or cid
+        if level == "critical" and n_crit < 4:
+            score -= 10
+            n_crit += 1
+            reasons.append(f"{name}: -10")
+        elif level == "warning" and n_warn < 6:
+            score -= 5
+            n_warn += 1
+            reasons.append(f"{name}: -5")
 
     score = max(0.0, score)
     level = "ok"

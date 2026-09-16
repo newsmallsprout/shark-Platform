@@ -120,7 +120,7 @@
               <li v-for="(item, idx) in currentReport.findings" :key="idx">{{ item }}</li>
             </ol>
           </div>
-          <el-table v-if="currentReport.checklist && currentReport.checklist.length" :data="currentReport.checklist" size="small" style="width: 100%">
+          <el-table v-if="checklistCovered.length" :data="checklistCovered" size="small" style="width: 100%">
             <el-table-column prop="name" label="检查项" min-width="160" />
             <el-table-column label="状态" width="100">
               <template #default="{ row }">
@@ -135,7 +135,7 @@
         <div class="analysis-section" v-if="workloadRows.length">
           <div class="section-header">
             <el-icon><Monitor /></el-icon>
-            <span>工作负载（{{ workloadRows.length }} 个，展开看 Pod / IP）</span>
+            <span>工作负载（{{ workloadRows.length }} 个，默认不含 kube-system）</span>
           </div>
           <el-table :data="workloadRows" size="small" style="width: 100%" max-height="460" row-key="key">
             <el-table-column type="expand">
@@ -213,6 +213,35 @@
           </el-table>
         </div>
 
+        <div class="analysis-section" v-if="middlewareRows.length">
+          <div class="section-header">
+            <el-icon><Box /></el-icon>
+            <span>中间件（按 Prometheus 指标名扫描）</span>
+          </div>
+          <p v-if="discoveredMetricCount" class="section-hint">
+            本次扫到 {{ discoveredMetricCount }} 个指标名。中间件内存/磁盘只用来自该 exporter 的 used/max（或水位）；没有就不填，数据目录仍看 PVC / 节点盘。
+          </p>
+          <el-table :data="middlewareRows" size="small" style="width: 100%">
+            <el-table-column prop="name" label="组件" min-width="160" />
+            <el-table-column prop="source" label="数据源" width="160" />
+            <el-table-column label="状态" width="100">
+              <template #default="{ row }">
+                <el-tag :type="checkTagType(row.level)" size="small" effect="plain">{{ checkLevelLabel(row.level) }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="result" label="结果" min-width="220" />
+            <el-table-column label="内存" width="140">
+              <template #default="{ row }">{{ row.mem_text || (row.mem_pct != null ? row.mem_pct + '%' : '-') }}</template>
+            </el-table-column>
+            <el-table-column label="存储" width="160">
+              <template #default="{ row }">{{ row.disk_text || (row.disk_pct != null ? row.disk_pct + '%' : '-') }}</template>
+            </el-table-column>
+            <el-table-column label="实例" min-width="200">
+              <template #default="{ row }">{{ (row.instances && row.instances.length) ? row.instances.join(', ') : '-' }}</template>
+            </el-table-column>
+          </el-table>
+        </div>
+
         <div class="analysis-section" v-if="currentReport.pvc_usage && currentReport.pvc_usage.length">
           <div class="section-header">
             <el-icon><Coin /></el-icon>
@@ -236,13 +265,53 @@
         </div>
 
         <div class="analysis-section" v-if="currentReport.known_normals && currentReport.known_normals.length">
-          <div class="section-header">
+          <button type="button" class="section-header section-header-toggle" @click="auxOpen.normals = !auxOpen.normals">
             <el-icon><InfoFilled /></el-icon>
-            <span>已知常态</span>
-          </div>
-          <ul class="known-normals">
+            <span>已知常态（{{ currentReport.known_normals.length }}）</span>
+            <el-icon class="toggle-caret">
+              <ArrowDown v-if="auxOpen.normals" />
+              <ArrowRight v-else />
+            </el-icon>
+          </button>
+          <ul class="known-normals" v-show="auxOpen.normals">
             <li v-for="(item, idx) in currentReport.known_normals" :key="idx">{{ item }}</li>
           </ul>
+        </div>
+
+        <div class="analysis-section" v-if="decommissionedRows.length">
+          <div class="section-header">
+            <el-icon><InfoFilled /></el-icon>
+            <span>已下线残留（{{ decommissionedRows.length }}）</span>
+          </div>
+          <p class="section-hint">Prometheus 还能扫到这些目标，但不在当前集群节点上，多半是关机后没摘抓取。不进发现问题、不扣健康分，记得清理 scrape。</p>
+          <el-table :data="decommissionedRows" size="small" style="width: 100%">
+            <el-table-column label="类型" width="90">
+              <template #default="{ row }">{{ row.kind === 'target' ? '抓取' : '告警' }}</template>
+            </el-table-column>
+            <el-table-column prop="name" label="名称" min-width="140">
+              <template #default="{ row }">{{ row.name || row.job || '-' }}</template>
+            </el-table-column>
+            <el-table-column prop="instance" label="实例" min-width="200">
+              <template #default="{ row }">{{ row.instance || '-' }}</template>
+            </el-table-column>
+          </el-table>
+        </div>
+
+        <div class="analysis-section" v-if="uncoveredLines.length">
+          <button type="button" class="section-header section-header-toggle" @click="auxOpen.uncovered = !auxOpen.uncovered">
+            <el-icon><InfoFilled /></el-icon>
+            <span>未覆盖（{{ uncoveredLines.length }}）</span>
+            <el-icon class="toggle-caret">
+              <ArrowDown v-if="auxOpen.uncovered" />
+              <ArrowRight v-else />
+            </el-icon>
+          </button>
+          <template v-if="auxOpen.uncovered">
+            <p class="section-hint">Prometheus 里没有对应指标，未检查，不等于健康。</p>
+            <ul class="known-normals">
+              <li v-for="(item, idx) in uncoveredLines" :key="idx">{{ item }}</li>
+            </ul>
+          </template>
         </div>
 
         <div class="analysis-section">
@@ -422,7 +491,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, computed, watch, provide } from 'vue'
+import { ref, onMounted, computed, watch, provide, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import { useSystemStore } from '@/stores/system'
 import type { InspectionReport } from '@/types/system'
@@ -430,7 +499,7 @@ import {
   Setting, Search, Calendar, 
   MagicStick, Warning, CircleCheck,
   DataLine, Histogram, Document, Refresh, Download,
-  List, Box, Coin, InfoFilled, Monitor
+  List, Box, Coin, InfoFilled, Monitor, ArrowRight, ArrowDown
 } from '@element-plus/icons-vue'
 import { taskApi } from '@/api/task'
 import { opsTicketsApi } from '@/api/ops_tickets'
@@ -541,6 +610,7 @@ const formatIdToDate = (id: string) => {
 const dialogVisible = ref(false)
 const configVisible = ref(false)
 const currentReport = ref<InspectionReport | null>(null)
+const auxOpen = reactive({ normals: false, uncovered: false })
 
 const configForm = ref({
   prometheus_url: '',
@@ -586,6 +656,27 @@ const getProgressStatus = (score: number) => {
 
 const esClusters = computed(() => currentReport.value?.elasticsearch?.clusters || [])
 const esHeapNodes = computed(() => currentReport.value?.elasticsearch?.heap_nodes || [])
+const middlewareRows = computed(() => currentReport.value?.middleware?.items || [])
+const checklistCovered = computed(() =>
+  (currentReport.value?.checklist || []).filter((c: any) => c.level !== 'skip' && c.id !== 'decommissioned')
+)
+const decommissionedRows = computed(() => {
+  const listed = currentReport.value?.decommissioned || []
+  if (listed.length) return listed
+  const folded = (currentReport.value?.checklist || []).find((c: any) => c.id === 'decommissioned')
+  return (folded?.detail || []).map((label: string) => ({ label, instance: label, name: 'HostDown', kind: 'alert' }))
+})
+const uncoveredLines = computed(() => {
+  const rows = currentReport.value?.checklist || []
+  const folded = rows.find((c: any) => c.id === 'uncovered')
+  if (folded?.detail?.length) return folded.detail
+  return rows.filter((c: any) => c.level === 'skip').map((c: any) => `${c.name}：${c.result}`)
+})
+const discoveredMetricCount = computed(() => {
+  const n = currentReport.value?.middleware?.discovered_names
+  if (n) return n
+  return currentReport.value?.discovery?.metric_name_count || 0
+})
 const workloadRows = computed(() => {
   const rows = currentReport.value?.workloads || []
   if (!rows.length) return []
@@ -662,6 +753,8 @@ const viewReport = async (row: any) => {
         row?.score ??
         null)
   currentReport.value = { ...rep, score }
+  auxOpen.normals = false
+  auxOpen.uncovered = false
   dialogVisible.value = true
 }
 
@@ -951,8 +1044,24 @@ const fetchLogs = async (page = 1) => {
   font-size: 16px;
 }
 
-.section-header .el-icon {
-  color: #8b5cf6;
+.section-hint {
+  font-size: 12px;
+  color: #64748b;
+  margin: -8px 0 0;
+}
+
+.section-header-toggle {
+  cursor: pointer;
+  border: none;
+  background: none;
+  padding: 0;
+  width: 100%;
+  font: inherit;
+}
+
+.section-header-toggle .toggle-caret {
+  margin-left: auto;
+  color: #94a3b8;
 }
 
 .analysis-card {

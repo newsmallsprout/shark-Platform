@@ -37,6 +37,10 @@ class InspectionConfig(AppConfig):
             
             def run_inspection_task():
                 try:
+                    url = (inspection_engine.config.prometheus_url or "").strip()
+                    if not url:
+                        logger.info("Skip daily inspection: prometheus_url empty")
+                        return
                     logger.info("Starting daily inspection task...")
                     inspection_engine.run()
                     logger.info("Daily inspection task completed.")

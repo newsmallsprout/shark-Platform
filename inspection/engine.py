@@ -50,6 +50,24 @@ class InspectionEngine:
             log("inspection", f"Prometheus query error: {e}")
         return []
 
+    def _list_metric_names(self):
+        """扫 Prometheus 里实际有的指标名。失败返回 None，清单退回按食谱探测。"""
+        if not self.config.prometheus_url:
+            return None
+        try:
+            url = f"{self._get_base_url()}/api/v1/label/__name__/values"
+            log("inspection", "Listing Prometheus metric names")
+            resp = requests.get(url, timeout=15)
+            if resp.ok:
+                payload = resp.json()
+                if payload.get("status") == "success":
+                    return [str(n) for n in (payload.get("data") or []) if n]
+            log("inspection", f"List metric names HTTP {getattr(resp, 'status_code', '?')}")
+        except Exception as e:
+            print(f"Prometheus metric names error: {e}")
+            log("inspection", f"Prometheus metric names error: {e}")
+        return None
+
     def _get_targets(self):
         if not self.config.prometheus_url:
             return []
@@ -133,7 +151,7 @@ class InspectionEngine:
         except Exception as e:
             return f"AI analysis error: {e}"
 
-    def _calculate_health_score(self, down_targets, firing_alerts, servers, pvc_items=None, data_insufficient=False, elasticsearch=None):
+    def _calculate_health_score(self, down_targets, firing_alerts, servers, pvc_items=None, data_insufficient=False, elasticsearch=None, cluster=None):
         return compute_health_score(
             down_targets,
             firing_alerts,
@@ -141,6 +159,7 @@ class InspectionEngine:
             pvc_items=pvc_items,
             data_insufficient=data_insufficient,
             elasticsearch=elasticsearch,
+            cluster=cluster,
         )
 
     def _predict_future_scores(self, current_score):
@@ -210,7 +229,22 @@ class InspectionEngine:
     def run(self):
         log("inspection", "Starting inspection run...")
         report_id = datetime.now().strftime('%Y-%m-%d')
-        
+        if not (self.config.prometheus_url or "").strip():
+            log("inspection", "Skip inspection: prometheus_url empty")
+            existing = InspectionReport.objects.filter(report_id=report_id).first()
+            if existing and existing.content:
+                return existing.content
+            return {
+                "report_id": report_id,
+                "verdict": "无法判定（未配置 Prometheus Endpoint）",
+                "findings": ["未配置 Prometheus Endpoint，巡检未执行"],
+                "checklist": [],
+                "score": None,
+                "level": "unknown",
+                "health_summary": {"score": None, "level": "unknown", "reasons": ["未配置 Prometheus"]},
+                "data_insufficient": True,
+            }
+
         # 1. Collect Data
         metrics_summary = []
         
@@ -254,7 +288,9 @@ class InspectionEngine:
             firing.append({
                 "name": labels.get('alertname', 'Unknown Alert'),
                 "severity": labels.get('severity', 'warning'),
-                "summary": annotations.get('summary', 'No summary available')
+                "summary": annotations.get('summary', 'No summary available'),
+                "instance": labels.get('instance') or "",
+                "job": labels.get('job') or "",
             })
             
         log("inspection", f"Alerts fetched: {len(alerts)} total, {len(firing)} firing")
@@ -362,6 +398,7 @@ class InspectionEngine:
                 firing_alerts=firing,
                 down_targets=down_targets,
                 servers=servers,
+                metric_names=self._list_metric_names(),
             )
         except Exception as e:
             log("inspection", f"Cluster checklist failed: {e}")
@@ -372,10 +409,15 @@ class InspectionEngine:
                 "pvc": {"available": False, "items": [], "top": [], "source": ""},
                 "services": [],
                 "elasticsearch": {},
+                "middleware": {},
+                "workloads": {},
+                "discovery": {"scanned": False, "metric_name_count": 0, "middleware_families": 0},
                 "known_normals": [],
+                "decommissioned": [],
                 "data_insufficient": True,
-                "middleware_todo": [],
             }
+        firing = cluster.get("firing_alerts", firing)
+        down_targets = cluster.get("down_targets", down_targets)
         pvc_items = (cluster.get("pvc") or {}).get("items") or []
         metrics_summary.append({
             "category": "storage", "name": "pvc_count", "display": "PVC 用量样本",
@@ -395,9 +437,11 @@ class InspectionEngine:
                 "findings": cluster.get("findings"),
                 "checks": cluster.get("checks"),
                 "elasticsearch": cluster.get("elasticsearch"),
+                "middleware": cluster.get("middleware"),
                 "pvc": (cluster.get("pvc") or {}).get("items"),
                 "workloads": (cluster.get("workloads") or {}).get("groups"),
                 "known_normals": cluster.get("known_normals"),
+                "decommissioned": cluster.get("decommissioned"),
                 "targets": {"total": total_targets, "down": down_targets},
                 "alerts": {"firing": firing},
                 "fleet": fleet_summary,
@@ -406,9 +450,11 @@ class InspectionEngine:
                 "你是一名专业资深的系统运维工程师（偏 SRE）。"
                 "请基于我提供的巡检数据，输出一份可执行的中文巡检报告。"
                 "Elasticsearch 用 elasticsearch-exporter 的集群色/节点/堆，不要说没查到。"
+                "中间件按 Prometheus 指标名扫描：对上 redis_/mysql_/aws_rds_ 等前缀，或未被食谱覆盖的 *_up 才写入。没有扫到就是未覆盖，不要调 AWS API，不要写成健康。"
                 "PVC 必须按每一块盘写用量，不要合并成一个服务。"
                 "workloads 一眼是 Deploy/STS 的 Ready n/m；pods 里才是 Pod 名、Pod IP、节点 IP。"
                 "known_normals 里的项不要当成故障。"
+                "decommissioned / 已下线残留是还能扫到、但不在当前 kube 节点上的抓取，提醒清理 scrape，不要写成故障。"
                 "checks 里 level=skip 表示缺指标，请写明未覆盖，不要写成健康。"
                 "不要输出安全漏洞/CVE/风险扫描相关内容。"
                 "输出结构必须包含：\n"
@@ -449,6 +495,7 @@ class InspectionEngine:
             pvc_items=pvc_items,
             data_insufficient=bool(cluster.get("data_insufficient")),
             elasticsearch=cluster.get("elasticsearch"),
+            cluster=cluster,
         )
 
         try:
@@ -561,7 +608,10 @@ class InspectionEngine:
             "workload_pods": (cluster.get("workloads") or {}).get("items") or [],
             "services": cluster.get("services") or [],
             "elasticsearch": cluster.get("elasticsearch") or {},
+            "middleware": cluster.get("middleware") or {},
+            "discovery": cluster.get("discovery") or {},
             "known_normals": cluster.get("known_normals") or [],
+            "decommissioned": cluster.get("decommissioned") or [],
         }
         
         # Save to DB

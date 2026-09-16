@@ -412,15 +412,10 @@ else
     [ "$N_ONE" -gt 0 ] && { echo '```'; cat "$TMP/one.out"; echo '```'; }
 fi
 echo
-echo "## 八、中间件（未跑）"
+echo "## 八、中间件"
 echo
-echo '```'
-echo "aws rds describe-db-instances --query 'DBInstances[].{id:DBInstanceIdentifier,st:DBInstanceStatus}'"
-echo "aws elasticache describe-cache-clusters --query 'CacheClusters[].{id:CacheClusterId,st:CacheClusterStatus}'"
-echo "aws mq describe-brokers --query 'BrokerSummaries[].{id:BrokerName,st:BrokerState}'"
-echo "curl -sk 'https://es.etz.com:9200/_cluster/health?pretty'"
-echo "# Mongo：跳板到 mongo1/2/3 后 rs.status()"
-echo '```'
+echo "- Shark 巡检先扫 Prometheus 指标名（/api/v1/label/__name__/values），对上 redis_/mysql_/aws_rds_ 等前缀或其它 *_up 才检查，不在本脚本调 AWS API。"
+echo "- RDS / ElastiCache / MQ 要进报告：把对应 exporter 配进 Prometheus。"
 echo
 echo "## 九、已知常态"
 echo
