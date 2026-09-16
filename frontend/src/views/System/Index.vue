@@ -141,45 +141,66 @@
           </el-table>
         </div>
 
-        <div class="analysis-section" v-if="workloadRows.length">
+        <div class="analysis-section" v-if="workloadNsGroups.length">
           <div class="section-header">
             <el-icon><Monitor /></el-icon>
-            <span>工作负载（{{ workloadRows.length }} 个，默认不含 kube-system）</span>
+            <span>工作负载（{{ workloadRows.length }} 个 / {{ workloadNsGroups.length }} 个 Namespace，默认不含 kube-system）</span>
           </div>
-          <el-table :data="workloadRows" size="small" style="width: 100%" max-height="460" row-key="key">
+          <p class="section-hint">按 Namespace 折叠。先展开 ns，再展开负载看 Pod，避免一次铺开全部明细。</p>
+          <el-table :data="workloadNsGroups" size="small" style="width: 100%" max-height="520" row-key="key">
             <el-table-column type="expand">
               <template #default="{ row }">
-                <div v-if="!(row.pods && row.pods.length)" class="form-tip">无 Pod 明细</div>
-                <el-table v-else :data="row.pods" size="small" style="width: 100%">
-                  <el-table-column prop="pod" label="Pod" min-width="200" />
-                  <el-table-column prop="phase" label="相位" width="100" />
-                  <el-table-column label="Ready" width="80">
-                    <template #default="{ row: pod }">{{ pod.ready == null ? '-' : (pod.ready ? '是' : '否') }}</template>
+                <el-table :data="row.workloads" size="small" style="width: 100%" row-key="key">
+                  <el-table-column type="expand">
+                    <template #default="{ row: wl }">
+                      <div v-if="!(wl.pods && wl.pods.length)" class="form-tip">无 Pod 明细</div>
+                      <el-table v-else :data="wl.pods" size="small" style="width: 100%">
+                        <el-table-column prop="pod" label="Pod" min-width="200" />
+                        <el-table-column prop="phase" label="相位" width="100" />
+                        <el-table-column label="Ready" width="80">
+                          <template #default="{ row: pod }">{{ pod.ready == null ? '-' : (pod.ready ? '是' : '否') }}</template>
+                        </el-table-column>
+                        <el-table-column prop="pod_ip" label="Pod IP" width="130">
+                          <template #default="{ row: pod }">{{ pod.pod_ip || '-' }}</template>
+                        </el-table-column>
+                        <el-table-column prop="node" label="节点" min-width="140">
+                          <template #default="{ row: pod }">{{ pod.node || '-' }}</template>
+                        </el-table-column>
+                        <el-table-column prop="host_ip" label="节点 IP" width="130">
+                          <template #default="{ row: pod }">{{ pod.host_ip || '-' }}</template>
+                        </el-table-column>
+                        <el-table-column prop="restarts" label="重启" width="70" />
+                        <el-table-column prop="waiting" label="等待原因" min-width="120">
+                          <template #default="{ row: pod }">{{ pod.waiting || '-' }}</template>
+                        </el-table-column>
+                      </el-table>
+                    </template>
                   </el-table-column>
-                  <el-table-column prop="pod_ip" label="Pod IP" width="130">
-                    <template #default="{ row: pod }">{{ pod.pod_ip || '-' }}</template>
+                  <el-table-column prop="service" label="服务" min-width="120" />
+                  <el-table-column prop="kind" label="类型" width="110" />
+                  <el-table-column label="对象" min-width="200">
+                    <template #default="{ row: wl }">{{ wl.name }}</template>
                   </el-table-column>
-                  <el-table-column prop="node" label="节点" min-width="140">
-                    <template #default="{ row: pod }">{{ pod.node || '-' }}</template>
-                  </el-table-column>
-                  <el-table-column prop="host_ip" label="节点 IP" width="130">
-                    <template #default="{ row: pod }">{{ pod.host_ip || '-' }}</template>
-                  </el-table-column>
-                  <el-table-column prop="restarts" label="重启" width="70" />
-                  <el-table-column prop="waiting" label="等待原因" min-width="120">
-                    <template #default="{ row: pod }">{{ pod.waiting || '-' }}</template>
+                  <el-table-column label="Ready" width="100">
+                    <template #default="{ row: wl }">
+                      <el-tag :type="checkTagType(wl.level)" size="small" effect="plain">{{ wl.ready }}/{{ wl.desired }}</el-tag>
+                    </template>
                   </el-table-column>
                 </el-table>
               </template>
             </el-table-column>
-            <el-table-column prop="service" label="服务" min-width="120" />
-            <el-table-column prop="kind" label="类型" width="110" />
-            <el-table-column label="对象" min-width="200">
-              <template #default="{ row }">{{ row.namespace }}/{{ row.name }}</template>
+            <el-table-column prop="namespace" label="Namespace" min-width="220" />
+            <el-table-column label="负载数" width="90">
+              <template #default="{ row }">{{ row.count }}</template>
             </el-table-column>
-            <el-table-column label="Ready" width="100">
+            <el-table-column label="Ready" width="120">
               <template #default="{ row }">
                 <el-tag :type="checkTagType(row.level)" size="small" effect="plain">{{ row.ready }}/{{ row.desired }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="状态" width="100">
+              <template #default="{ row }">
+                <el-tag :type="checkTagType(row.level)" size="small" effect="plain">{{ checkLevelLabel(row.level) }}</el-tag>
               </template>
             </el-table-column>
           </el-table>
@@ -297,7 +318,7 @@
             </el-icon>
           </button>
           <template v-if="auxOpen.decommissioned">
-            <p class="section-hint">Prometheus 还能扫到这些目标，但不在当前集群节点上，多半是关机后没摘抓取。不进发现问题、不扣健康分，记得清理 scrape。</p>
+            <p class="section-hint">Prometheus 还能扫到这些目标，但不在当前集群节点上，多半是关机后没摘抓取。不进发现问题、不扣健康分。连续出现的会进「已知常态」。</p>
             <el-table :data="decommissionedRows" size="small" style="width: 100%">
               <el-table-column label="类型" width="90">
                 <template #default="{ row }">{{ row.kind === 'target' ? '抓取' : '告警' }}</template>
@@ -307,6 +328,12 @@
               </el-table-column>
               <el-table-column prop="instance" label="实例" min-width="200">
                 <template #default="{ row }">{{ row.instance || '-' }}</template>
+              </el-table-column>
+              <el-table-column label="时间" width="150">
+                <template #default="{ row }">{{ row.when || '-' }}</template>
+              </el-table-column>
+              <el-table-column label="连续" width="80">
+                <template #default="{ row }">{{ row.persistent ? '是' : '-' }}</template>
               </el-table-column>
             </el-table>
           </template>
@@ -734,6 +761,33 @@ const workloadRows = computed(() => {
     }))
   }
   return rows
+})
+
+const workloadNsGroups = computed(() => {
+  const map = new Map<string, any[]>()
+  for (const row of workloadRows.value) {
+    const ns = row.namespace || '-'
+    if (!map.has(ns)) map.set(ns, [])
+    map.get(ns)!.push(row)
+  }
+  const rank = (level: string) => (level === 'critical' ? 0 : level === 'warning' ? 1 : 2)
+  const worst = (items: any[]) => {
+    if (items.some((i) => i.level === 'critical')) return 'critical'
+    if (items.some((i) => i.level === 'warning')) return 'warning'
+    return 'ok'
+  }
+  return [...map.entries()].map(([namespace, workloads]) => ({
+    key: namespace,
+    namespace,
+    count: workloads.length,
+    ready: workloads.reduce((s, w) => s + Number(w.ready || 0), 0),
+    desired: workloads.reduce((s, w) => s + Number(w.desired || 0), 0),
+    level: worst(workloads),
+    workloads: workloads.map((w, i) => ({
+      ...w,
+      key: w.key || `${namespace}/${w.kind || 'wl'}/${w.name || i}`,
+    })),
+  })).sort((a, b) => rank(a.level) - rank(b.level) || a.namespace.localeCompare(b.namespace))
 })
 
 const esStatusType = (status?: string) => {

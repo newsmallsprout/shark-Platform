@@ -668,10 +668,26 @@ def _job_owner_kind_map(rows):
     return out
 
 
-def _fmt_job_when(ts):
-    if not ts or ts <= 0:
+def _fmt_when(ts):
+    if not ts:
         return ""
-    return time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
+    try:
+        val = float(ts)
+        if val > 1e12:
+            val = val / 1000.0
+        if val > 0:
+            return time.strftime("%Y-%m-%d %H:%M", time.localtime(val))
+    except (TypeError, ValueError):
+        pass
+    text = str(ts).strip()
+    if not text:
+        return ""
+    text = text.replace("Z", "+00:00")
+    try:
+        from datetime import datetime as _dt
+        return _dt.fromisoformat(text).strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return str(ts)[:16]
 
 
 def _host_from_instance(instance):
@@ -733,11 +749,36 @@ def _is_stale_hostdown_name(name):
     return n in STALE_HOSTDOWN_NAMES or n.endswith("hostdown")
 
 
-def _is_node_exporter_job(job):
-    j = (job or "").lower()
+def _ipv4_slash24(host):
+    parts = (host or "").split(".")
+    if len(parts) != 4:
+        return ""
+    try:
+        if all(0 <= int(p) <= 255 for p in parts):
+            return ".".join(parts[:3])
+    except ValueError:
+        return ""
+    return ""
+
+
+def _host_on_node_subnet(host, hosts):
+    prefix = _ipv4_slash24(host)
+    if not prefix:
+        return False
+    return any(_ipv4_slash24(h) == prefix for h in (hosts or []))
+
+
+def _is_node_exporter_job(job, empty_is_node=True):
+    j = (job or "").lower().replace("_", "-")
     if not j:
+        return empty_is_node
+    if j in ("node", "nodes", "node-exporter"):
         return True
-    return j in ("node", "node-exporter", "node_exporter", "nodes") or "node-exporter" in j
+    if "node-exporter" in j:
+        return True
+    if j in ("kubernetes-nodes", "kube-nodes") or "kubernetes-nodes" in j:
+        return True
+    return False
 
 
 def _is_known_non_cluster_instance(instance):
@@ -758,24 +799,36 @@ def _is_stale_host_alert(alert, hosts):
 
 
 def _is_stale_node_target(target, hosts):
+    """关机机器上的 node / 同网段 exporter，进残留不进故障。"""
     if not hosts:
         return False
     inst = target.get("instance") or ""
     if _is_known_non_cluster_instance(inst):
         return False
-    if not _is_node_exporter_job(target.get("job")):
-        return False
     host = _host_from_instance(inst)
-    return bool(host) and host not in hosts
+    if not host or host in hosts:
+        return False
+    job = target.get("job") or ""
+    if _is_node_exporter_job(job, empty_is_node=False):
+        return True
+    return _host_on_node_subnet(host, hosts)
 
 
-def _decommissioned_item(kind, name, instance, job=""):
+def _decommissioned_item(kind, name, instance, job="", last_scrape="", last_error=""):
+    when = _fmt_when(last_scrape)
+    label = " ".join(x for x in (name or job, instance) if x)
+    if when:
+        label = f"{label}  {when}"
     return {
         "kind": kind,
         "name": name or "",
         "job": job or "",
         "instance": instance or "",
-        "label": " ".join(x for x in (name or job, instance) if x),
+        "last_scrape": last_scrape or "",
+        "last_error": last_error or "",
+        "when": when,
+        "label": label,
+        "persistent": False,
     }
 
 
@@ -799,6 +852,8 @@ def _split_decommissioned(firing_alerts, down_targets, hosts):
                 target.get("job") or "node-exporter",
                 target.get("instance") or "",
                 job=target.get("job") or "",
+                last_scrape=target.get("last_scrape") or "",
+                last_error=target.get("last_error") or "",
             ))
         else:
             kept_down.append(target)
@@ -1076,7 +1131,10 @@ def collect_workloads(query_fn):
     }
 
 
-def collect_cluster_checks(query_fn, firing_alerts=None, down_targets=None, servers=None, metric_names=None):
+def collect_cluster_checks(
+    query_fn, firing_alerts=None, down_targets=None, servers=None, metric_names=None,
+    previous_leftover_keys=None,
+):
     firing_alerts = firing_alerts or []
     down_targets = down_targets or []
     servers = servers or []
@@ -1168,6 +1226,13 @@ def collect_cluster_checks(query_fn, firing_alerts=None, down_targets=None, serv
                 ignored_failed += 1
                 continue
             current.append(row)
+        details = []
+        for row in current:
+            m = _metric(row)
+            key, _, _ = _pod_key(m)
+            label = (_series_names([row], limit=1) or ["pod"])[0]
+            when = _fmt_when(created_map.get(key) or 0)
+            details.append(f"{label}  {when}".strip() if when else label)
         n = len(current)
         result = str(n)
         if ignored_failed:
@@ -1175,7 +1240,7 @@ def collect_cluster_checks(query_fn, firing_alerts=None, down_targets=None, serv
         level = "ok" if n == 0 else "warning"
         checks.append(_check(
             "pods", "异常 Pod", level, result,
-            _series_names(current), "kube-state-metrics",
+            details, "kube-state-metrics",
         ))
         if n:
             findings.append(f"异常 Pod {n} 个")
@@ -1212,10 +1277,16 @@ def collect_cluster_checks(query_fn, firing_alerts=None, down_targets=None, serv
             result += f"（忽略历史 OOM {ignored_oom} 个）"
         if n_oom == 0 and n_re:
             result += "（累计重启，未当当天故障）"
+        oom_details = []
+        for row in current_oom + restart_rows:
+            key, _, _ = _pod_key(_metric(row))
+            label = (_series_names([row], limit=1) or ["pod"])[0]
+            when = _fmt_when(created_map.get(key) or 0)
+            oom_details.append(f"{label}  {when}".strip() if when else label)
         checks.append(_check(
             "stability", "OOM / 重启>10",
             level, result,
-            _series_names(current_oom + restart_rows),
+            oom_details,
             "kube-state-metrics",
         ))
         if n_oom:
@@ -1257,7 +1328,7 @@ def collect_cluster_checks(query_fn, firing_alerts=None, down_targets=None, serv
             label = f"{ns}/{name}" if ns else name
             started = start_map.get((ns, name)) or 0
             owner = (owner_map.get((ns, name)) or "").lower()
-            when = _fmt_job_when(started)
+            when = _fmt_when(started)
             if owner == "cronjob" and started > 0 and (now - started) > JOB_FAIL_LOOKBACK_SEC:
                 ignored_cron += 1
                 continue
@@ -1364,7 +1435,7 @@ def collect_cluster_checks(query_fn, firing_alerts=None, down_targets=None, serv
         "prom_targets", "Prometheus targets down",
         "ok" if n_down == 0 else "critical",
         str(n_down),
-        [f"{t.get('job')}:{t.get('instance')}" for t in down_targets[:10]],
+        [f"{t.get('job')}:{t.get('instance')}" + (f"  {_fmt_when(t.get('last_scrape'))}" if t.get("last_scrape") else "") for t in down_targets[:10]],
         "prometheus",
     ))
     if n_down:
@@ -1377,7 +1448,7 @@ def collect_cluster_checks(query_fn, firing_alerts=None, down_targets=None, serv
         if n_alert:
             bits.append(f"HostDown {n_alert} 个")
         if n_target:
-            bits.append(f"node-exporter {n_target} 个")
+            bits.append(f"抓取 {n_target} 个")
         checks.append(_check(
             "decommissioned",
             "已下线残留",
@@ -1578,6 +1649,16 @@ def collect_cluster_checks(query_fn, firing_alerts=None, down_targets=None, serv
             "pct": item["pct"],
         })
 
+    prev_keys = {str(k) for k in (previous_leftover_keys or []) if k}
+    extra_normals = []
+    for item in decommissioned:
+        key = f"{item.get('job') or ''}|{item.get('instance') or ''}"
+        if key in prev_keys:
+            item["persistent"] = True
+            extra_normals.append(
+                f"历史残留连续出现：{item.get('job') or item.get('name')} {item.get('instance')}（关机未摘 scrape，已忽略）"
+            )
+
     checks = _fold_uncovered(checks, middleware=middleware, metric_names=metric_names)
 
     return {
@@ -1589,7 +1670,7 @@ def collect_cluster_checks(query_fn, firing_alerts=None, down_targets=None, serv
         "elasticsearch": es,
         "workloads": workloads,
         "middleware": middleware,
-        "known_normals": KNOWN_NORMALS,
+        "known_normals": list(KNOWN_NORMALS) + extra_normals,
         "data_insufficient": data_insufficient,
         "firing_alerts": firing_alerts,
         "down_targets": down_targets,

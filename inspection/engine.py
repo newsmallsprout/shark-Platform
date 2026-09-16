@@ -293,7 +293,8 @@ class InspectionEngine:
             down_targets.append({
                 "job": labels.get('job', 'unknown'),
                 "instance": labels.get('instance', 'unknown'),
-                "last_error": t.get('lastError', '')
+                "last_error": t.get('lastError', ''),
+                "last_scrape": t.get('lastScrape', ''),
             })
             
         log("inspection", f"Targets fetched: {total_targets} total, {len(down_targets)} down")
@@ -423,6 +424,22 @@ class InspectionEngine:
         })
 
         log("inspection", "Collecting cluster checklist (PVC / kube-state / blackbox)...")
+        prev_keys = []
+        try:
+            today_id = datetime.now().strftime('%Y-%m-%d')
+            yid = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+            for rid in (today_id, yid):
+                prev = InspectionReport.objects.filter(report_id=rid).first()
+                if not prev or not prev.content:
+                    continue
+                for x in (prev.content.get("decommissioned") or []):
+                    prev_keys.append(f"{x.get('job') or ''}|{x.get('instance') or ''}")
+                for t in (prev.content.get("down_targets") or []):
+                    prev_keys.append(f"{t.get('job') or ''}|{t.get('instance') or ''}")
+                if prev_keys:
+                    break
+        except Exception:
+            prev_keys = []
         try:
             cluster = collect_cluster_checks(
                 self._query_prometheus,
@@ -430,6 +447,7 @@ class InspectionEngine:
                 down_targets=down_targets,
                 servers=servers,
                 metric_names=self._list_metric_names(),
+                previous_leftover_keys=prev_keys,
             )
         except Exception as e:
             log("inspection", f"Cluster checklist failed: {e}")

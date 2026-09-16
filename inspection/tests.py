@@ -599,6 +599,32 @@ class ClusterCheckTests(unittest.TestCase):
         self.assertIn("new-fail", blob)
         self.assertIn("pending-now", blob)
         self.assertNotIn("old-fail", blob)
+        self.assertTrue(any("-" in x and ":" in x for x in (pods["detail"] or []) if "new-fail" in x))
+
+    def test_dead_machine_exporters_are_leftover(self):
+        from inspection.simulate_inspection import Prom
+
+        down = [
+            {"job": "kubernetes-nodes", "instance": "test-k8s-worker-16", "last_scrape": "2026-09-16T05:01:00Z"},
+            {"job": "mongodb-exporter", "instance": "192.168.12.103:9216", "last_scrape": "2026-09-16T05:02:00Z"},
+            {"job": "kube-state-metrics", "instance": "172.20.144.10:8080"},
+        ]
+        cluster = collect_cluster_checks(Prom({
+            "kube_node_status_addresses": [
+                _vec({"node": "test-k8s-worker-04", "address_type": "InternalIP", "address": "192.168.12.188"}, 1),
+            ],
+        }), firing_alerts=[], down_targets=down, servers=[], previous_leftover_keys=[
+            "mongodb-exporter|192.168.12.103:9216",
+        ])
+        kept = [f"{t.get('job')}:{t.get('instance')}" for t in cluster["down_targets"]]
+        self.assertEqual(kept, ["kube-state-metrics:172.20.144.10:8080"])
+        leftover = cluster["decommissioned"]
+        self.assertTrue(any("test-k8s-worker-16" in (x.get("instance") or "") for x in leftover))
+        self.assertTrue(any("192.168.12.103:9216" in (x.get("instance") or "") for x in leftover))
+        mongo = next(x for x in leftover if "192.168.12.103" in (x.get("instance") or ""))
+        self.assertTrue(mongo.get("persistent"))
+        self.assertTrue(mongo.get("when"))
+        self.assertTrue(any("192.168.12.103" in (n or "") for n in cluster["known_normals"]))
 
     def test_zero_replica_is_record_not_finding(self):
         from inspection.simulate_inspection import Prom
