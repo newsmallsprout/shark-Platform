@@ -601,6 +601,105 @@ class ClusterCheckTests(unittest.TestCase):
         self.assertNotIn("old-fail", blob)
         self.assertTrue(any("-" in x and ":" in x for x in (pods["detail"] or []) if "new-fail" in x))
 
+    def test_inactive_phase_series_are_not_abnormal(self):
+        from inspection.simulate_inspection import Prom
+
+        abn_q = 'kube_pod_status_phase{phase=~"Pending|Failed|Unknown"}'
+        cluster = collect_cluster_checks(Prom({
+            "kube_pod_status_phase": [_vec({"namespace": "app", "pod": "running", "phase": "Running"}, 1)],
+            abn_q: [
+                _vec({"namespace": "app", "pod": "running", "phase": "Pending"}, 0),
+                _vec({"namespace": "app", "pod": "running", "phase": "Failed"}, 0),
+                _vec({"namespace": "app", "pod": "running", "phase": "Unknown"}, 0),
+            ],
+        }), servers=[{"instance": "w:9100", "mem_pct": 20, "cpu_pct": 10, "disk_pct": 10}])
+        pods = next(c for c in cluster["checks"] if c["id"] == "pods")
+        self.assertEqual(pods["level"], "ok")
+        self.assertTrue(str(pods["result"]).startswith("0"))
+        self.assertFalse(any("异常 Pod" in (f or "") for f in cluster["findings"]))
+
+    def test_previous_down_is_leftover_without_hosts(self):
+        from inspection.simulate_inspection import Prom
+
+        down = [
+            {"job": "mongodb-exporter", "instance": "192.168.12.103:9216", "last_scrape": "2026-08-01T00:00:00Z"},
+        ]
+        cluster = collect_cluster_checks(
+            Prom({}),
+            firing_alerts=[],
+            down_targets=down,
+            servers=[],
+            previous_leftover_keys=["mongodb-exporter|192.168.12.103:9216"],
+            previous_times={"mongodb-exporter|192.168.12.103:9216": "2026-08-01T00:00:00Z"},
+        )
+        self.assertEqual(cluster["down_targets"], [])
+        leftover = cluster["decommissioned"]
+        self.assertTrue(any("192.168.12.103:9216" in (x.get("instance") or "") for x in leftover))
+        mongo = next(x for x in leftover if "192.168.12.103" in (x.get("instance") or ""))
+        self.assertTrue(mongo.get("when"))
+
+    def test_manual_ignore_skips_whole_abnormal_check(self):
+        from inspection.simulate_inspection import Prom
+
+        now = __import__("time").time()
+        abn_q = 'kube_pod_status_phase{phase=~"Pending|Failed|Unknown"}'
+        cluster = collect_cluster_checks(
+            Prom({
+                "kube_pod_status_phase": [_vec({"namespace": "app", "pod": "keep"}, 1)],
+                abn_q: [
+                    _vec({"namespace": "app", "pod": "noise", "phase": "Pending"}, 1),
+                ],
+                f"{abn_q} == 1": [
+                    _vec({"namespace": "app", "pod": "noise", "phase": "Pending"}, 1),
+                ],
+                "kube_pod_created": [
+                    _vec({"namespace": "app", "pod": "noise"}, now - 600),
+                ],
+                "kube_node_status_addresses": [
+                    _vec({"node": "n1", "address_type": "InternalIP", "address": "10.0.1.1"}, 1),
+                ],
+            }),
+            firing_alerts=[{"name": "HostDown", "instance": "10.0.1.1:9100", "job": "node-exporter"}],
+            down_targets=[{"job": "kube-state-metrics", "instance": "10.0.1.1:8080"}],
+            servers=[{"instance": "10.0.1.1:9100", "mem_pct": 20, "cpu_pct": 10, "disk_pct": 10}],
+            ignore_keys=["check:pods", "check:prom_targets", "check:prom_alerts"],
+        )
+        pods = next(c for c in cluster["checks"] if c["id"] == "pods")
+        self.assertEqual(pods["level"], "ok")
+        self.assertEqual(pods["result"], "已忽略")
+        self.assertEqual(cluster["down_targets"], [])
+        self.assertEqual(cluster["firing_alerts"], [])
+
+    def test_manual_ignore_skips_one_detail_item(self):
+        from inspection.simulate_inspection import Prom
+
+        now = __import__("time").time()
+        abn_q = 'kube_pod_status_phase{phase=~"Pending|Failed|Unknown"}'
+        cluster = collect_cluster_checks(
+            Prom({
+                "kube_pod_status_phase": [_vec({"namespace": "app", "pod": "keep"}, 1)],
+                abn_q: [
+                    _vec({"namespace": "app", "pod": "noise", "phase": "Pending"}, 1),
+                    _vec({"namespace": "app", "pod": "keep-fail", "phase": "Failed"}, 1),
+                ],
+                f"{abn_q} == 1": [
+                    _vec({"namespace": "app", "pod": "noise", "phase": "Pending"}, 1),
+                    _vec({"namespace": "app", "pod": "keep-fail", "phase": "Failed"}, 1),
+                ],
+                "kube_pod_created": [
+                    _vec({"namespace": "app", "pod": "noise"}, now - 600),
+                    _vec({"namespace": "app", "pod": "keep-fail"}, now - 600),
+                ],
+            }),
+            servers=[{"instance": "w:9100", "mem_pct": 20, "cpu_pct": 10, "disk_pct": 10}],
+            ignore_keys=["pod:app/noise"],
+        )
+        pods = next(c for c in cluster["checks"] if c["id"] == "pods")
+        blob = " ".join(pods["detail"] or [])
+        self.assertNotIn("noise", blob)
+        self.assertIn("keep-fail", blob)
+        self.assertEqual(pods["level"], "warning")
+
     def test_dead_machine_exporters_are_leftover(self):
         from inspection.simulate_inspection import Prom
 

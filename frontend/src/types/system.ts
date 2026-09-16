@@ -47,7 +47,7 @@ export interface InspectionReport {
   servers?: any[]
   verdict?: string
   findings?: string[]
-  checklist?: { id?: string; name: string; level: string; result: string; source?: string; detail?: string[] }[]
+  checklist?: { id?: string; name: string; level: string; result: string; source?: string; detail?: string[]; items?: { key?: string; label: string; when?: string }[] }[]
   pvc_usage?: { key: string; namespace?: string; pvc?: string; service: string; pct: number; used_bytes: number; capacity_bytes: number; baseline?: string }[]
   workloads?: {
     key?: string
@@ -74,7 +74,7 @@ export interface InspectionReport {
   }
   discovery?: { scanned?: boolean; metric_name_count?: number; middleware_families?: number }
   known_normals?: string[]
-  decommissioned?: { kind?: string; name?: string; job?: string; instance?: string; label?: string; when?: string; last_scrape?: string; persistent?: boolean }[]
+  decommissioned?: { kind?: string; name?: string; job?: string; instance?: string; label?: string; when?: string; last_scrape?: string; persistent?: boolean; key?: string }[]
   trend_7d?: { date: string; score?: number; firing?: number; critical?: number; avg_cpu?: number; avg_mem?: number; avg_disk?: number }[]
   forecast_7_15_30?: any
 }

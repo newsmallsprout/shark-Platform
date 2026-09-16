@@ -157,15 +157,59 @@ def _series_names(rows, limit=40):
     return names
 
 
-def _check(cid, name, level, result, detail=None, source=""):
+def _active_series(rows):
+    """kube-state 每个 phase 都有一条 0/1，只保留值为 1 的当前态。"""
+    return [r for r in (rows or []) if _num(r) == 1]
+
+
+def _check(cid, name, level, result, detail=None, source="", items=None):
+    if items is None:
+        items = [{"key": f"{cid}:{x}", "label": str(x)} for x in (detail or [])]
+    else:
+        items = [dict(i) if isinstance(i, dict) else {"key": f"{cid}:{i}", "label": str(i)} for i in items]
+        for it in items:
+            it.setdefault("label", "")
+            if not it.get("key"):
+                it["key"] = f"{cid}:{it['label']}"
     return {
         "id": cid,
         "name": name,
         "level": level,
         "result": result,
-        "detail": detail or [],
+        "detail": [i.get("label") for i in items],
+        "items": items,
         "source": source,
     }
+
+
+def _strip_ignored(checks, ignore_keys):
+    keys = {str(k) for k in (ignore_keys or []) if k}
+    if not keys:
+        return checks
+    out = []
+    for c in checks:
+        cid = c.get("id") or ""
+        if f"check:{cid}" in keys and c.get("level") in ("warning", "critical", "info"):
+            c = dict(c)
+            c["level"] = "ok"
+            c["result"] = "已忽略"
+            c["items"] = []
+            c["detail"] = []
+            out.append(c)
+            continue
+        items = c.get("items") or []
+        kept = [i for i in items if i.get("key") not in keys]
+        if len(kept) == len(items):
+            out.append(c)
+            continue
+        c = dict(c)
+        c["items"] = kept
+        c["detail"] = [i.get("label") for i in kept]
+        if not kept and c.get("level") in ("warning", "critical"):
+            c["level"] = "ok"
+            c["result"] = "已忽略"
+        out.append(c)
+    return out
 
 
 def _fold_uncovered(checks, middleware=None, metric_names=None):
@@ -798,20 +842,27 @@ def _is_stale_host_alert(alert, hosts):
     return bool(host) and host not in hosts
 
 
-def _is_stale_node_target(target, hosts):
+def _is_stale_node_target(target, hosts, previous_keys=None):
     """关机机器上的 node / 同网段 exporter，进残留不进故障。"""
-    if not hosts:
-        return False
     inst = target.get("instance") or ""
+    job = target.get("job") or ""
+    previous_keys = previous_keys or set()
     if _is_known_non_cluster_instance(inst):
         return False
     host = _host_from_instance(inst)
-    if not host or host in hosts:
+    alt = f"{job}|{inst}"
+    seen_before = alt in previous_keys or f"target:{job}:{inst}" in previous_keys
+    if host and hosts and host in hosts:
         return False
-    job = target.get("job") or ""
-    if _is_node_exporter_job(job, empty_is_node=False):
+    if seen_before:
         return True
-    return _host_on_node_subnet(host, hosts)
+    if not hosts:
+        return False
+    if not host:
+        return _is_node_exporter_job(job, empty_is_node=False)
+    if _is_node_exporter_job(job, empty_is_node=False) or _host_on_node_subnet(host, hosts):
+        return True
+    return False
 
 
 def _decommissioned_item(kind, name, instance, job="", last_scrape="", last_error=""):
@@ -829,30 +880,41 @@ def _decommissioned_item(kind, name, instance, job="", last_scrape="", last_erro
         "when": when,
         "label": label,
         "persistent": False,
+        "key": f"target:{job or ''}:{instance or ''}" if kind == "target" else f"alert:{name or ''}|{instance or ''}",
     }
 
 
-def _split_decommissioned(firing_alerts, down_targets, hosts):
+def _split_decommissioned(firing_alerts, down_targets, hosts, previous_keys=None, ignore_keys=None, previous_times=None):
     """能扫到、但不在当前 kube 节点上：单独列出，不进发现问题。"""
-    if not hosts:
-        return firing_alerts, down_targets, []
+    previous_keys = set(previous_keys or [])
+    ignore_keys = set(ignore_keys or [])
+    previous_times = previous_times or {}
     kept_firing, kept_down, leftover = [], [], []
     for alert in firing_alerts or []:
+        name = alert.get("name") or ""
+        inst = alert.get("instance") or ""
+        if f"alert:{name}|{inst}" in ignore_keys:
+            continue
         if _is_stale_host_alert(alert, hosts):
             leftover.append(_decommissioned_item(
-                "alert", alert.get("name") or "HostDown", alert.get("instance") or "",
+                "alert", name or "HostDown", inst,
                 job=alert.get("job") or "",
             ))
         else:
             kept_firing.append(alert)
     for target in down_targets or []:
-        if _is_stale_node_target(target, hosts):
+        job = target.get("job") or ""
+        inst = target.get("instance") or ""
+        if f"target:{job}:{inst}" in ignore_keys:
+            continue
+        if _is_stale_node_target(target, hosts, previous_keys=previous_keys):
+            alt = f"{job}|{inst}"
             leftover.append(_decommissioned_item(
                 "target",
-                target.get("job") or "node-exporter",
-                target.get("instance") or "",
-                job=target.get("job") or "",
-                last_scrape=target.get("last_scrape") or "",
+                job or "node-exporter",
+                inst,
+                job=job,
+                last_scrape=previous_times.get(alt) or target.get("last_scrape") or "",
                 last_error=target.get("last_error") or "",
             ))
         else:
@@ -1133,17 +1195,30 @@ def collect_workloads(query_fn):
 
 def collect_cluster_checks(
     query_fn, firing_alerts=None, down_targets=None, servers=None, metric_names=None,
-    previous_leftover_keys=None,
+    previous_leftover_keys=None, ignore_keys=None, previous_times=None,
 ):
     firing_alerts = firing_alerts or []
     down_targets = down_targets or []
     servers = servers or []
     metric_names = list(metric_names) if metric_names is not None else None
     name_set = set(metric_names or [])
+    ignore_keys = {str(k) for k in (ignore_keys or []) if k}
+    previous_times = previous_times or {}
     cluster_hosts = _cluster_hosts(query_fn)
+    for s in servers:
+        host = _host_from_instance(s.get("instance") or "")
+        if host:
+            cluster_hosts.add(host)
     firing_alerts, down_targets, decommissioned = _split_decommissioned(
         firing_alerts, down_targets, cluster_hosts,
+        previous_keys=previous_leftover_keys,
+        ignore_keys=ignore_keys,
+        previous_times=previous_times,
     )
+    if "check:prom_targets" in ignore_keys:
+        down_targets = []
+    if "check:prom_alerts" in ignore_keys:
+        firing_alerts = []
 
     pvc = collect_pvc_usage(query_fn)
     es = collect_elasticsearch(query_fn)
@@ -1210,7 +1285,7 @@ def collect_cluster_checks(
         checks.append(_check("node_pressure", "节点 Pressure", "skip", "无 kube-state-metrics 节点指标", source="kube-state-metrics"))
 
     abn_q = 'kube_pod_status_phase{phase=~"Pending|Failed|Unknown"}'
-    abn_rows = query_fn(f"{abn_q} == 1") or query_fn(abn_q) or []
+    abn_rows = _active_series(query_fn(f"{abn_q} == 1") or query_fn(abn_q) or [])
     if presence("kube_pod_status_phase"):
         created_map = _pod_created_map(query_fn)
         now = time.time()
@@ -1226,13 +1301,17 @@ def collect_cluster_checks(
                 ignored_failed += 1
                 continue
             current.append(row)
-        details = []
+        pod_items = []
         for row in current:
             m = _metric(row)
             key, _, _ = _pod_key(m)
             label = (_series_names([row], limit=1) or ["pod"])[0]
             when = _fmt_when(created_map.get(key) or 0)
-            details.append(f"{label}  {when}".strip() if when else label)
+            pod_items.append({
+                "key": f"pod:{key}",
+                "label": f"{label}  {when}".strip() if when else label,
+                "when": when,
+            })
         n = len(current)
         result = str(n)
         if ignored_failed:
@@ -1240,7 +1319,7 @@ def collect_cluster_checks(
         level = "ok" if n == 0 else "warning"
         checks.append(_check(
             "pods", "异常 Pod", level, result,
-            details, "kube-state-metrics",
+            source="kube-state-metrics", items=pod_items,
         ))
         if n:
             findings.append(f"异常 Pod {n} 个")
@@ -1277,17 +1356,29 @@ def collect_cluster_checks(
             result += f"（忽略历史 OOM {ignored_oom} 个）"
         if n_oom == 0 and n_re:
             result += "（累计重启，未当当天故障）"
-        oom_details = []
-        for row in current_oom + restart_rows:
+        oom_items = []
+        for row in current_oom:
             key, _, _ = _pod_key(_metric(row))
             label = (_series_names([row], limit=1) or ["pod"])[0]
             when = _fmt_when(created_map.get(key) or 0)
-            oom_details.append(f"{label}  {when}".strip() if when else label)
+            oom_items.append({
+                "key": f"oom:{key}",
+                "label": f"{label}  {when}".strip() if when else label,
+                "when": when,
+            })
+        for row in restart_rows:
+            key, _, _ = _pod_key(_metric(row))
+            label = (_series_names([row], limit=1) or ["pod"])[0]
+            when = _fmt_when(created_map.get(key) or 0)
+            oom_items.append({
+                "key": f"restart:{key}",
+                "label": f"{label}  {when}".strip() if when else label,
+                "when": when,
+            })
         checks.append(_check(
             "stability", "OOM / 重启>10",
             level, result,
-            oom_details,
-            "kube-state-metrics",
+            source="kube-state-metrics", items=oom_items,
         ))
         if n_oom:
             findings.append(f"OOMKilled {n_oom} 个")
@@ -1322,7 +1413,7 @@ def collect_cluster_checks(
         now = time.time()
         current = []
         ignored_cron = 0
-        details = []
+        job_items = []
         for row in job_rows:
             ns, name = _job_key(row)
             label = f"{ns}/{name}" if ns else name
@@ -1333,7 +1424,8 @@ def collect_cluster_checks(
                 ignored_cron += 1
                 continue
             current.append(row)
-            details.append(f"{label}" + (f" {when}" if when else "") + (f" ({owner})" if owner else ""))
+            text = f"{label}" + (f" {when}" if when else "") + (f" ({owner})" if owner else "")
+            job_items.append({"key": f"job:{label}", "label": text, "when": when})
         n = len(current)
         result = str(n)
         if ignored_cron:
@@ -1341,7 +1433,7 @@ def collect_cluster_checks(
         checks.append(_check(
             "jobs", "Job 失败",
             "ok" if n == 0 else "warning",
-            result, details[:20], "kube-state-metrics",
+            result, source="kube-state-metrics", items=job_items[:20],
         ))
         if n:
             findings.append(f"失败 Job {n} 个")
@@ -1420,23 +1512,37 @@ def collect_cluster_checks(
 
     # --- Prometheus native ---
     n_firing = len(firing_alerts)
+    alert_items = []
+    for a in firing_alerts[:40]:
+        name = a.get("name") or "alert"
+        inst = a.get("instance") or ""
+        label = f"{name} {inst}".strip()
+        alert_items.append({"key": f"alert:{name}|{inst}", "label": label})
     checks.append(_check(
         "prom_alerts", "Prometheus firing",
         "ok" if n_firing == 0 else "warning",
         f"{n_firing} 条",
-        [a.get("name") for a in firing_alerts[:10] if a.get("name")],
-        "prometheus",
+        source="prometheus", items=alert_items,
     ))
     if n_firing:
         findings.append(f"Prometheus firing {n_firing} 条")
 
     n_down = len(down_targets)
+    down_items = []
+    for t in down_targets[:40]:
+        job = t.get("job") or ""
+        inst = t.get("instance") or ""
+        when = _fmt_when(t.get("last_scrape"))
+        down_items.append({
+            "key": f"target:{job}:{inst}",
+            "label": f"{job}:{inst}" + (f"  {when}" if when else ""),
+            "when": when,
+        })
     checks.append(_check(
         "prom_targets", "Prometheus targets down",
         "ok" if n_down == 0 else "critical",
         str(n_down),
-        [f"{t.get('job')}:{t.get('instance')}" + (f"  {_fmt_when(t.get('last_scrape'))}" if t.get("last_scrape") else "") for t in down_targets[:10]],
-        "prometheus",
+        source="prometheus", items=down_items,
     ))
     if n_down:
         findings.append(f"Down Targets {n_down} 个")
@@ -1449,13 +1555,23 @@ def collect_cluster_checks(
             bits.append(f"HostDown {n_alert} 个")
         if n_target:
             bits.append(f"抓取 {n_target} 个")
+        decomm_items = []
+        for x in decommissioned:
+            job = x.get("job") or ""
+            inst = x.get("instance") or ""
+            kind = x.get("kind") or "target"
+            key = f"target:{job}:{inst}" if kind == "target" else f"alert:{x.get('name') or ''}|{inst}"
+            decomm_items.append({
+                "key": key,
+                "label": x.get("label") or f"{job} {inst}".strip(),
+                "when": x.get("when") or "",
+            })
         checks.append(_check(
             "decommissioned",
             "已下线残留",
             "info",
             "、".join(bits) + " 仍在被抓取",
-            [x.get("label") for x in decommissioned if x.get("label")],
-            "prometheus",
+            source="prometheus", items=decomm_items,
         ))
 
     probe_rows = query_fn("probe_success == 0") or []
@@ -1618,6 +1734,8 @@ def collect_cluster_checks(
         checks.append(_check("node_disk", "节点磁盘最高", level, f"{pct}% {svc}", [inst], "node-exporter"))
         if pct >= 90:
             findings.append(f"节点磁盘 {pct}%：{svc} ({inst})")
+
+    checks = _strip_ignored(checks, ignore_keys)
 
     core_ids = {"nodes", "pods", "pvc_usage"}
     core_ok = [c for c in checks if c["id"] in core_ids and c["level"] != "skip"]

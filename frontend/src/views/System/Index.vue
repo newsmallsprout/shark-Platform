@@ -124,9 +124,18 @@
           <el-table v-if="checklistCovered.length" :data="checklistCovered" size="small" row-key="_key" style="width: 100%">
             <el-table-column type="expand">
               <template #default="{ row }">
-                <div v-if="!(row.detail && row.detail.length)" class="form-tip">无明细</div>
+                <div v-if="!checkItems(row).length" class="form-tip">无明细</div>
                 <ul v-else class="check-detail-list">
-                  <li v-for="(item, idx) in row.detail" :key="idx">{{ item }}</li>
+                  <li v-for="(item, idx) in checkItems(row)" :key="item.key || idx" class="check-detail-row">
+                    <span>{{ item.label }}</span>
+                    <el-button
+                      v-if="canManage && row.level !== 'ok' && row.level !== 'skip' && item.key"
+                      link
+                      type="primary"
+                      size="small"
+                      @click="ignoreItem(item.key, item.label, row.id)"
+                    >忽略</el-button>
+                  </li>
                 </ul>
               </template>
             </el-table-column>
@@ -138,6 +147,17 @@
             </el-table-column>
             <el-table-column prop="result" label="结果" min-width="240" />
             <el-table-column prop="source" label="数据源" width="160" />
+            <el-table-column v-if="canManage" label="" width="72">
+              <template #default="{ row }">
+                <el-button
+                  v-if="row.level === 'warning' || row.level === 'critical'"
+                  link
+                  type="primary"
+                  size="small"
+                  @click="ignoreItem(`check:${row.id}`, row.name, row.id)"
+                >忽略</el-button>
+              </template>
+            </el-table-column>
           </el-table>
         </div>
 
@@ -318,7 +338,7 @@
             </el-icon>
           </button>
           <template v-if="auxOpen.decommissioned">
-            <p class="section-hint">Prometheus 还能扫到这些目标，但不在当前集群节点上，多半是关机后没摘抓取。不进发现问题、不扣健康分。连续出现的会进「已知常态」。</p>
+            <p class="section-hint">Prometheus 还能扫到这些目标，但不在当前集群节点上，多半是关机后没摘抓取。不进发现问题、不扣健康分。连续出现的会进「已知常态」。断开时间取上次巡检已记录为 down 的时间。</p>
             <el-table :data="decommissionedRows" size="small" style="width: 100%">
               <el-table-column label="类型" width="90">
                 <template #default="{ row }">{{ row.kind === 'target' ? '抓取' : '告警' }}</template>
@@ -329,11 +349,50 @@
               <el-table-column prop="instance" label="实例" min-width="200">
                 <template #default="{ row }">{{ row.instance || '-' }}</template>
               </el-table-column>
-              <el-table-column label="时间" width="150">
+              <el-table-column label="断开时间" width="150">
                 <template #default="{ row }">{{ row.when || '-' }}</template>
               </el-table-column>
               <el-table-column label="连续" width="80">
                 <template #default="{ row }">{{ row.persistent ? '是' : '-' }}</template>
+              </el-table-column>
+              <el-table-column v-if="canManage" label="" width="72">
+                <template #default="{ row }">
+                  <el-button
+                    v-if="row.key"
+                    link
+                    type="primary"
+                    size="small"
+                    @click="ignoreItem(row.key, row.label || row.instance, 'decommissioned')"
+                  >忽略</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+          </template>
+        </div>
+
+        <div class="analysis-section" v-if="ignoreList.length">
+          <button type="button" class="section-header section-header-toggle" @click="auxOpen.ignored = !auxOpen.ignored">
+            <el-icon><InfoFilled /></el-icon>
+            <span>已手动忽略（{{ ignoreList.length }}）</span>
+            <el-icon class="toggle-caret">
+              <ArrowDown v-if="auxOpen.ignored" />
+              <ArrowRight v-else />
+            </el-icon>
+          </button>
+          <template v-if="auxOpen.ignored">
+            <p class="section-hint">点过忽略的条目。下次巡检不再报，可随时取消。</p>
+            <el-table :data="ignoreList" size="small" style="width: 100%">
+              <el-table-column prop="label" label="条目" min-width="240">
+                <template #default="{ row }">{{ row.label || row.key }}</template>
+              </el-table-column>
+              <el-table-column prop="check_id" label="检查项" width="140" />
+              <el-table-column prop="created_by" label="操作人" width="120">
+                <template #default="{ row }">{{ row.created_by || '-' }}</template>
+              </el-table-column>
+              <el-table-column v-if="canManage" label="" width="88">
+                <template #default="{ row }">
+                  <el-button link type="primary" size="small" @click="unignoreItem(row.key)">取消忽略</el-button>
+                </template>
               </el-table-column>
             </el-table>
           </template>
@@ -547,6 +606,7 @@ import {
 } from '@element-plus/icons-vue'
 import { taskApi } from '@/api/task'
 import { opsTicketsApi } from '@/api/ops_tickets'
+import { systemApi } from '@/api/system'
 import { ElMessage } from 'element-plus'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
@@ -670,7 +730,9 @@ const serverLabel = (row: any) => {
 const dialogVisible = ref(false)
 const configVisible = ref(false)
 const currentReport = ref<InspectionReport | null>(null)
-const auxOpen = reactive({ normals: false, uncovered: false, decommissioned: false })
+const auxOpen = reactive({ normals: false, uncovered: false, decommissioned: false, ignored: false })
+const ignoreList = ref<any[]>([])
+const ignoreKeySet = computed(() => new Set(ignoreList.value.map((i: any) => i.key).filter(Boolean)))
 
 const configForm = ref({
   prometheus_url: '',
@@ -689,6 +751,7 @@ watch(inspectionConfig, (newVal) => {
 onMounted(() => {
   systemStore.fetchReports()
   systemStore.fetchInspectionConfig()
+  loadIgnores()
 })
 
 const handleRun = () => {
@@ -724,11 +787,17 @@ const middlewareRows = computed(() => currentReport.value?.middleware?.items || 
 const checklistCovered = computed(() =>
   (currentReport.value?.checklist || [])
     .filter((c: any) => c.level !== 'skip' && c.id !== 'decommissioned')
-    .map((c: any, i: number) => ({ ...c, _key: `${c.id || 'check'}-${i}` }))
+    .map((c: any, i: number) => {
+      const ignored = ignoreKeySet.value.has(`check:${c.id}`)
+      if (ignored && (c.level === 'warning' || c.level === 'critical')) {
+        return { ...c, level: 'ok', result: '已忽略', _key: `${c.id || 'check'}-${i}` }
+      }
+      return { ...c, _key: `${c.id || 'check'}-${i}` }
+    })
 )
 const decommissionedRows = computed(() => {
   const listed = currentReport.value?.decommissioned || []
-  if (listed.length) return listed
+  if (listed.length) return listed.filter((row: any) => !row.key || !ignoreKeySet.value.has(row.key))
   const folded = (currentReport.value?.checklist || []).find((c: any) => c.id === 'decommissioned')
   return (folded?.detail || []).map((label: string) => ({ label, instance: label, name: 'HostDown', kind: 'alert' }))
 })
@@ -814,6 +883,43 @@ const checkLevelLabel = (level?: string) => {
   return level || '-'
 }
 
+const checkItems = (row: any) => {
+  const raw = Array.isArray(row?.items) && row.items.length
+    ? row.items
+    : (row?.detail || []).map((label: string) => ({ key: `${row.id}:${label}`, label }))
+  return raw.filter((it: any) => it && (it.label || it.key) && !ignoreKeySet.value.has(it.key))
+}
+
+const loadIgnores = async () => {
+  try {
+    ignoreList.value = await systemApi.listInspectionIgnores()
+  } catch (e) {
+    console.error(e)
+  }
+}
+
+const ignoreItem = async (key: string, label?: string, checkId?: string) => {
+  if (!key) return
+  try {
+    await systemApi.addInspectionIgnore({ key, label: label || key, check_id: checkId || '' })
+    await loadIgnores()
+    ElMessage.success('已忽略，下次巡检不再报')
+  } catch (e) {
+    console.error(e)
+  }
+}
+
+const unignoreItem = async (key: string) => {
+  if (!key) return
+  try {
+    await systemApi.removeInspectionIgnore(key)
+    await loadIgnores()
+    ElMessage.success('已取消忽略')
+  } catch (e) {
+    console.error(e)
+  }
+}
+
 const verdictAlertType = computed(() => {
   const v = currentReport.value?.verdict || ''
   if (v.includes('需关注')) return 'warning'
@@ -849,6 +955,7 @@ const viewReport = async (row: any) => {
   auxOpen.normals = false
   auxOpen.uncovered = false
   auxOpen.decommissioned = false
+  auxOpen.ignored = false
   dialogVisible.value = true
 }
 
@@ -1165,6 +1272,14 @@ const fetchLogs = async (page = 1) => {
   font-size: 12px;
   line-height: 1.6;
 }
+
+.check-detail-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 
 .score-reasons {
   margin-top: 6px;

@@ -4,7 +4,7 @@ import os
 import threading
 import datetime
 from datetime import datetime, timezone, timedelta
-from .models import InspectionConfig, InspectionReport
+from .models import InspectionConfig, InspectionReport, InspectionIgnore
 from .cluster_checks import collect_cluster_checks, compute_health_score, label_servers
 from core.logging import log
 
@@ -425,6 +425,7 @@ class InspectionEngine:
 
         log("inspection", "Collecting cluster checklist (PVC / kube-state / blackbox)...")
         prev_keys = []
+        prev_times = {}
         try:
             today_id = datetime.now().strftime('%Y-%m-%d')
             yid = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
@@ -432,14 +433,27 @@ class InspectionEngine:
                 prev = InspectionReport.objects.filter(report_id=rid).first()
                 if not prev or not prev.content:
                     continue
+                ts = prev.content.get("timestamp") or ""
                 for x in (prev.content.get("decommissioned") or []):
-                    prev_keys.append(f"{x.get('job') or ''}|{x.get('instance') or ''}")
+                    k = f"{x.get('job') or ''}|{x.get('instance') or ''}"
+                    prev_keys.append(k)
+                    if x.get("last_scrape") or x.get("when") or ts:
+                        prev_times[k] = x.get("last_scrape") or ts
                 for t in (prev.content.get("down_targets") or []):
-                    prev_keys.append(f"{t.get('job') or ''}|{t.get('instance') or ''}")
+                    k = f"{t.get('job') or ''}|{t.get('instance') or ''}"
+                    prev_keys.append(k)
+                    if t.get("last_scrape") or ts:
+                        prev_times[k] = t.get("last_scrape") or ts
                 if prev_keys:
                     break
         except Exception:
             prev_keys = []
+            prev_times = {}
+        ignore_keys = []
+        try:
+            ignore_keys = list(InspectionIgnore.objects.values_list("key", flat=True))
+        except Exception:
+            ignore_keys = []
         try:
             cluster = collect_cluster_checks(
                 self._query_prometheus,
@@ -448,6 +462,8 @@ class InspectionEngine:
                 servers=servers,
                 metric_names=self._list_metric_names(),
                 previous_leftover_keys=prev_keys,
+                ignore_keys=ignore_keys,
+                previous_times=prev_times,
             )
         except Exception as e:
             log("inspection", f"Cluster checklist failed: {e}")

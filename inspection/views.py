@@ -7,7 +7,7 @@ from api.views import HasRolePermission
 import os
 import json
 from datetime import datetime, timedelta
-from .models import InspectionConfig, InspectionReport
+from .models import InspectionConfig, InspectionReport, InspectionIgnore
 from .engine import inspection_engine
 
 
@@ -176,12 +176,55 @@ def get_aggregated_report(request):
     avg_score = round(total_score / count, 1) if count > 0 else 0
     sorted_issues = sorted(common_issues.items(), key=lambda x: x[1], reverse=True)[:5]
     
-    return Response({
-        "type": rtype,
-        "start_date": start_date.strftime('%Y-%m-%d'),
-        "end_date": today.strftime('%Y-%m-%d'),
-        "average_score": avg_score,
-        "report_count": count,
-        "trend": scores_trend,
-        "top_issues": [{"issue": k, "count": v} for k, v in sorted_issues]
-    })
+        return Response({
+            "type": rtype,
+            "start_date": start_date.strftime('%Y-%m-%d'),
+            "end_date": today.strftime('%Y-%m-%d'),
+            "average_score": avg_score,
+            "report_count": count,
+            "trend": scores_trend,
+            "top_issues": [{"issue": k, "count": v} for k, v in sorted_issues]
+        })
+
+
+def _ignore_payload(row: InspectionIgnore) -> dict:
+    return {
+        "key": row.key,
+        "check_id": row.check_id,
+        "label": row.label,
+        "note": row.note,
+        "created_by": row.created_by,
+        "created_at": row.created_at.isoformat() if row.created_at else "",
+    }
+
+
+@api_view(['GET', 'POST', 'DELETE'])
+@permission_classes([HasRolePermission])
+def inspection_ignores(request):
+    if request.method == 'GET':
+        rows = InspectionIgnore.objects.order_by('-created_at')
+        return Response({"items": [_ignore_payload(r) for r in rows]})
+
+    if request.method == 'POST':
+        data = request.data or {}
+        key = str(data.get("key") or "").strip()
+        if not key:
+            return Response({"error": "key required"}, status=400)
+        user = getattr(request.user, "username", "") or ""
+        obj, _created = InspectionIgnore.objects.update_or_create(
+            key=key[:512],
+            defaults={
+                "check_id": str(data.get("check_id") or "")[:64],
+                "label": str(data.get("label") or "")[:512],
+                "note": str(data.get("note") or "")[:255],
+                "created_by": user[:128],
+            },
+        )
+        return Response({"msg": "ignored", "item": _ignore_payload(obj)})
+
+    key = str(request.query_params.get("key") or (request.data or {}).get("key") or "").strip()
+    if not key:
+        return Response({"error": "key required"}, status=400)
+    InspectionIgnore.objects.filter(key=key).delete()
+    return Response({"msg": "removed"})
+

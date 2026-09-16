@@ -19,6 +19,10 @@ export const systemApi = {
   getReportDetail: (id: string) => request.get<any>(`/inspection/reports/${id}`),
   getInspectionConfig: () => request.get<any>('/inspection/config'),
   saveInspectionConfig: (config: any) => request.post('/inspection/config', config),
+  listInspectionIgnores: () => request.get<{items: any[]}>('/inspection/ignores').then(res => res.items || []),
+  addInspectionIgnore: (payload: { key: string; label?: string; check_id?: string; note?: string }) =>
+    request.post('/inspection/ignores', payload),
+  removeInspectionIgnore: (key: string) => request.delete('/inspection/ignores', { params: { key } }),
   
   // Stats
   getSystemStats: () => request.get<any>('/system/stats'),
