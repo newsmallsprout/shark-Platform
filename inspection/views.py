@@ -176,15 +176,15 @@ def get_aggregated_report(request):
     avg_score = round(total_score / count, 1) if count > 0 else 0
     sorted_issues = sorted(common_issues.items(), key=lambda x: x[1], reverse=True)[:5]
     
-        return Response({
-            "type": rtype,
-            "start_date": start_date.strftime('%Y-%m-%d'),
-            "end_date": today.strftime('%Y-%m-%d'),
-            "average_score": avg_score,
-            "report_count": count,
-            "trend": scores_trend,
-            "top_issues": [{"issue": k, "count": v} for k, v in sorted_issues]
-        })
+    return Response({
+        "type": rtype,
+        "start_date": start_date.strftime('%Y-%m-%d'),
+        "end_date": today.strftime('%Y-%m-%d'),
+        "average_score": avg_score,
+        "report_count": count,
+        "trend": scores_trend,
+        "top_issues": [{"issue": k, "count": v} for k, v in sorted_issues]
+    })
 
 
 def _ignore_payload(row: InspectionIgnore) -> dict:
