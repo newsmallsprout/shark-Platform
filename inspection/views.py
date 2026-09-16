@@ -22,12 +22,19 @@ def _redact_inspection_config(cfg: InspectionConfig) -> dict:
     }
 
 
+_INSPECTION_CONFIG_FIELDS = {"prometheus_url", "ark_base_url", "ark_api_key", "ark_model_id"}
+
+
 def _apply_inspection_config(data: dict, cfg: InspectionConfig) -> None:
-    for k, v in data.items():
+    if not data:
+        return
+    items = data.items() if hasattr(data, "items") else []
+    for k, v in items:
+        if k not in _INSPECTION_CONFIG_FIELDS:
+            continue
         if k == "ark_api_key" and (v is None or str(v).strip() == ""):
             continue
-        if hasattr(cfg, k):
-            setattr(cfg, k, v)
+        setattr(cfg, k, v)
 
 
 @api_view(['GET', 'POST'])
@@ -41,6 +48,7 @@ def inspection_config(request):
         cfg = InspectionConfig.load()
         _apply_inspection_config(data, cfg)
         cfg.save()
+        inspection_engine.config = cfg
         return Response({"msg": "saved"})
 
 @api_view(['POST'])

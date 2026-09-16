@@ -220,7 +220,7 @@ class ClusterCheckTests(unittest.TestCase):
             "rabbitmq_disk_space_available_bytes": [_vec({"instance": "mq:9419"}, 20e6)],
             "rabbitmq_disk_space_available_limit_bytes": [_vec({"instance": "mq:9419"}, 50e6)],
             "mongodb_up": [_vec({"instance": "mongo:9216"}, 0)],
-            "mongodb_ss_mem_resident": [_vec({"instance": "mongo:9216"}, 3.1e9)],
+            "mongodb_ss_mem_resident": [_vec({"instance": "mongo:9216"}, 3100)],
             "memcached_up": [_vec({"instance": "mc:9150"}, 1)],
             "memcached_current_bytes": [_vec({"instance": "mc:9150"}, 200e6)],
             "memcached_limit_bytes": [_vec({"instance": "mc:9150"}, 512e6)],
@@ -238,6 +238,7 @@ class ClusterCheckTests(unittest.TestCase):
         mongo = next(x for x in cluster["middleware"]["items"] if x["id"] == "mongodb")
         self.assertEqual(mongo["level"], "critical")
         self.assertIn("RSS", mongo["result"])
+        self.assertIn("3.1GB", mongo["result"])
         self.assertIsNone(mongo.get("mem_pct"))
         mc = next(x for x in cluster["middleware"]["items"] if x["id"] == "memcached_up")
         self.assertIn("内存", mc["result"])

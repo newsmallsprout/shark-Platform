@@ -93,12 +93,23 @@ export const useSystemStore = defineStore('system', () => {
   }
   
   const runInspection = async (config?: any) => {
+    if (loading.value) return
+    loading.value = true
     try {
-      await systemApi.runInspection(config)
-      ElMessage.success('Inspection started')
-      await fetchReports()
+      const report = await systemApi.runInspection(config)
+      if (report?.busy) {
+        ElMessage.info('巡检正在执行，请稍后刷新')
+      } else {
+        if (report?.report_id) {
+          currentReport.value = report
+        }
+        ElMessage.success('巡检完成')
+        reports.value = await systemApi.getReports()
+      }
     } catch (e) {
       console.error(e)
+    } finally {
+      loading.value = false
     }
   }
 

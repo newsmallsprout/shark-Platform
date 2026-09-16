@@ -444,6 +444,9 @@ def _evaluate_resources(query_fn, spec, name_set):
             metrics.append(metric)
             if value is None:
                 continue
+            unit = (item.get("unit") or "bytes").lower()
+            if unit in ("mb", "mib"):
+                value = value * (1024 * 1024 if unit == "mib" else 1e6)
             text = f"{label} {_fmt_bytes(value)}"
         elif mode == "free":
             avail_m, limit_m = item.get("used"), item.get("max")

@@ -1,6 +1,7 @@
 import requests
 import json
 import os
+import threading
 import datetime
 from datetime import datetime, timezone, timedelta
 from .models import InspectionConfig, InspectionReport
@@ -12,6 +13,7 @@ from core.logging import log
 class InspectionEngine:
     def __init__(self):
         self._config = None
+        self._run_lock = threading.Lock()
 
     @property
     def config(self):
@@ -226,8 +228,40 @@ class InspectionEngine:
             
         return predictions
 
+    def _overlapping_run_result(self):
+        log("inspection", "Skip overlapping inspection run")
+        report_id = datetime.now().strftime('%Y-%m-%d')
+        existing = InspectionReport.objects.filter(report_id=report_id).first()
+        if existing and existing.content:
+            payload = dict(existing.content)
+            payload["busy"] = True
+            return payload
+        return {
+            "report_id": report_id,
+            "verdict": "巡检正在执行，请稍后刷新",
+            "findings": ["上一轮巡检尚未结束"],
+            "checklist": [],
+            "score": None,
+            "level": "unknown",
+            "health_summary": {"score": None, "level": "unknown", "reasons": ["巡检进行中"]},
+            "data_insufficient": True,
+            "busy": True,
+        }
+
     def run(self):
+        if not self._run_lock.acquire(blocking=False):
+            return self._overlapping_run_result()
+        try:
+            return self._execute()
+        finally:
+            self._run_lock.release()
+
+    def _execute(self):
         log("inspection", "Starting inspection run...")
+        try:
+            self._config = InspectionConfig.load()
+        except Exception as e:
+            log("inspection", f"Reload InspectionConfig failed: {e}")
         report_id = datetime.now().strftime('%Y-%m-%d')
         if not (self.config.prometheus_url or "").strip():
             log("inspection", "Skip inspection: prometheus_url empty")

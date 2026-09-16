@@ -132,7 +132,7 @@ METRIC_FAMILY_RECIPES = [
                 "used": "mongodb_mongod_wiredtiger_cache_bytes_currently_in_the_cache",
                 "max": "mongodb_mongod_wiredtiger_cache_maximum_bytes_configured",
             },
-            {"kind": "mem", "mode": "used", "used": "mongodb_ss_mem_resident", "label": "RSS"},
+            {"kind": "mem", "mode": "used", "used": "mongodb_ss_mem_resident", "label": "RSS", "unit": "mb"},
         ],
     },
     {
