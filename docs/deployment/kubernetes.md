@@ -344,6 +344,13 @@ kubectl exec -n middleware-system deploy/shark-platform -- \
 - 多 namespace：任务 `k8s_namespace` 支持逗号分隔
 - Slack 告警 deep link：依赖 `PUBLIC_URL`
 
+### 3.5 System Inspection（集群巡检）
+
+- 页面 **System Inspection** 配 Prometheus URL（需能查到 `monitor` 里的 Prometheus）
+- PVC 用量读 `pvc_stats_*`（prd 已部署 `pvc-stats-exporter`，清单见 `infra/kubernetes/monitor/pvc-stats-exporter/`）
+- 与 ops-host 脚本同一张清单：`scripts/inspect-prd.sh`
+- 说明：[INSPECTION.md](../INSPECTION.md)
+
 ---
 
 ## 4. 常用排障命令（不会就照抄）

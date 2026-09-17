@@ -34,6 +34,8 @@ chmod +x scripts/oneclick-deploy.sh   # 首次克隆后
 | 本机密钥（勿提交） | `infra/docker/.env.deploy`（由一键脚本生成） |
 | K8s 应用示例 | `infra/kubernetes/shark-platform.yaml` 等 |
 | Traffic 中间件 YAML | `infra/kubernetes/middleware-system/*.yaml` |
+| PVC 用量 exporter | `infra/kubernetes/monitor/pvc-stats-exporter/` |
+| PRD kubectl 巡检脚本 | `scripts/inspect-prd.sh`（与 System Inspection 同一清单） |
 | ClickHouse DDL | `infra/clickhouse/traffic_minute_rollup.sql` |
 
 根目录 [Dockerfile](../../Dockerfile)、[entrypoint.sh](../../entrypoint.sh)、[nginx.conf](../../nginx.conf) 为镜像与进程入口。健康检查：`GET /api/system/health`（无鉴权）。
