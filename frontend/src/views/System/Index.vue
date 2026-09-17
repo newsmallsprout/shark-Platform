@@ -175,7 +175,8 @@
               均 CPU {{ fmtPct(currentReport.fleet_summary?.avg_cpu_pct) }}%
               · 均内存 {{ fmtPct(currentReport.fleet_summary?.avg_mem_pct) }}%
               · 均磁盘 {{ fmtPct(currentReport.fleet_summary?.avg_disk_pct) }}%。
-              用量按「已用 / 总量（百分比）」；K8s / EKS 用 kube 节点名和 nodegroup，不调云 API。
+              机器名来自主机 hostname 或 kube 节点名，IP 单独一列。
+              磁盘/内存旁的 Δ24h 是比昨天占比高了多少个百分点；7 日均线在下方趋势图。细曲线仍看 Grafana。
             </p>
             <div class="node-filter-row">
               <el-input
@@ -200,7 +201,7 @@
                 <template #default="{ row }">{{ machineName(row) }}</template>
               </el-table-column>
               <el-table-column label="IP" width="130">
-                <template #default="{ row }">{{ row.ip || '-' }}</template>
+                <template #default="{ row }">{{ displayIp(row) }}</template>
               </el-table-column>
               <el-table-column label="类型" width="90">
                 <template #default="{ row }">
@@ -234,6 +235,16 @@
                     <el-progress :percentage="clipPct(row.disk_pct)" :stroke-width="8" :show-text="false" :color="pctColor(row.disk_pct, 90, 95)" />
                     <span>{{ bytesResourceText(row.disk_used_bytes, row.disk_total_bytes, row.disk_pct) }}</span>
                   </div>
+                </template>
+              </el-table-column>
+              <el-table-column label="内存 Δ24h" width="100">
+                <template #default="{ row }">
+                  <span :class="deltaClass(row.mem_delta_24h)">{{ fmtDelta(row.mem_delta_24h) }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="磁盘 Δ24h" width="100">
+                <template #default="{ row }">
+                  <span :class="deltaClass(row.disk_delta_24h)">{{ fmtDelta(row.disk_delta_24h) }}</span>
                 </template>
               </el-table-column>
               <el-table-column label="Load1" width="70">
@@ -385,6 +396,11 @@
             <el-table-column prop="service" label="别名" min-width="110" />
             <el-table-column label="使用率" width="90">
               <template #default="{ row }">{{ row.pct < 0 ? '-' : row.pct + '%' }}</template>
+            </el-table-column>
+            <el-table-column label="Δ24h" width="90">
+              <template #default="{ row }">
+                <span :class="deltaClass(row.delta_24h)">{{ fmtDelta(row.delta_24h) }}</span>
+              </template>
             </el-table-column>
             <el-table-column label="已用" width="100">
               <template #default="{ row }">{{ formatBytes(row.used_bytes) }}</template>
@@ -573,9 +589,14 @@
             <el-icon><DataLine /></el-icon>
             <span>7 日趋势</span>
           </div>
+          <p class="section-hint">日巡检快照拼起来的均线，用来看这周水位；单机任意时间窗仍去 Grafana。</p>
           <div class="chart-card">
-            <div class="chart-title">健康评分 / 告警数量趋势</div>
+            <div class="chart-title">健康评分 / 告警数量</div>
             <v-chart class="report-chart" :option="getTrendOption()" autoresize />
+          </div>
+          <div class="chart-card" style="margin-top: 16px" v-if="hasFleetTrend">
+            <div class="chart-title">均 CPU / 内存 / 磁盘</div>
+            <v-chart class="report-chart" :option="getFleetTrendOption()" autoresize />
           </div>
         </div>
       </div>
@@ -767,6 +788,28 @@ const getTrendOption = () => {
       { name: 'Score', type: 'line', yAxisIndex: 0, data: t.map((x) => x.score ?? null), smooth: true },
       { name: 'Firing', type: 'bar', yAxisIndex: 1, data: t.map((x) => x.firing ?? 0), itemStyle: { color: '#f59e0b' } },
       { name: 'Critical', type: 'bar', yAxisIndex: 1, data: t.map((x) => x.critical ?? 0), itemStyle: { color: '#ef4444' } },
+    ],
+  }
+}
+
+const hasFleetTrend = computed(() =>
+  (currentReport.value?.trend_7d || []).some(
+    (x: any) => x.avg_cpu != null || x.avg_mem != null || x.avg_disk != null
+  )
+)
+
+const getFleetTrendOption = () => {
+  const t: any[] = (currentReport.value?.trend_7d || []) as any[]
+  return {
+    tooltip: { trigger: 'axis' },
+    legend: { data: ['均 CPU', '均内存', '均磁盘'] },
+    grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
+    xAxis: { type: 'category', data: t.map((x) => x.date) },
+    yAxis: { type: 'value', name: '%', min: 0, max: 100 },
+    series: [
+      { name: '均 CPU', type: 'line', data: t.map((x) => x.avg_cpu ?? null), smooth: true, itemStyle: { color: '#3b82f6' } },
+      { name: '均内存', type: 'line', data: t.map((x) => x.avg_mem ?? null), smooth: true, itemStyle: { color: '#8b5cf6' } },
+      { name: '均磁盘', type: 'line', data: t.map((x) => x.avg_disk ?? null), smooth: true, itemStyle: { color: '#10b981' } },
     ],
   }
 }
@@ -1024,6 +1067,22 @@ const fmtPct = (n?: number) => {
   return Number(n).toFixed(1)
 }
 
+const fmtDelta = (n?: number) => {
+  if (n == null || Number.isNaN(Number(n))) return '-'
+  const v = Number(n)
+  const sign = v > 0 ? '+' : ''
+  return `${sign}${v.toFixed(1)}pt`
+}
+
+const deltaClass = (n?: number) => {
+  const v = Number(n)
+  if (!Number.isFinite(v)) return ''
+  if (v >= 10) return 'delta-hot'
+  if (v > 0) return 'delta-up'
+  if (v < 0) return 'delta-down'
+  return ''
+}
+
 const clipPct = (n?: number) => {
   const v = Number(n || 0)
   if (Number.isNaN(v)) return 0
@@ -1050,12 +1109,33 @@ const nodeKindLabel = (row: any) => {
   return '独立'
 }
 
+const isIpv4 = (s?: string) => {
+  const parts = String(s || '').split('.')
+  if (parts.length !== 4) return false
+  return parts.every((p) => /^\d+$/.test(p) && Number(p) >= 0 && Number(p) <= 255)
+}
+
+const hostFromInstance = (inst?: string) => {
+  let t = String(inst || '').trim()
+  if (t.includes('://')) t = t.split('://')[1] || t
+  t = t.split('/')[0]
+  if (t.startsWith('[') && t.includes(']')) return t.slice(1, t.indexOf(']'))
+  if ((t.match(/:/g) || []).length === 1) return t.split(':')[0]
+  return t
+}
+
+const displayIp = (row: any) => {
+  if (row?.ip) return row.ip
+  const host = hostFromInstance(row?.instance)
+  return isIpv4(host) ? host : '-'
+}
+
 const machineName = (row: any) => {
-  if (row?.node_name) return row.node_name
-  const inst = String(row?.instance || '').trim()
-  const host = inst.replace(/:\d+$/, '')
-  if (host && host !== String(row?.ip || '')) return host
-  return row?.ip || '-'
+  for (const cand of [row?.node_name, row?.hostname, row?.nodename, hostFromInstance(row?.instance)]) {
+    const v = String(cand || '').trim()
+    if (v && !isIpv4(v)) return v
+  }
+  return '-'
 }
 
 const nodeHotCount = computed(() =>
@@ -1071,7 +1151,7 @@ const filteredServers = computed(() => {
     if (kind === 'host' && s.kind === 'k8s') return false
     if (kind === 'hot' && s.level !== 'warning' && s.level !== 'critical') return false
     if (!q) return true
-    const blob = [s.ip, s.node_name, s.service, s.role, s.instance, s.nodegroup, s.instance_id, s.zone, s.instance_type, s.compute_type]
+    const blob = [s.ip, s.node_name, s.hostname, s.service, s.role, s.instance, s.nodegroup, s.instance_id, s.zone, s.instance_type, s.compute_type]
       .filter(Boolean)
       .join(' ')
       .toLowerCase()
@@ -1472,6 +1552,19 @@ const fetchLogs = async (page = 1) => {
   font-size: 12px;
   color: #334155;
   line-height: 1.3;
+}
+
+.delta-up {
+  color: #d97706;
+}
+
+.delta-hot {
+  color: #dc2626;
+  font-weight: 600;
+}
+
+.delta-down {
+  color: #059669;
 }
 
 .check-detail-row {

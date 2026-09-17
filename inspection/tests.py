@@ -832,6 +832,50 @@ class ClusterCheckTests(unittest.TestCase):
         self.assertEqual(row["role"], "EKS 节点")
         self.assertEqual(row["node_name"], "ip-10-0-2-9.ec2.internal")
 
+    def test_uname_hostname_not_ip_as_machine_name(self):
+        from inspection.simulate_inspection import Prom
+        from inspection.cluster_checks import label_servers
+
+        labeled = label_servers(Prom({
+            "node_uname_info": [
+                _vec({"instance": "192.168.12.188:9100", "nodename": "test-k8s-worker-04"}, 1),
+                _vec({"instance": "192.168.12.8:9100", "nodename": "dev-mysql-01"}, 1),
+                _vec({"instance": "192.168.12.32:9100", "nodename": "jumpserver-0"}, 1),
+            ],
+        }), [
+            {"instance": "192.168.12.188:9100", "cpu_pct": 10},
+            {"instance": "192.168.12.8:9100", "cpu_pct": 10},
+            {"instance": "192.168.12.32:9100", "cpu_pct": 10},
+        ])
+        worker, mysql, jms = labeled
+        self.assertEqual(worker["node_name"], "test-k8s-worker-04")
+        self.assertEqual(worker["ip"], "192.168.12.188")
+        self.assertEqual(worker["kind"], "k8s")
+        self.assertEqual(worker["role"], "K8s worker")
+        self.assertEqual(mysql["node_name"], "dev-mysql-01")
+        self.assertEqual(mysql["ip"], "192.168.12.8")
+        self.assertEqual(mysql["kind"], "host")
+        self.assertEqual(mysql["role"], "独立主机")
+        self.assertEqual(jms["role"], "JumpServer")
+        self.assertEqual(jms["kind"], "host")
+        self.assertEqual(jms["node_name"], "jumpserver-0")
+
+    def test_eks_from_uname_without_kube_state(self):
+        from inspection.simulate_inspection import Prom
+        from inspection.cluster_checks import label_servers
+
+        labeled = label_servers(Prom({
+            "node_uname_info": [
+                _vec({"instance": "10.0.3.9:9100", "nodename": "ip-10-0-3-9.ec2.internal"}, 1),
+            ],
+        }), [{"instance": "10.0.3.9:9100", "cpu_pct": 10}])
+        row = labeled[0]
+        self.assertEqual(row["kind"], "k8s")
+        self.assertEqual(row["cloud"], "aws")
+        self.assertEqual(row["role"], "EKS 节点")
+        self.assertEqual(row["node_name"], "ip-10-0-3-9.ec2.internal")
+        self.assertEqual(row["ip"], "10.0.3.9")
+
     def test_jumpserver_hostdown_stays_a_real_finding(self):
         from inspection.simulate_inspection import Prom
 
@@ -850,6 +894,62 @@ class ClusterCheckTests(unittest.TestCase):
         leftover = [x.get("instance") for x in cluster["decommissioned"]]
         self.assertIn("10.10.60.232:9100", leftover)
         self.assertNotIn("jumpserver-0:9100", leftover)
+
+    def test_server_delta_24h_from_offset_samples(self):
+        from inspection.cluster_checks import attach_server_deltas
+
+        servers = [{"instance": "n:9100", "disk_pct": 70, "mem_pct": 40}]
+        attach_server_deltas(
+            servers,
+            [_vec({"instance": "n:9100"}, 32)],
+            [_vec({"instance": "n:9100"}, 55)],
+        )
+        self.assertEqual(servers[0]["mem_delta_24h"], 8.0)
+        self.assertEqual(servers[0]["disk_delta_24h"], 15.0)
+
+    def test_pvc_and_node_24h_rise_is_a_finding(self):
+        from inspection.simulate_inspection import Prom
+        from inspection.cluster_checks import collect_pvc_usage
+
+        pvc = collect_pvc_usage(Prom({
+            "pvc_stats_used_bytes": [
+                _vec({"namespace": "app", "persistentvolumeclaim": "order-data"}, 80),
+            ],
+            "pvc_stats_capacity_bytes": [
+                _vec({"namespace": "app", "persistentvolumeclaim": "order-data"}, 100),
+            ],
+            "pvc_stats_used_bytes offset 24h": [
+                _vec({"namespace": "app", "persistentvolumeclaim": "order-data"}, 50),
+            ],
+            "pvc_stats_capacity_bytes offset 24h": [
+                _vec({"namespace": "app", "persistentvolumeclaim": "order-data"}, 100),
+            ],
+        }))
+        self.assertEqual(pvc["items"][0]["delta_24h"], 30.0)
+
+        cluster = collect_cluster_checks(Prom({
+            "pvc_stats_used_bytes": [
+                _vec({"namespace": "app", "persistentvolumeclaim": "order-data"}, 80),
+            ],
+            "pvc_stats_capacity_bytes": [
+                _vec({"namespace": "app", "persistentvolumeclaim": "order-data"}, 100),
+            ],
+            "pvc_stats_used_bytes offset 24h": [
+                _vec({"namespace": "app", "persistentvolumeclaim": "order-data"}, 50),
+            ],
+            "pvc_stats_capacity_bytes offset 24h": [
+                _vec({"namespace": "app", "persistentvolumeclaim": "order-data"}, 100),
+            ],
+        }), servers=[{
+            "instance": "n:9100", "cpu_pct": 10, "mem_pct": 20, "disk_pct": 61,
+            "disk_delta_24h": 12, "node_name": "test-k8s-worker-04",
+        }])
+        trend = next(c for c in cluster["checks"] if c["id"] == "resource_trend")
+        self.assertEqual(trend["level"], "warning")
+        blob = " ".join(cluster["findings"])
+        self.assertIn("磁盘", blob)
+        self.assertIn("PVC", blob)
+        self.assertFalse(any("撮合" in f for f in cluster["findings"]))
 
 
 if __name__ == "__main__":

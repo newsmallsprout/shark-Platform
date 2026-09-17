@@ -35,6 +35,7 @@ export interface InspectionReport {
     avg_mem_pct?: number
     avg_disk_pct?: number
     hot_count?: number
+    rising_24h_count?: number
     top_cpu?: any[]
     top_mem?: any[]
     top_disk?: any[]

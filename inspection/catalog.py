@@ -64,6 +64,8 @@ KNOWN_NORMALS = [
 
 PVC_WARN_PCT = 85
 PVC_CRIT_PCT = 95
+# 磁盘/内存/PVC 占比 24h 上升超过这个百分点，进「24h 用量上升」，不替代 Grafana。
+RESOURCE_DELTA_WARN_PT = 10
 
 # CronJob / Failed Pod 会长期留在 kube-state-metrics 里。超过这个窗口的历史失败不进发现问题。
 JOB_FAIL_LOOKBACK_SEC = 24 * 3600

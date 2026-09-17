@@ -5,7 +5,14 @@ import threading
 import datetime
 from datetime import datetime, timezone, timedelta
 from .models import InspectionConfig, InspectionReport, InspectionIgnore
-from .cluster_checks import collect_cluster_checks, compute_health_score, label_servers, mark_server_pressure
+from .cluster_checks import (
+    attach_server_deltas,
+    collect_cluster_checks,
+    compute_health_score,
+    label_servers,
+    mark_server_pressure,
+    RESOURCE_DELTA_WARN_PT,
+)
 from core.logging import log
 
 class InspectionEngine:
@@ -440,6 +447,18 @@ class InspectionEngine:
                 pass
 
         servers = list(by_instance.values())
+        mem_24h_query = (
+            '((1 - (node_memory_MemAvailable_bytes offset 24h / node_memory_MemTotal_bytes offset 24h)) * 100)'
+        )
+        disk_24h_query = (
+            '((1 - (node_filesystem_avail_bytes{mountpoint="/",fstype!~"tmpfs|overlay"} offset 24h'
+            ' / node_filesystem_size_bytes{mountpoint="/",fstype!~"tmpfs|overlay"} offset 24h)) * 100)'
+        )
+        servers = attach_server_deltas(
+            servers,
+            self._query_prometheus(mem_24h_query),
+            self._query_prometheus(disk_24h_query),
+        )
         servers = label_servers(self._query_prometheus, servers)
         servers = mark_server_pressure(servers)
         servers.sort(key=lambda x: (
@@ -452,12 +471,18 @@ class InspectionEngine:
             return round(sum(vals) / len(vals), 2) if vals else 0.0
 
         hot = [s for s in servers if s.get("level") in ("warning", "critical")]
+        rising = [
+            s for s in servers
+            if (s.get("disk_delta_24h") or 0) >= RESOURCE_DELTA_WARN_PT
+            or (s.get("mem_delta_24h") or 0) >= RESOURCE_DELTA_WARN_PT
+        ]
         fleet_summary = {
             "server_count": len(servers),
             "avg_cpu_pct": _avg('cpu_pct'),
             "avg_mem_pct": _avg('mem_pct'),
             "avg_disk_pct": _avg('disk_pct'),
             "hot_count": len(hot),
+            "rising_24h_count": len(rising),
             "top_cpu": sorted(servers, key=lambda x: float(x.get('cpu_pct') or 0), reverse=True)[:10],
             "top_mem": sorted(servers, key=lambda x: float(x.get('mem_pct') or 0), reverse=True)[:10],
             "top_disk": sorted(servers, key=lambda x: float(x.get('disk_pct') or 0), reverse=True)[:10],

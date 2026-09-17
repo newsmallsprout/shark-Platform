@@ -16,6 +16,7 @@ from .catalog import (
     METRIC_FAMILY_RECIPES,
     PVC_CRIT_PCT,
     PVC_WARN_PCT,
+    RESOURCE_DELTA_WARN_PT,
     STALE_HOSTDOWN_NAMES,
     UP_METRIC_DENY,
     display_name,
@@ -120,6 +121,7 @@ def collect_pvc_usage(query_fn):
         used_q, cap_q, items = chosen
     source = "pvc_stats_*" if used_q.startswith("pvc_stats") else used_q
     readable = [x for x in items if isinstance(x.get("pct"), (int, float)) and x["pct"] >= 0]
+    _attach_pvc_delta_24h(query_fn, used_q, cap_q, readable)
     return {
         "available": bool(readable),
         "source": source,
@@ -128,6 +130,97 @@ def collect_pvc_usage(query_fn):
         "items": readable,
         "top": readable,
     }
+
+
+def _attach_pvc_delta_24h(query_fn, used_q, cap_q, items):
+    if not items:
+        return
+    past = _join_used_cap(
+        query_fn(f"{used_q} offset 24h") or [],
+        query_fn(f"{cap_q} offset 24h") or [],
+    )
+    by_key = {x["key"]: x for x in past}
+    for item in items:
+        old = by_key.get(item["key"])
+        if not old:
+            continue
+        old_pct, now_pct = old.get("pct"), item.get("pct")
+        if not isinstance(old_pct, (int, float)) or old_pct < 0:
+            continue
+        if not isinstance(now_pct, (int, float)) or now_pct < 0:
+            continue
+        item["pct_24h"] = int(old_pct)
+        item["delta_24h"] = round(float(now_pct) - float(old_pct), 1)
+
+
+def _pct_by_instance(rows):
+    out = {}
+    for row in rows or []:
+        inst = (_metric(row).get("instance") or "").strip()
+        if not inst:
+            continue
+        try:
+            out[inst] = round(_num(row), 2)
+        except Exception:
+            pass
+    return out
+
+
+def attach_server_deltas(servers, mem_24h_rows=None, disk_24h_rows=None):
+    """当前占比减去 24h 前，单位是百分点。没有 24h 样本就空着。"""
+    mem_map = _pct_by_instance(mem_24h_rows)
+    disk_map = _pct_by_instance(disk_24h_rows)
+    for s in servers or []:
+        inst = s.get("instance") or ""
+        now_mem, now_disk = s.get("mem_pct"), s.get("disk_pct")
+        if inst in mem_map and isinstance(now_mem, (int, float)):
+            s["mem_pct_24h"] = mem_map[inst]
+            s["mem_delta_24h"] = round(float(now_mem) - mem_map[inst], 1)
+        if inst in disk_map and isinstance(now_disk, (int, float)):
+            s["disk_pct_24h"] = disk_map[inst]
+            s["disk_delta_24h"] = round(float(now_disk) - disk_map[inst], 1)
+    return servers
+
+
+def _trend_label(name, kind, now_pct, delta):
+    return f"{name} {kind} {now_pct:.0f}%（24h {delta:+.1f}pt）"
+
+
+def collect_resource_trend_items(servers, pvc_items):
+    items = []
+    sampled = False
+    for s in servers or []:
+        name = s.get("node_name") or s.get("service") or s.get("instance") or "node"
+        inst = s.get("instance") or name
+        disk_d, mem_d = s.get("disk_delta_24h"), s.get("mem_delta_24h")
+        if disk_d is not None or mem_d is not None:
+            sampled = True
+        if isinstance(disk_d, (int, float)) and disk_d >= RESOURCE_DELTA_WARN_PT:
+            items.append({
+                "key": f"trend:disk:{inst}",
+                "label": _trend_label(name, "磁盘", float(s.get("disk_pct") or 0), disk_d),
+            })
+        if isinstance(mem_d, (int, float)) and mem_d >= RESOURCE_DELTA_WARN_PT:
+            items.append({
+                "key": f"trend:mem:{inst}",
+                "label": _trend_label(name, "内存", float(s.get("mem_pct") or 0), mem_d),
+            })
+    for x in pvc_items or []:
+        delta = x.get("delta_24h")
+        if delta is not None:
+            sampled = True
+        if not x.get("usage_alert"):
+            continue
+        if not isinstance(delta, (int, float)) or delta < RESOURCE_DELTA_WARN_PT:
+            continue
+        name = x.get("service") or x.get("key") or "pvc"
+        key = x.get("key") or ""
+        extra = f" {key}" if key and key != name else ""
+        items.append({
+            "key": f"trend:pvc:{key or name}",
+            "label": f"PVC {name}{extra} {float(x.get('pct') or 0):.0f}%（24h {delta:+.1f}pt）",
+        })
+    return sampled, items
 
 
 def _series_names(rows, limit=40):
@@ -746,6 +839,34 @@ def _host_from_instance(instance):
     return host.strip()
 
 
+def _is_ipv4(host):
+    parts = (host or "").split(".")
+    if len(parts) != 4:
+        return False
+    try:
+        return all(p.isdigit() and 0 <= int(p) <= 255 for p in parts)
+    except Exception:
+        return False
+
+
+def _looks_k8s_name(name):
+    n = (name or "").lower()
+    if ".ec2.internal" in n or ".compute.internal" in n:
+        return True
+    return "k8s" in n
+
+
+def _role_from_k8s_name(name, cloud=""):
+    n = (name or "").lower()
+    if cloud == "aws" or ".ec2.internal" in n or ".compute.internal" in n:
+        return "EKS 节点"
+    if "control-plane" in n or "-master-" in n or n.endswith("-master") or n.startswith("master-"):
+        return "K8s 控制面"
+    if "-worker-" in n or n.endswith("-worker") or n.startswith("worker-"):
+        return "K8s worker"
+    return "K8s 节点"
+
+
 def _cluster_hosts(query_fn):
     hosts = set()
     for row in query_fn("kube_node_status_addresses") or []:
@@ -797,7 +918,7 @@ def _metric_label(m, *needles):
 
 
 def enrich_servers(query_fn, servers):
-    """IP / kube 名 / 角色。EKS 用 kube_node_info.provider_id 和 nodegroup 标签，不调 AWS API。"""
+    """机器名走 node_uname_info / kube 节点名；IP 单独成列。EKS 用 provider_id 和 nodegroup，不调 AWS API。"""
     nodes = {}
 
     def _node(name):
@@ -828,7 +949,7 @@ def enrich_servers(query_fn, servers):
         addr = (m.get("address") or "").strip()
         if not addr:
             continue
-        if kind == "InternalIP" or (not info["ip"] and addr.count(".") == 3):
+        if kind == "InternalIP" or (not info["ip"] and _is_ipv4(addr)):
             info["ip"] = addr
         elif kind == "Hostname":
             info["hostname"] = addr
@@ -886,15 +1007,51 @@ def enrich_servers(query_fn, servers):
         if info.get("hostname"):
             by_host[info["hostname"]] = info
 
+    uname_by_instance, uname_by_host = {}, {}
+    for row in query_fn("node_uname_info") or []:
+        m = _metric(row)
+        inst = (m.get("instance") or "").strip()
+        nodename = (m.get("nodename") or "").strip()
+        if not nodename:
+            continue
+        if inst:
+            uname_by_instance[inst] = nodename
+            uname_by_host[_host_from_instance(inst)] = nodename
+        uname_by_host[nodename] = nodename
+
     for s in servers or []:
         inst = s.get("instance") or ""
         host = _host_from_instance(inst)
-        alias = resolve_service(instance=inst)
-        info = by_ip.get(host) or by_host.get(host) or by_host.get(inst) or {}
-        s["ip"] = info.get("ip") or (host if host.count(".") == 3 else "")
-        s["node_name"] = info.get("node_name") or ""
-        s["kind"] = "k8s" if info else "host"
-        s["cloud"] = info.get("cloud") or ""
+        nodename = uname_by_instance.get(inst) or uname_by_host.get(host) or ""
+        info = (
+            by_ip.get(host)
+            or by_host.get(host)
+            or by_host.get(nodename)
+            or by_host.get(inst)
+            or {}
+        )
+        alias = (
+            resolve_service(name=nodename, instance=inst)
+            or resolve_service(name=nodename, instance=nodename)
+            or resolve_service(instance=inst)
+        )
+        ip = info.get("ip") or (host if _is_ipv4(host) else "")
+        display = info.get("node_name") or info.get("hostname") or nodename
+        if not display and host and not _is_ipv4(host):
+            display = host
+        kind = "k8s" if info else "host"
+        cloud = info.get("cloud") or ""
+        if not cloud and _looks_k8s_name(display) and (
+            ".ec2.internal" in display.lower() or ".compute.internal" in display.lower()
+        ):
+            cloud = "aws"
+        if kind != "k8s" and _looks_k8s_name(display):
+            kind = "k8s"
+        s["ip"] = ip
+        s["hostname"] = nodename or info.get("hostname") or ""
+        s["node_name"] = display
+        s["kind"] = kind
+        s["cloud"] = cloud
         s["zone"] = info.get("zone") or ""
         s["instance_id"] = info.get("instance_id") or ""
         s["nodegroup"] = info.get("nodegroup") or ""
@@ -905,18 +1062,18 @@ def enrich_servers(query_fn, servers):
             s["service"] = alias["service"]
         elif info.get("nodegroup"):
             s["role"] = info["nodegroup"]
-            s["service"] = info.get("node_name") or host
+            s["service"] = display or host
         elif (info.get("compute_type") or "").lower() == "fargate":
             s["role"] = "EKS Fargate"
-            s["service"] = info.get("node_name") or host
-        elif info:
-            s["role"] = "EKS 节点" if info.get("cloud") == "aws" else "K8s 节点"
-            s["service"] = info.get("node_name") or host
+            s["service"] = display or host
+        elif kind == "k8s":
+            s["role"] = _role_from_k8s_name(display, cloud)
+            s["service"] = display or host
         else:
             s["role"] = "独立主机"
             s["service"] = s.get("service") or ""
-            if not s["service"] or s["service"] == inst or s["service"] == host:
-                s["service"] = ""
+            if not s["service"] or s["service"] == inst or s["service"] == host or _is_ipv4(s["service"]):
+                s["service"] = display or ""
     return servers
 
 
@@ -939,7 +1096,10 @@ def mark_server_pressure(servers):
         cpu = float(s.get("cpu_pct") or 0)
         mem = float(s.get("mem_pct") or 0)
         disk = float(s.get("disk_pct") or 0)
-        alias = resolve_service(instance=s.get("instance") or "")
+        alias = (
+            resolve_service(name=s.get("node_name") or s.get("hostname") or "", instance=s.get("instance") or "")
+            or resolve_service(instance=s.get("node_name") or s.get("hostname") or "")
+        )
         mem_warn = float((alias or {}).get("mem_alert_threshold") or MEM_WARN_PCT)
         mem_crit = max(mem_warn, MEM_CRIT_PCT)
         bits = []
@@ -1923,6 +2083,23 @@ def collect_cluster_checks(
             source="node-exporter",
         ))
 
+    sampled, trend_items = collect_resource_trend_items(servers, pvc.get("items") or [])
+    if sampled:
+        checks.append(_check(
+            "resource_trend", "24h 用量上升",
+            "warning" if trend_items else "ok",
+            f"{len(trend_items)} 项超过 {RESOURCE_DELTA_WARN_PT}pt" if trend_items else "未见磁盘/内存/PVC 24h 上升过阈值",
+            source="prometheus", items=trend_items,
+        ))
+        for it in trend_items:
+            findings.append(it.get("label") or "24h 用量上升")
+    else:
+        checks.append(_check(
+            "resource_trend", "24h 用量上升", "skip",
+            "无 24h 前样本（Prom 保留不够或新接入）",
+            source="prometheus",
+        ))
+
     checks = _strip_ignored(checks, ignore_keys)
 
     core_ids = {"nodes", "pods", "pvc_usage"}
@@ -2031,7 +2208,10 @@ def compute_health_score(down_targets, firing_alerts, servers, pvc_items=None, d
         mem_vals = []
         for s in servers:
             mem = float(s.get("mem_pct") or 0)
-            alias = resolve_service(instance=s.get("instance") or "")
+            alias = (
+                resolve_service(name=s.get("node_name") or s.get("hostname") or "", instance=s.get("instance") or "")
+                or resolve_service(instance=s.get("node_name") or s.get("hostname") or "")
+            )
             limit = (alias or {}).get("mem_alert_threshold")
             if limit and mem < float(limit):
                 continue
