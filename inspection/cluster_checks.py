@@ -827,6 +827,29 @@ def _fmt_when(ts):
         return str(ts)[:16]
 
 
+def _ip_sort_tuple(ip):
+    parts = (ip or "").split(".")
+    if len(parts) == 4 and all(p.isdigit() and 0 <= int(p) <= 255 for p in parts):
+        return tuple(int(p) for p in parts)
+    return (999, 0, 0, 0)
+
+
+def sort_servers(servers):
+    """先异常，再 EKS / K8s / 独立，再按 IP，同网段排在一起。"""
+    def key(s):
+        level = {"critical": 0, "warning": 1, "ok": 2}.get(s.get("level") or "ok", 9)
+        if s.get("kind") == "k8s" and s.get("cloud") == "aws":
+            kind = 0
+        elif s.get("kind") == "k8s":
+            kind = 1
+        else:
+            kind = 2
+        ip = s.get("ip") or _host_from_instance(s.get("instance") or "")
+        return (level, kind, _ip_sort_tuple(ip), s.get("node_name") or s.get("hostname") or "")
+    (servers or []).sort(key=key)
+    return servers
+
+
 def _host_from_instance(instance):
     inst = (instance or "").strip()
     if "://" in inst:

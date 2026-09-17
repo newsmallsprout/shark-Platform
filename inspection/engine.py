@@ -11,6 +11,7 @@ from .cluster_checks import (
     compute_health_score,
     label_servers,
     mark_server_pressure,
+    sort_servers,
     RESOURCE_DELTA_WARN_PT,
     _hostname_from_metric,
 )
@@ -465,10 +466,7 @@ class InspectionEngine:
         )
         servers = label_servers(self._query_prometheus, servers, targets=targets)
         servers = mark_server_pressure(servers)
-        servers.sort(key=lambda x: (
-            {"critical": 0, "warning": 1, "ok": 2}.get(x.get("level") or "ok", 9),
-            -max(float(x.get("cpu_pct") or 0), float(x.get("mem_pct") or 0), float(x.get("disk_pct") or 0)),
-        ))
+        sort_servers(servers)
 
         def _avg(key):
             vals = [float(s.get(key) or 0) for s in servers if s.get(key) is not None]
