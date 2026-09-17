@@ -7,7 +7,7 @@ from api.views import HasRolePermission
 import os
 import json
 from datetime import datetime, timedelta
-from .models import InspectionConfig, InspectionReport
+from .models import InspectionConfig, InspectionReport, InspectionIgnore
 from .engine import inspection_engine
 
 
@@ -22,12 +22,19 @@ def _redact_inspection_config(cfg: InspectionConfig) -> dict:
     }
 
 
+_INSPECTION_CONFIG_FIELDS = {"prometheus_url", "ark_base_url", "ark_api_key", "ark_model_id"}
+
+
 def _apply_inspection_config(data: dict, cfg: InspectionConfig) -> None:
-    for k, v in data.items():
+    if not data:
+        return
+    items = data.items() if hasattr(data, "items") else []
+    for k, v in items:
+        if k not in _INSPECTION_CONFIG_FIELDS:
+            continue
         if k == "ark_api_key" and (v is None or str(v).strip() == ""):
             continue
-        if hasattr(cfg, k):
-            setattr(cfg, k, v)
+        setattr(cfg, k, v)
 
 
 @api_view(['GET', 'POST'])
@@ -41,6 +48,7 @@ def inspection_config(request):
         cfg = InspectionConfig.load()
         _apply_inspection_config(data, cfg)
         cfg.save()
+        inspection_engine.config = cfg
         return Response({"msg": "saved"})
 
 @api_view(['POST'])
@@ -89,6 +97,7 @@ def history(request):
             
         results.append({
             "report_id": r.report_id,
+            "timestamp": content.get("timestamp") or "",
             "score": health_score,
             "verdict": content.get("verdict") or "",
             "findings_count": len(content.get("findings") or []),
@@ -176,3 +185,46 @@ def get_aggregated_report(request):
         "trend": scores_trend,
         "top_issues": [{"issue": k, "count": v} for k, v in sorted_issues]
     })
+
+
+def _ignore_payload(row: InspectionIgnore) -> dict:
+    return {
+        "key": row.key,
+        "check_id": row.check_id,
+        "label": row.label,
+        "note": row.note,
+        "created_by": row.created_by,
+        "created_at": row.created_at.isoformat() if row.created_at else "",
+    }
+
+
+@api_view(['GET', 'POST', 'DELETE'])
+@permission_classes([HasRolePermission])
+def inspection_ignores(request):
+    if request.method == 'GET':
+        rows = InspectionIgnore.objects.order_by('-created_at')
+        return Response({"items": [_ignore_payload(r) for r in rows]})
+
+    if request.method == 'POST':
+        data = request.data or {}
+        key = str(data.get("key") or "").strip()
+        if not key:
+            return Response({"error": "key required"}, status=400)
+        user = getattr(request.user, "username", "") or ""
+        obj, _created = InspectionIgnore.objects.update_or_create(
+            key=key[:512],
+            defaults={
+                "check_id": str(data.get("check_id") or "")[:64],
+                "label": str(data.get("label") or "")[:512],
+                "note": str(data.get("note") or "")[:255],
+                "created_by": user[:128],
+            },
+        )
+        return Response({"msg": "ignored", "item": _ignore_payload(obj)})
+
+    key = str(request.query_params.get("key") or (request.data or {}).get("key") or "").strip()
+    if not key:
+        return Response({"error": "key required"}, status=400)
+    InspectionIgnore.objects.filter(key=key).delete()
+    return Response({"msg": "removed"})
+

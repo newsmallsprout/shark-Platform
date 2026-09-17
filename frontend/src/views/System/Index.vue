@@ -21,7 +21,7 @@
           <template #default="{ row }">
             <div class="report-id-cell">
               <el-icon class="report-icon"><Calendar /></el-icon>
-              <span>{{ formatIdToDate(row.report_id) }}</span>
+              <span>{{ formatReportTime(row) }}</span>
             </div>
           </template>
         </el-table-column>
@@ -29,7 +29,7 @@
         <el-table-column label="Health Status" width="160">
           <template #default="{ row }">
             <div class="score-wrapper">
-              <template v-if="row.score != null">
+              <template v-if="hasScore(row.score)">
                 <el-progress 
                   type="circle" 
                   :percentage="row.score" 
@@ -69,21 +69,22 @@
     <el-dialog 
       v-model="dialogVisible" 
       title="Inspection Report Analysis" 
-      width="1040px"
+      width="1120px"
       class="report-dialog"
     >
       <div v-if="currentReport" class="report-content">
         <div class="report-meta">
           <div class="meta-item">
             <span class="label">TIMESTAMP</span>
-            <span class="value">{{ formatIdToDate(currentReport.report_id) }}</span>
+            <span class="value">{{ formatReportTime(currentReport) }}</span>
           </div>
           <div class="meta-item">
             <span class="label">HEALTH SCORE</span>
             <div class="score-display">
-              <span :class="['score-value', getScoreType(currentReport.score)]">{{ currentReport.score == null ? '—' : currentReport.score }}</span>
+              <span :class="['score-value', getScoreType(currentReport.score)]">{{ hasScore(currentReport.score) ? currentReport.score : '—' }}</span>
               <span class="score-total">/100</span>
             </div>
+            <div v-if="scoreReasons.length" class="score-reasons">{{ scoreReasons.join('；') }}</div>
           </div>
           <div class="meta-item">
             <span class="label">SERVERS</span>
@@ -120,7 +121,24 @@
               <li v-for="(item, idx) in currentReport.findings" :key="idx">{{ item }}</li>
             </ol>
           </div>
-          <el-table v-if="currentReport.checklist && currentReport.checklist.length" :data="currentReport.checklist" size="small" style="width: 100%">
+          <el-table v-if="checklistCovered.length" :data="checklistCovered" size="small" row-key="_key" style="width: 100%">
+            <el-table-column type="expand">
+              <template #default="{ row }">
+                <div v-if="!checkItems(row).length" class="form-tip">无明细</div>
+                <ul v-else class="check-detail-list">
+                  <li v-for="(item, idx) in checkItems(row)" :key="item.key || idx" class="check-detail-row">
+                    <span>{{ item.label }}</span>
+                    <el-button
+                      v-if="canManage && row.level !== 'ok' && row.level !== 'skip' && item.key"
+                      link
+                      type="primary"
+                      size="small"
+                      @click="ignoreItem(item.key, item.label, row.id)"
+                    >忽略</el-button>
+                  </li>
+                </ul>
+              </template>
+            </el-table-column>
             <el-table-column prop="name" label="检查项" min-width="160" />
             <el-table-column label="状态" width="100">
               <template #default="{ row }">
@@ -129,48 +147,173 @@
             </el-table-column>
             <el-table-column prop="result" label="结果" min-width="240" />
             <el-table-column prop="source" label="数据源" width="160" />
+            <el-table-column v-if="canManage" label="" width="72">
+              <template #default="{ row }">
+                <el-button
+                  v-if="row.level === 'warning' || row.level === 'critical'"
+                  link
+                  type="primary"
+                  size="small"
+                  @click="ignoreItem(`check:${row.id}`, row.name, row.id)"
+                >忽略</el-button>
+              </template>
+            </el-table-column>
           </el-table>
         </div>
 
-        <div class="analysis-section" v-if="workloadRows.length">
+        <div class="analysis-section" v-if="currentReport.servers && currentReport.servers.length">
+          <button type="button" class="section-header section-header-toggle" @click="auxOpen.nodes = !auxOpen.nodes">
+            <el-icon><Monitor /></el-icon>
+            <span>资源使用（{{ filteredServers.length }} / {{ currentReport.servers.length }} 台{{ nodeHotCount ? `，偏高 ${nodeHotCount}` : '' }}）</span>
+            <el-icon class="toggle-caret">
+              <ArrowDown v-if="auxOpen.nodes" />
+              <ArrowRight v-else />
+            </el-icon>
+          </button>
+          <template v-if="auxOpen.nodes">
+            <p class="section-hint">
+              均 CPU {{ fmtPct(currentReport.fleet_summary?.avg_cpu_pct) }}%
+              · 均内存 {{ fmtPct(currentReport.fleet_summary?.avg_mem_pct) }}%
+              · 均磁盘 {{ fmtPct(currentReport.fleet_summary?.avg_disk_pct) }}%。
+              机器名来自主机 hostname 或 kube 节点名，IP 单独一列。
+              磁盘/内存旁的 Δ24h 是比昨天占比高了多少个百分点；7 日均线在下方趋势图。细曲线仍看 Grafana。
+            </p>
+            <div class="node-filter-row">
+              <el-input
+                v-model="nodeQuery"
+                clearable
+                size="small"
+                placeholder="搜 IP / 机器名 / 角色 / nodegroup / instance-id"
+                style="max-width: 320px"
+              />
+              <el-radio-group v-model="nodeKindFilter" size="small">
+                <el-radio-button label="all">全部</el-radio-button>
+                <el-radio-button label="k8s">K8s / EKS</el-radio-button>
+                <el-radio-button label="host">独立主机</el-radio-button>
+                <el-radio-button label="hot">偏高</el-radio-button>
+              </el-radio-group>
+            </div>
+            <el-table :data="filteredServers" size="small" style="width: 100%" max-height="440">
+              <el-table-column label="角色" min-width="120">
+                <template #default="{ row }">{{ row.role || nodeKindLabel(row) }}</template>
+              </el-table-column>
+              <el-table-column label="机器名" min-width="160">
+                <template #default="{ row }">{{ machineName(row) }}</template>
+              </el-table-column>
+              <el-table-column label="IP" width="130">
+                <template #default="{ row }">{{ displayIp(row) }}</template>
+              </el-table-column>
+              <el-table-column label="类型" width="90">
+                <template #default="{ row }">
+                  <el-tag size="small" effect="plain">{{ nodeKindLabel(row) }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="状态" width="80">
+                <template #default="{ row }">
+                  <el-tag :type="checkTagType(row.level || 'ok')" size="small" effect="plain">{{ checkLevelLabel(row.level || 'ok') }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="CPU" min-width="170">
+                <template #default="{ row }">
+                  <div class="resource-cell">
+                    <el-progress :percentage="clipPct(row.cpu_pct)" :stroke-width="8" :show-text="false" :color="pctColor(row.cpu_pct, 85, 95)" />
+                    <span>{{ cpuResourceText(row) }}</span>
+                  </div>
+                </template>
+              </el-table-column>
+              <el-table-column label="内存" min-width="190">
+                <template #default="{ row }">
+                  <div class="resource-cell">
+                    <el-progress :percentage="clipPct(row.mem_pct)" :stroke-width="8" :show-text="false" :color="pctColor(row.mem_pct, 85, 95)" />
+                    <span>{{ bytesResourceText(row.mem_used_bytes, row.mem_total_bytes, row.mem_pct) }}</span>
+                  </div>
+                </template>
+              </el-table-column>
+              <el-table-column label="磁盘 /" min-width="190">
+                <template #default="{ row }">
+                  <div class="resource-cell">
+                    <el-progress :percentage="clipPct(row.disk_pct)" :stroke-width="8" :show-text="false" :color="pctColor(row.disk_pct, 90, 95)" />
+                    <span>{{ bytesResourceText(row.disk_used_bytes, row.disk_total_bytes, row.disk_pct) }}</span>
+                  </div>
+                </template>
+              </el-table-column>
+              <el-table-column label="内存 Δ24h" width="100">
+                <template #default="{ row }">
+                  <span :class="deltaClass(row.mem_delta_24h)">{{ fmtDelta(row.mem_delta_24h) }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="磁盘 Δ24h" width="100">
+                <template #default="{ row }">
+                  <span :class="deltaClass(row.disk_delta_24h)">{{ fmtDelta(row.disk_delta_24h) }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="Load1" width="70">
+                <template #default="{ row }">{{ row.load1 == null ? '-' : row.load1 }}</template>
+              </el-table-column>
+            </el-table>
+          </template>
+        </div>
+
+        <div class="analysis-section" v-if="workloadNsGroups.length">
           <div class="section-header">
             <el-icon><Monitor /></el-icon>
-            <span>工作负载（{{ workloadRows.length }} 个，展开看 Pod / IP）</span>
+            <span>工作负载（{{ workloadRows.length }} 个 / {{ workloadNsGroups.length }} 个 Namespace，默认不含 kube-system）</span>
           </div>
-          <el-table :data="workloadRows" size="small" style="width: 100%" max-height="460" row-key="key">
+          <p class="section-hint">按 Namespace 折叠。先展开 ns，再展开负载看 Pod，避免一次铺开全部明细。</p>
+          <el-table :data="workloadNsGroups" size="small" style="width: 100%" max-height="520" row-key="key">
             <el-table-column type="expand">
               <template #default="{ row }">
-                <div v-if="!(row.pods && row.pods.length)" class="form-tip">无 Pod 明细</div>
-                <el-table v-else :data="row.pods" size="small" style="width: 100%">
-                  <el-table-column prop="pod" label="Pod" min-width="200" />
-                  <el-table-column prop="phase" label="相位" width="100" />
-                  <el-table-column label="Ready" width="80">
-                    <template #default="{ row: pod }">{{ pod.ready == null ? '-' : (pod.ready ? '是' : '否') }}</template>
+                <el-table :data="row.workloads" size="small" style="width: 100%" row-key="key">
+                  <el-table-column type="expand">
+                    <template #default="{ row: wl }">
+                      <div v-if="!(wl.pods && wl.pods.length)" class="form-tip">无 Pod 明细</div>
+                      <el-table v-else :data="wl.pods" size="small" style="width: 100%">
+                        <el-table-column prop="pod" label="Pod" min-width="200" />
+                        <el-table-column prop="phase" label="相位" width="100" />
+                        <el-table-column label="Ready" width="80">
+                          <template #default="{ row: pod }">{{ pod.ready == null ? '-' : (pod.ready ? '是' : '否') }}</template>
+                        </el-table-column>
+                        <el-table-column prop="pod_ip" label="Pod IP" width="130">
+                          <template #default="{ row: pod }">{{ pod.pod_ip || '-' }}</template>
+                        </el-table-column>
+                        <el-table-column prop="node" label="节点" min-width="140">
+                          <template #default="{ row: pod }">{{ pod.node || '-' }}</template>
+                        </el-table-column>
+                        <el-table-column prop="host_ip" label="节点 IP" width="130">
+                          <template #default="{ row: pod }">{{ pod.host_ip || '-' }}</template>
+                        </el-table-column>
+                        <el-table-column prop="restarts" label="重启" width="70" />
+                        <el-table-column prop="waiting" label="等待原因" min-width="120">
+                          <template #default="{ row: pod }">{{ pod.waiting || '-' }}</template>
+                        </el-table-column>
+                      </el-table>
+                    </template>
                   </el-table-column>
-                  <el-table-column prop="pod_ip" label="Pod IP" width="130">
-                    <template #default="{ row: pod }">{{ pod.pod_ip || '-' }}</template>
+                  <el-table-column prop="service" label="服务" min-width="120" />
+                  <el-table-column prop="kind" label="类型" width="110" />
+                  <el-table-column label="对象" min-width="200">
+                    <template #default="{ row: wl }">{{ wl.name }}</template>
                   </el-table-column>
-                  <el-table-column prop="node" label="节点" min-width="140">
-                    <template #default="{ row: pod }">{{ pod.node || '-' }}</template>
-                  </el-table-column>
-                  <el-table-column prop="host_ip" label="节点 IP" width="130">
-                    <template #default="{ row: pod }">{{ pod.host_ip || '-' }}</template>
-                  </el-table-column>
-                  <el-table-column prop="restarts" label="重启" width="70" />
-                  <el-table-column prop="waiting" label="等待原因" min-width="120">
-                    <template #default="{ row: pod }">{{ pod.waiting || '-' }}</template>
+                  <el-table-column label="Ready" width="100">
+                    <template #default="{ row: wl }">
+                      <el-tag :type="checkTagType(wl.level)" size="small" effect="plain">{{ wl.ready }}/{{ wl.desired }}</el-tag>
+                    </template>
                   </el-table-column>
                 </el-table>
               </template>
             </el-table-column>
-            <el-table-column prop="service" label="服务" min-width="120" />
-            <el-table-column prop="kind" label="类型" width="110" />
-            <el-table-column label="对象" min-width="200">
-              <template #default="{ row }">{{ row.namespace }}/{{ row.name }}</template>
+            <el-table-column prop="namespace" label="Namespace" min-width="220" />
+            <el-table-column label="负载数" width="90">
+              <template #default="{ row }">{{ row.count }}</template>
             </el-table-column>
-            <el-table-column label="Ready" width="100">
+            <el-table-column label="Ready" width="120">
               <template #default="{ row }">
                 <el-tag :type="checkTagType(row.level)" size="small" effect="plain">{{ row.ready }}/{{ row.desired }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="状态" width="100">
+              <template #default="{ row }">
+                <el-tag :type="checkTagType(row.level)" size="small" effect="plain">{{ checkLevelLabel(row.level) }}</el-tag>
               </template>
             </el-table-column>
           </el-table>
@@ -213,6 +356,35 @@
           </el-table>
         </div>
 
+        <div class="analysis-section" v-if="middlewareRows.length">
+          <div class="section-header">
+            <el-icon><Box /></el-icon>
+            <span>中间件（按 Prometheus 指标名扫描）</span>
+          </div>
+          <p v-if="discoveredMetricCount" class="section-hint">
+            本次扫到 {{ discoveredMetricCount }} 个指标名。中间件内存/磁盘只用来自该 exporter 的 used/max（或水位）；没有就不填，数据目录仍看 PVC / 节点盘。
+          </p>
+          <el-table :data="middlewareRows" size="small" style="width: 100%">
+            <el-table-column prop="name" label="组件" min-width="160" />
+            <el-table-column prop="source" label="数据源" width="160" />
+            <el-table-column label="状态" width="100">
+              <template #default="{ row }">
+                <el-tag :type="checkTagType(row.level)" size="small" effect="plain">{{ checkLevelLabel(row.level) }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="result" label="结果" min-width="220" />
+            <el-table-column label="内存" width="140">
+              <template #default="{ row }">{{ row.mem_text || (row.mem_pct != null ? row.mem_pct + '%' : '-') }}</template>
+            </el-table-column>
+            <el-table-column label="存储" width="160">
+              <template #default="{ row }">{{ row.disk_text || (row.disk_pct != null ? row.disk_pct + '%' : '-') }}</template>
+            </el-table-column>
+            <el-table-column label="实例" min-width="200">
+              <template #default="{ row }">{{ (row.instances && row.instances.length) ? row.instances.join(', ') : '-' }}</template>
+            </el-table-column>
+          </el-table>
+        </div>
+
         <div class="analysis-section" v-if="currentReport.pvc_usage && currentReport.pvc_usage.length">
           <div class="section-header">
             <el-icon><Coin /></el-icon>
@@ -225,6 +397,11 @@
             <el-table-column label="使用率" width="90">
               <template #default="{ row }">{{ row.pct < 0 ? '-' : row.pct + '%' }}</template>
             </el-table-column>
+            <el-table-column label="Δ24h" width="90">
+              <template #default="{ row }">
+                <span :class="deltaClass(row.delta_24h)">{{ fmtDelta(row.delta_24h) }}</span>
+              </template>
+            </el-table-column>
             <el-table-column label="已用" width="100">
               <template #default="{ row }">{{ formatBytes(row.used_bytes) }}</template>
             </el-table-column>
@@ -236,32 +413,132 @@
         </div>
 
         <div class="analysis-section" v-if="currentReport.known_normals && currentReport.known_normals.length">
-          <div class="section-header">
+          <button type="button" class="section-header section-header-toggle" @click="auxOpen.normals = !auxOpen.normals">
             <el-icon><InfoFilled /></el-icon>
-            <span>已知常态</span>
-          </div>
-          <ul class="known-normals">
+            <span>已知常态（{{ currentReport.known_normals.length }}）</span>
+            <el-icon class="toggle-caret">
+              <ArrowDown v-if="auxOpen.normals" />
+              <ArrowRight v-else />
+            </el-icon>
+          </button>
+          <ul class="known-normals" v-show="auxOpen.normals">
             <li v-for="(item, idx) in currentReport.known_normals" :key="idx">{{ item }}</li>
           </ul>
         </div>
 
+        <div class="analysis-section" v-if="decommissionedRows.length">
+          <button type="button" class="section-header section-header-toggle" @click="auxOpen.decommissioned = !auxOpen.decommissioned">
+            <el-icon><InfoFilled /></el-icon>
+            <span>已下线残留（{{ decommissionedRows.length }}）</span>
+            <el-icon class="toggle-caret">
+              <ArrowDown v-if="auxOpen.decommissioned" />
+              <ArrowRight v-else />
+            </el-icon>
+          </button>
+          <template v-if="auxOpen.decommissioned">
+            <p class="section-hint">Prometheus 还能扫到这些目标，但不在当前集群节点上，多半是关机后没摘抓取。不进发现问题、不扣健康分。连续出现的会进「已知常态」。断开时间取上次巡检已记录为 down 的时间。</p>
+            <el-table :data="decommissionedRows" size="small" style="width: 100%">
+              <el-table-column label="类型" width="90">
+                <template #default="{ row }">{{ row.kind === 'target' ? '抓取' : '告警' }}</template>
+              </el-table-column>
+              <el-table-column prop="name" label="名称" min-width="140">
+                <template #default="{ row }">{{ row.name || row.job || '-' }}</template>
+              </el-table-column>
+              <el-table-column prop="instance" label="实例" min-width="200">
+                <template #default="{ row }">{{ row.instance || '-' }}</template>
+              </el-table-column>
+              <el-table-column label="断开时间" width="150">
+                <template #default="{ row }">{{ row.when || '-' }}</template>
+              </el-table-column>
+              <el-table-column label="连续" width="80">
+                <template #default="{ row }">{{ row.persistent ? '是' : '-' }}</template>
+              </el-table-column>
+              <el-table-column v-if="canManage" label="" width="72">
+                <template #default="{ row }">
+                  <el-button
+                    v-if="row.key"
+                    link
+                    type="primary"
+                    size="small"
+                    @click="ignoreItem(row.key, row.label || row.instance, 'decommissioned')"
+                  >忽略</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+          </template>
+        </div>
+
+        <div class="analysis-section" v-if="ignoreList.length">
+          <button type="button" class="section-header section-header-toggle" @click="auxOpen.ignored = !auxOpen.ignored">
+            <el-icon><InfoFilled /></el-icon>
+            <span>已手动忽略（{{ ignoreList.length }}）</span>
+            <el-icon class="toggle-caret">
+              <ArrowDown v-if="auxOpen.ignored" />
+              <ArrowRight v-else />
+            </el-icon>
+          </button>
+          <template v-if="auxOpen.ignored">
+            <p class="section-hint">点过忽略的条目。下次巡检不再报，可随时取消。</p>
+            <el-table :data="ignoreList" size="small" style="width: 100%">
+              <el-table-column prop="label" label="条目" min-width="240">
+                <template #default="{ row }">{{ row.label || row.key }}</template>
+              </el-table-column>
+              <el-table-column prop="check_id" label="检查项" width="140" />
+              <el-table-column prop="created_by" label="操作人" width="120">
+                <template #default="{ row }">{{ row.created_by || '-' }}</template>
+              </el-table-column>
+              <el-table-column v-if="canManage" label="" width="88">
+                <template #default="{ row }">
+                  <el-button link type="primary" size="small" @click="unignoreItem(row.key)">取消忽略</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+          </template>
+        </div>
+
+        <div class="analysis-section" v-if="uncoveredLines.length">
+          <button type="button" class="section-header section-header-toggle" @click="auxOpen.uncovered = !auxOpen.uncovered">
+            <el-icon><InfoFilled /></el-icon>
+            <span>未覆盖（{{ uncoveredLines.length }}）</span>
+            <el-icon class="toggle-caret">
+              <ArrowDown v-if="auxOpen.uncovered" />
+              <ArrowRight v-else />
+            </el-icon>
+          </button>
+          <template v-if="auxOpen.uncovered">
+            <p class="section-hint">Prometheus 里没有对应指标，未检查，不等于健康。</p>
+            <ul class="known-normals">
+              <li v-for="(item, idx) in uncoveredLines" :key="idx">{{ item }}</li>
+            </ul>
+          </template>
+        </div>
+
         <div class="analysis-section">
-          <div class="section-header">
+          <button type="button" class="section-header section-header-toggle" @click="auxOpen.summary = !auxOpen.summary">
             <el-icon><MagicStick /></el-icon>
             <span>巡检报告摘要</span>
-          </div>
-          <div class="analysis-card">
+            <el-icon class="toggle-caret">
+              <ArrowDown v-if="auxOpen.summary" />
+              <ArrowRight v-else />
+            </el-icon>
+          </button>
+          <div class="analysis-card" v-if="auxOpen.summary">
             <div class="markdown-body">
               {{ currentReport.ai_analysis || 'No detailed analysis available for this report.' }}
             </div>
           </div>
         </div>
 
-        <div class="analysis-section" v-if="currentReport.fleet_summary">
-          <div class="section-header">
+        <div class="analysis-section" v-if="currentReport.fleet_summary?.top_cpu?.length">
+          <button type="button" class="section-header section-header-toggle" @click="auxOpen.charts = !auxOpen.charts">
             <el-icon><Histogram /></el-icon>
-            <span>服务器资源使用状况</span>
-          </div>
+            <span>资源 Top 10</span>
+            <el-icon class="toggle-caret">
+              <ArrowDown v-if="auxOpen.charts" />
+              <ArrowRight v-else />
+            </el-icon>
+          </button>
+          <template v-if="auxOpen.charts">
           <el-row :gutter="20" class="metrics-row">
             <el-col :span="12" v-if="getServerTopOption('cpu_pct', 'CPU 使用率 Top 10 (%)').series">
               <div class="chart-card">
@@ -284,15 +561,7 @@
               </div>
             </el-col>
           </el-row>
-          <el-table v-if="currentReport.servers && currentReport.servers.length" :data="currentReport.servers.slice(0, 50)" style="width: 100%; margin-top: 16px">
-            <el-table-column prop="service" label="服务" min-width="140" />
-            <el-table-column prop="instance" label="Instance" min-width="220" />
-            <el-table-column prop="cpu_pct" label="CPU%" width="110" />
-            <el-table-column prop="mem_pct" label="Mem%" width="110" />
-            <el-table-column prop="disk_pct" label="Disk%(/)" width="110" />
-            <el-table-column prop="load1" label="Load1" width="110" />
-            <el-table-column prop="uptime_hours" label="Uptime(h)" width="120" />
-          </el-table>
+          </template>
         </div>
 
         <div class="analysis-section" v-if="currentReport.alerts_summary">
@@ -324,9 +593,14 @@
             <el-icon><DataLine /></el-icon>
             <span>7 日趋势</span>
           </div>
+          <p class="section-hint">日巡检快照拼起来的均线，用来看这周水位；单机任意时间窗仍去 Grafana。</p>
           <div class="chart-card">
-            <div class="chart-title">健康评分 / 告警数量趋势</div>
+            <div class="chart-title">健康评分 / 告警数量</div>
             <v-chart class="report-chart" :option="getTrendOption()" autoresize />
+          </div>
+          <div class="chart-card" style="margin-top: 16px" v-if="hasFleetTrend">
+            <div class="chart-title">均 CPU / 内存 / 磁盘</div>
+            <v-chart class="report-chart" :option="getFleetTrendOption()" autoresize />
           </div>
         </div>
       </div>
@@ -422,7 +696,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, computed, watch, provide } from 'vue'
+import { ref, onMounted, computed, watch, provide, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import { useSystemStore } from '@/stores/system'
 import type { InspectionReport } from '@/types/system'
@@ -430,10 +704,11 @@ import {
   Setting, Search, Calendar, 
   MagicStick, Warning, CircleCheck,
   DataLine, Histogram, Document, Refresh, Download,
-  List, Box, Coin, InfoFilled, Monitor
+  List, Box, Coin, InfoFilled, Monitor, ArrowRight, ArrowDown
 } from '@element-plus/icons-vue'
 import { taskApi } from '@/api/task'
 import { opsTicketsApi } from '@/api/ops_tickets'
+import { systemApi } from '@/api/system'
 import { ElMessage } from 'element-plus'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
@@ -520,6 +795,28 @@ const getTrendOption = () => {
     ],
   }
 }
+
+const hasFleetTrend = computed(() =>
+  (currentReport.value?.trend_7d || []).some(
+    (x: any) => x.avg_cpu != null || x.avg_mem != null || x.avg_disk != null
+  )
+)
+
+const getFleetTrendOption = () => {
+  const t: any[] = (currentReport.value?.trend_7d || []) as any[]
+  return {
+    tooltip: { trigger: 'axis' },
+    legend: { data: ['均 CPU', '均内存', '均磁盘'] },
+    grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
+    xAxis: { type: 'category', data: t.map((x) => x.date) },
+    yAxis: { type: 'value', name: '%', min: 0, max: 100 },
+    series: [
+      { name: '均 CPU', type: 'line', data: t.map((x) => x.avg_cpu ?? null), smooth: true, itemStyle: { color: '#3b82f6' } },
+      { name: '均内存', type: 'line', data: t.map((x) => x.avg_mem ?? null), smooth: true, itemStyle: { color: '#8b5cf6' } },
+      { name: '均磁盘', type: 'line', data: t.map((x) => x.avg_disk ?? null), smooth: true, itemStyle: { color: '#10b981' } },
+    ],
+  }
+}
 const reports = computed(() => systemStore.reports)
 const loading = computed(() => systemStore.loading)
 const inspectionConfig = computed(() => systemStore.inspectionConfig)
@@ -528,19 +825,40 @@ const tableData = computed(() => {
   return reports.value || []
 })
 
-const formatIdToDate = (id: string) => {
+const formatReportTime = (row: any) => {
+  const ts = row?.timestamp
+  if (ts) {
+    const d = new Date(ts)
+    if (!isNaN(d.getTime())) return d.toLocaleString()
+  }
+  const id = row?.report_id || ''
+  if (/^\d{4}-\d{2}-\d{2}$/.test(id)) return id
   if (!id) return '-'
   try {
-    const d = new Date(id.replace(/-/g, '/'))
+    const d = new Date(String(id).replace(/-/g, '/'))
     return isNaN(d.getTime()) ? id : d.toLocaleString()
   } catch (e) {
     return id
   }
 }
 
+const hasScore = (score: unknown) => score !== null && score !== undefined && Number.isFinite(Number(score))
+
+const serverLabel = (row: any) => {
+  const svc = (row?.service || '').trim()
+  const inst = (row?.instance || '').trim()
+  if (!svc || svc === inst) return '-'
+  return svc
+}
+
 const dialogVisible = ref(false)
 const configVisible = ref(false)
 const currentReport = ref<InspectionReport | null>(null)
+const auxOpen = reactive({ normals: false, uncovered: false, decommissioned: false, ignored: false, charts: false, nodes: true, summary: false })
+const nodeQuery = ref('')
+const nodeKindFilter = ref('all')
+const ignoreList = ref<any[]>([])
+const ignoreKeySet = computed(() => new Set(ignoreList.value.map((i: any) => i.key).filter(Boolean)))
 
 const configForm = ref({
   prometheus_url: '',
@@ -559,6 +877,7 @@ watch(inspectionConfig, (newVal) => {
 onMounted(() => {
   systemStore.fetchReports()
   systemStore.fetchInspectionConfig()
+  loadIgnores()
 })
 
 const handleRun = () => {
@@ -571,21 +890,54 @@ const saveConfig = async () => {
 }
 
 const getScoreType = (score: number) => {
-  if (!score) return 'info'
+  if (!hasScore(score)) return 'info'
   if (score >= 90) return 'success'
   if (score >= 70) return 'warning'
   return 'danger'
 }
 
 const getProgressStatus = (score: number) => {
-  if (!score) return ''
+  if (!hasScore(score)) return ''
   if (score >= 90) return 'success'
   if (score >= 70) return 'warning'
   return 'exception'
 }
 
+const scoreReasons = computed(() => {
+  const reasons = currentReport.value?.health_summary?.reasons || []
+  return reasons.filter((r: string) => r && r !== 'System Healthy')
+})
 const esClusters = computed(() => currentReport.value?.elasticsearch?.clusters || [])
 const esHeapNodes = computed(() => currentReport.value?.elasticsearch?.heap_nodes || [])
+const middlewareRows = computed(() => currentReport.value?.middleware?.items || [])
+const checklistCovered = computed(() =>
+  (currentReport.value?.checklist || [])
+    .filter((c: any) => c.level !== 'skip' && c.id !== 'decommissioned')
+    .map((c: any, i: number) => {
+      const ignored = ignoreKeySet.value.has(`check:${c.id}`)
+      if (ignored && (c.level === 'warning' || c.level === 'critical')) {
+        return { ...c, level: 'ok', result: '已忽略', _key: `${c.id || 'check'}-${i}` }
+      }
+      return { ...c, _key: `${c.id || 'check'}-${i}` }
+    })
+)
+const decommissionedRows = computed(() => {
+  const listed = currentReport.value?.decommissioned || []
+  if (listed.length) return listed.filter((row: any) => !row.key || !ignoreKeySet.value.has(row.key))
+  const folded = (currentReport.value?.checklist || []).find((c: any) => c.id === 'decommissioned')
+  return (folded?.detail || []).map((label: string) => ({ label, instance: label, name: 'HostDown', kind: 'alert' }))
+})
+const uncoveredLines = computed(() => {
+  const rows = currentReport.value?.checklist || []
+  const folded = rows.find((c: any) => c.id === 'uncovered')
+  if (folded?.detail?.length) return folded.detail
+  return rows.filter((c: any) => c.level === 'skip').map((c: any) => `${c.name}：${c.result}`)
+})
+const discoveredMetricCount = computed(() => {
+  const n = currentReport.value?.middleware?.discovered_names
+  if (n) return n
+  return currentReport.value?.discovery?.metric_name_count || 0
+})
 const workloadRows = computed(() => {
   const rows = currentReport.value?.workloads || []
   if (!rows.length) return []
@@ -604,6 +956,33 @@ const workloadRows = computed(() => {
     }))
   }
   return rows
+})
+
+const workloadNsGroups = computed(() => {
+  const map = new Map<string, any[]>()
+  for (const row of workloadRows.value) {
+    const ns = row.namespace || '-'
+    if (!map.has(ns)) map.set(ns, [])
+    map.get(ns)!.push(row)
+  }
+  const rank = (level: string) => (level === 'critical' ? 0 : level === 'warning' ? 1 : 2)
+  const worst = (items: any[]) => {
+    if (items.some((i) => i.level === 'critical')) return 'critical'
+    if (items.some((i) => i.level === 'warning')) return 'warning'
+    return 'ok'
+  }
+  return [...map.entries()].map(([namespace, workloads]) => ({
+    key: namespace,
+    namespace,
+    count: workloads.length,
+    ready: workloads.reduce((s, w) => s + Number(w.ready || 0), 0),
+    desired: workloads.reduce((s, w) => s + Number(w.desired || 0), 0),
+    level: worst(workloads),
+    workloads: workloads.map((w, i) => ({
+      ...w,
+      key: w.key || `${namespace}/${w.kind || 'wl'}/${w.name || i}`,
+    })),
+  })).sort((a, b) => rank(a.level) - rank(b.level) || a.namespace.localeCompare(b.namespace))
 })
 
 const esStatusType = (status?: string) => {
@@ -626,8 +1005,45 @@ const checkLevelLabel = (level?: string) => {
   if (level === 'warning') return '关注'
   if (level === 'critical') return '严重'
   if (level === 'skip') return '未覆盖'
-  if (level === 'info') return '常态'
+  if (level === 'info') return '记录'
   return level || '-'
+}
+
+const checkItems = (row: any) => {
+  const raw = Array.isArray(row?.items) && row.items.length
+    ? row.items
+    : (row?.detail || []).map((label: string) => ({ key: `${row.id}:${label}`, label }))
+  return raw.filter((it: any) => it && (it.label || it.key) && !ignoreKeySet.value.has(it.key))
+}
+
+const loadIgnores = async () => {
+  try {
+    ignoreList.value = await systemApi.listInspectionIgnores()
+  } catch (e) {
+    console.error(e)
+  }
+}
+
+const ignoreItem = async (key: string, label?: string, checkId?: string) => {
+  if (!key) return
+  try {
+    await systemApi.addInspectionIgnore({ key, label: label || key, check_id: checkId || '' })
+    await loadIgnores()
+    ElMessage.success('已忽略，下次巡检不再报')
+  } catch (e) {
+    console.error(e)
+  }
+}
+
+const unignoreItem = async (key: string) => {
+  if (!key) return
+  try {
+    await systemApi.removeInspectionIgnore(key)
+    await loadIgnores()
+    ElMessage.success('已取消忽略')
+  } catch (e) {
+    console.error(e)
+  }
 }
 
 const verdictAlertType = computed(() => {
@@ -650,6 +1066,120 @@ const formatBytes = (n?: number) => {
   return `${size.toFixed(1)}${units[i]}`
 }
 
+const fmtPct = (n?: number) => {
+  if (n == null || Number.isNaN(Number(n))) return '-'
+  return Number(n).toFixed(1)
+}
+
+const fmtDelta = (n?: number) => {
+  if (n == null || Number.isNaN(Number(n))) return '-'
+  const v = Number(n)
+  const sign = v > 0 ? '+' : ''
+  return `${sign}${v.toFixed(1)}pt`
+}
+
+const deltaClass = (n?: number) => {
+  const v = Number(n)
+  if (!Number.isFinite(v)) return ''
+  if (v >= 10) return 'delta-hot'
+  if (v > 0) return 'delta-up'
+  if (v < 0) return 'delta-down'
+  return ''
+}
+
+const clipPct = (n?: number) => {
+  const v = Number(n || 0)
+  if (Number.isNaN(v)) return 0
+  return Math.max(0, Math.min(100, Math.round(v)))
+}
+
+const pctColor = (n: number | undefined, warn: number, crit: number) => {
+  const v = Number(n || 0)
+  if (v >= crit) return '#ef4444'
+  if (v >= warn) return '#f59e0b'
+  return '#22c55e'
+}
+
+const formatUptime = (hours?: number) => {
+  const n = Number(hours || 0)
+  if (!n) return '-'
+  if (n >= 48) return `${(n / 24).toFixed(1)}d`
+  return `${n.toFixed(1)}h`
+}
+
+const nodeKindLabel = (row: any) => {
+  if (row?.kind === 'k8s' && row?.cloud === 'aws') return 'EKS'
+  if (row?.kind === 'k8s') return 'K8s'
+  return '独立'
+}
+
+const isIpv4 = (s?: string) => {
+  const parts = String(s || '').split('.')
+  if (parts.length !== 4) return false
+  return parts.every((p) => /^\d+$/.test(p) && Number(p) >= 0 && Number(p) <= 255)
+}
+
+const hostFromInstance = (inst?: string) => {
+  let t = String(inst || '').trim()
+  if (t.includes('://')) t = t.split('://')[1] || t
+  t = t.split('/')[0]
+  if (t.startsWith('[') && t.includes(']')) return t.slice(1, t.indexOf(']'))
+  if ((t.match(/:/g) || []).length === 1) return t.split(':')[0]
+  return t
+}
+
+const displayIp = (row: any) => {
+  if (row?.ip) return row.ip
+  const host = hostFromInstance(row?.instance)
+  return isIpv4(host) ? host : '-'
+}
+
+const machineName = (row: any) => {
+  for (const cand of [row?.node_name, row?.hostname, row?.nodename, hostFromInstance(row?.instance)]) {
+    const v = String(cand || '').trim()
+    if (v && !isIpv4(v)) return v
+  }
+  return '-'
+}
+
+const nodeHotCount = computed(() =>
+  (currentReport.value?.servers || []).filter((s: any) => s.level === 'warning' || s.level === 'critical').length
+)
+
+const filteredServers = computed(() => {
+  const rows = currentReport.value?.servers || []
+  const kind = nodeKindFilter.value
+  const q = nodeQuery.value.trim().toLowerCase()
+  return rows.filter((s: any) => {
+    if (kind === 'k8s' && s.kind !== 'k8s') return false
+    if (kind === 'host' && s.kind === 'k8s') return false
+    if (kind === 'hot' && s.level !== 'warning' && s.level !== 'critical') return false
+    if (!q) return true
+    const blob = [s.ip, s.node_name, s.hostname, s.service, s.role, s.instance, s.nodegroup, s.instance_id, s.zone, s.instance_type, s.compute_type]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase()
+    return blob.includes(q)
+  })
+})
+
+const bytesResourceText = (used?: number, total?: number, pct?: number) => {
+  if (total) return `${formatBytes(used)} / ${formatBytes(total)}（${fmtPct(pct)}%）`
+  if (pct != null && pct !== undefined) return `${fmtPct(pct)}%`
+  return '-'
+}
+
+const cpuResourceText = (row: any) => {
+  const cores = Number(row?.cpu_cores || 0)
+  const pct = Number(row?.cpu_pct)
+  if (cores && Number.isFinite(pct)) {
+    const used = (pct / 100) * cores
+    return `${used.toFixed(1)} / ${cores} 核（${fmtPct(pct)}%）`
+  }
+  if (Number.isFinite(pct)) return `${fmtPct(pct)}%`
+  return '-'
+}
+
 const viewReport = async (row: any) => {
   await systemStore.fetchReportDetail(row.report_id)
   const rep: any = systemStore.currentReport || {}
@@ -662,6 +1192,13 @@ const viewReport = async (row: any) => {
         row?.score ??
         null)
   currentReport.value = { ...rep, score }
+  auxOpen.normals = false
+  auxOpen.uncovered = false
+  auxOpen.decommissioned = false
+  auxOpen.ignored = false
+  auxOpen.charts = false
+  auxOpen.nodes = true
+  auxOpen.summary = false
   dialogVisible.value = true
 }
 
@@ -951,8 +1488,104 @@ const fetchLogs = async (page = 1) => {
   font-size: 16px;
 }
 
-.section-header .el-icon {
-  color: #8b5cf6;
+.section-hint {
+  font-size: 12px;
+  color: #64748b;
+  margin: -8px 0 0;
+}
+
+.section-header-toggle {
+  cursor: pointer;
+  border: none;
+  background: none;
+  padding: 0;
+  width: 100%;
+  font: inherit;
+}
+
+.section-header-toggle .toggle-caret {
+  margin-left: auto;
+  color: #94a3b8;
+}
+
+.check-detail-list {
+  margin: 0;
+  padding: 4px 8px 8px 28px;
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.pct-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pct-cell .el-progress {
+  flex: 1;
+}
+
+.pct-cell span {
+  width: 42px;
+  text-align: right;
+  font-size: 12px;
+  color: #334155;
+}
+
+.bytes-sub {
+  margin-top: 2px;
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+.node-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin: 8px 0 10px;
+}
+
+.resource-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.resource-cell span {
+  font-size: 12px;
+  color: #334155;
+  line-height: 1.3;
+}
+
+.delta-up {
+  color: #d97706;
+}
+
+.delta-hot {
+  color: #dc2626;
+  font-weight: 600;
+}
+
+.delta-down {
+  color: #059669;
+}
+
+.check-detail-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+
+.score-reasons {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #64748b;
+  max-width: 280px;
+  line-height: 1.4;
 }
 
 .analysis-card {

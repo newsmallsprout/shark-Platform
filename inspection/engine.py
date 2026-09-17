@@ -1,17 +1,26 @@
 import requests
 import json
 import os
+import threading
 import datetime
 from datetime import datetime, timezone, timedelta
-from .models import InspectionConfig, InspectionReport
-from .cluster_checks import collect_cluster_checks, compute_health_score
-from .catalog import display_name
-
+from .models import InspectionConfig, InspectionReport, InspectionIgnore
+from .cluster_checks import (
+    attach_server_deltas,
+    collect_cluster_checks,
+    compute_health_score,
+    label_servers,
+    mark_server_pressure,
+    sort_servers,
+    RESOURCE_DELTA_WARN_PT,
+    _hostname_from_metric,
+)
 from core.logging import log
 
 class InspectionEngine:
     def __init__(self):
         self._config = None
+        self._run_lock = threading.Lock()
 
     @property
     def config(self):
@@ -49,6 +58,24 @@ class InspectionEngine:
             print(f"Prometheus query error: {e}")
             log("inspection", f"Prometheus query error: {e}")
         return []
+
+    def _list_metric_names(self):
+        """扫 Prometheus 里实际有的指标名。失败返回 None，清单退回按食谱探测。"""
+        if not self.config.prometheus_url:
+            return None
+        try:
+            url = f"{self._get_base_url()}/api/v1/label/__name__/values"
+            log("inspection", "Listing Prometheus metric names")
+            resp = requests.get(url, timeout=15)
+            if resp.ok:
+                payload = resp.json()
+                if payload.get("status") == "success":
+                    return [str(n) for n in (payload.get("data") or []) if n]
+            log("inspection", f"List metric names HTTP {getattr(resp, 'status_code', '?')}")
+        except Exception as e:
+            print(f"Prometheus metric names error: {e}")
+            log("inspection", f"Prometheus metric names error: {e}")
+        return None
 
     def _get_targets(self):
         if not self.config.prometheus_url:
@@ -133,7 +160,7 @@ class InspectionEngine:
         except Exception as e:
             return f"AI analysis error: {e}"
 
-    def _calculate_health_score(self, down_targets, firing_alerts, servers, pvc_items=None, data_insufficient=False, elasticsearch=None):
+    def _calculate_health_score(self, down_targets, firing_alerts, servers, pvc_items=None, data_insufficient=False, elasticsearch=None, cluster=None):
         return compute_health_score(
             down_targets,
             firing_alerts,
@@ -141,6 +168,7 @@ class InspectionEngine:
             pvc_items=pvc_items,
             data_insufficient=data_insufficient,
             elasticsearch=elasticsearch,
+            cluster=cluster,
         )
 
     def _predict_future_scores(self, current_score):
@@ -207,10 +235,57 @@ class InspectionEngine:
             
         return predictions
 
-    def run(self):
-        log("inspection", "Starting inspection run...")
+    def _overlapping_run_result(self):
+        log("inspection", "Skip overlapping inspection run")
         report_id = datetime.now().strftime('%Y-%m-%d')
-        
+        existing = InspectionReport.objects.filter(report_id=report_id).first()
+        if existing and existing.content:
+            payload = dict(existing.content)
+            payload["busy"] = True
+            return payload
+        return {
+            "report_id": report_id,
+            "verdict": "巡检正在执行，请稍后刷新",
+            "findings": ["上一轮巡检尚未结束"],
+            "checklist": [],
+            "score": None,
+            "level": "unknown",
+            "health_summary": {"score": None, "level": "unknown", "reasons": ["巡检进行中"]},
+            "data_insufficient": True,
+            "busy": True,
+        }
+
+    def run(self):
+        if not self._run_lock.acquire(blocking=False):
+            return self._overlapping_run_result()
+        try:
+            return self._execute()
+        finally:
+            self._run_lock.release()
+
+    def _execute(self):
+        log("inspection", "Starting inspection run...")
+        try:
+            self._config = InspectionConfig.load()
+        except Exception as e:
+            log("inspection", f"Reload InspectionConfig failed: {e}")
+        report_id = datetime.now().strftime('%Y-%m-%d')
+        if not (self.config.prometheus_url or "").strip():
+            log("inspection", "Skip inspection: prometheus_url empty")
+            existing = InspectionReport.objects.filter(report_id=report_id).first()
+            if existing and existing.content:
+                return existing.content
+            return {
+                "report_id": report_id,
+                "verdict": "无法判定（未配置 Prometheus Endpoint）",
+                "findings": ["未配置 Prometheus Endpoint，巡检未执行"],
+                "checklist": [],
+                "score": None,
+                "level": "unknown",
+                "health_summary": {"score": None, "level": "unknown", "reasons": ["未配置 Prometheus"]},
+                "data_insufficient": True,
+            }
+
         # 1. Collect Data
         metrics_summary = []
         
@@ -227,7 +302,8 @@ class InspectionEngine:
             down_targets.append({
                 "job": labels.get('job', 'unknown'),
                 "instance": labels.get('instance', 'unknown'),
-                "last_error": t.get('lastError', '')
+                "last_error": t.get('lastError', ''),
+                "last_scrape": t.get('lastScrape', ''),
             })
             
         log("inspection", f"Targets fetched: {total_targets} total, {len(down_targets)} down")
@@ -254,7 +330,9 @@ class InspectionEngine:
             firing.append({
                 "name": labels.get('alertname', 'Unknown Alert'),
                 "severity": labels.get('severity', 'warning'),
-                "summary": annotations.get('summary', 'No summary available')
+                "summary": annotations.get('summary', 'No summary available'),
+                "instance": labels.get('instance') or "",
+                "job": labels.get('job') or "",
             })
             
         log("inspection", f"Alerts fetched: {len(alerts)} total, {len(firing)} firing")
@@ -281,59 +359,133 @@ class InspectionEngine:
         uptime_results = self._query_prometheus(uptime_h_query)
 
         by_instance = {}
-        def _set(inst, k, v):
+        def _set(inst, k, v, metric=None):
             if not inst:
                 return
             if inst not in by_instance:
                 by_instance[inst] = {"instance": inst}
             by_instance[inst][k] = v
+            name = _hostname_from_metric(metric)
+            if name and not by_instance[inst].get("nodename"):
+                by_instance[inst]["nodename"] = name
 
         for r in cpu_results:
             inst = (r.get('metric') or {}).get('instance') or ''
             try:
-                _set(inst, 'cpu_pct', round(float(r['value'][1]), 2))
+                _set(inst, 'cpu_pct', round(float(r['value'][1]), 2), r.get('metric'))
             except Exception:
                 pass
         for r in mem_results:
             inst = (r.get('metric') or {}).get('instance') or ''
             try:
-                _set(inst, 'mem_pct', round(float(r['value'][1]), 2))
+                _set(inst, 'mem_pct', round(float(r['value'][1]), 2), r.get('metric'))
             except Exception:
                 pass
         for r in disk_results:
             inst = (r.get('metric') or {}).get('instance') or ''
             try:
-                _set(inst, 'disk_pct', round(float(r['value'][1]), 2))
+                _set(inst, 'disk_pct', round(float(r['value'][1]), 2), r.get('metric'))
             except Exception:
                 pass
         for r in load1_results:
             inst = (r.get('metric') or {}).get('instance') or ''
             try:
-                _set(inst, 'load1', round(float(r['value'][1]), 2))
+                _set(inst, 'load1', round(float(r['value'][1]), 2), r.get('metric'))
             except Exception:
                 pass
         for r in uptime_results:
             inst = (r.get('metric') or {}).get('instance') or ''
             try:
-                _set(inst, 'uptime_hours', round(float(r['value'][1]), 1))
+                _set(inst, 'uptime_hours', round(float(r['value'][1]), 1), r.get('metric'))
+            except Exception:
+                pass
+
+        mem_total_results = self._query_prometheus('node_memory_MemTotal_bytes')
+        mem_avail_results = self._query_prometheus('node_memory_MemAvailable_bytes')
+        disk_size_results = self._query_prometheus(
+            'node_filesystem_size_bytes{mountpoint="/",fstype!~"tmpfs|overlay"}'
+        )
+        disk_avail_results = self._query_prometheus(
+            'node_filesystem_avail_bytes{mountpoint="/",fstype!~"tmpfs|overlay"}'
+        )
+        cpu_cores_results = self._query_prometheus('count by (instance) (node_cpu_seconds_total{mode="idle"})')
+        mem_total = {}
+        mem_avail = {}
+        for r in mem_total_results:
+            inst = (r.get('metric') or {}).get('instance') or ''
+            try:
+                mem_total[inst] = float(r['value'][1])
+            except Exception:
+                pass
+        for r in mem_avail_results:
+            inst = (r.get('metric') or {}).get('instance') or ''
+            try:
+                mem_avail[inst] = float(r['value'][1])
+            except Exception:
+                pass
+        for inst, total in mem_total.items():
+            avail = mem_avail.get(inst)
+            if avail is None:
+                continue
+            _set(inst, 'mem_total_bytes', int(total))
+            _set(inst, 'mem_used_bytes', int(max(0, total - avail)))
+        for r in disk_size_results:
+            inst = (r.get('metric') or {}).get('instance') or ''
+            try:
+                _set(inst, 'disk_total_bytes', int(float(r['value'][1])))
+            except Exception:
+                pass
+        for r in disk_avail_results:
+            inst = (r.get('metric') or {}).get('instance') or ''
+            size = (by_instance.get(inst) or {}).get('disk_total_bytes')
+            try:
+                avail = float(r['value'][1])
+            except Exception:
+                continue
+            if size:
+                _set(inst, 'disk_used_bytes', int(max(0, float(size) - avail)))
+        for r in cpu_cores_results:
+            inst = (r.get('metric') or {}).get('instance') or ''
+            try:
+                _set(inst, 'cpu_cores', int(float(r['value'][1])))
             except Exception:
                 pass
 
         servers = list(by_instance.values())
-        for s in servers:
-            s['service'] = display_name(instance=s.get('instance') or '')
-        servers.sort(key=lambda x: float(x.get('cpu_pct') or 0), reverse=True)
+        mem_24h_query = (
+            '((1 - (node_memory_MemAvailable_bytes offset 24h / node_memory_MemTotal_bytes offset 24h)) * 100)'
+        )
+        disk_24h_query = (
+            '((1 - (node_filesystem_avail_bytes{mountpoint="/",fstype!~"tmpfs|overlay"} offset 24h'
+            ' / node_filesystem_size_bytes{mountpoint="/",fstype!~"tmpfs|overlay"} offset 24h)) * 100)'
+        )
+        servers = attach_server_deltas(
+            servers,
+            self._query_prometheus(mem_24h_query),
+            self._query_prometheus(disk_24h_query),
+        )
+        servers = label_servers(self._query_prometheus, servers, targets=targets)
+        servers = mark_server_pressure(servers)
+        sort_servers(servers)
 
         def _avg(key):
             vals = [float(s.get(key) or 0) for s in servers if s.get(key) is not None]
             return round(sum(vals) / len(vals), 2) if vals else 0.0
 
+        hot = [s for s in servers if s.get("level") in ("warning", "critical")]
+        rising = [
+            s for s in servers
+            if (s.get("disk_delta_24h") or 0) >= RESOURCE_DELTA_WARN_PT
+            or (s.get("mem_delta_24h") or 0) >= RESOURCE_DELTA_WARN_PT
+        ]
         fleet_summary = {
             "server_count": len(servers),
             "avg_cpu_pct": _avg('cpu_pct'),
             "avg_mem_pct": _avg('mem_pct'),
             "avg_disk_pct": _avg('disk_pct'),
-            "top_cpu": servers[:10],
+            "hot_count": len(hot),
+            "rising_24h_count": len(rising),
+            "top_cpu": sorted(servers, key=lambda x: float(x.get('cpu_pct') or 0), reverse=True)[:10],
             "top_mem": sorted(servers, key=lambda x: float(x.get('mem_pct') or 0), reverse=True)[:10],
             "top_disk": sorted(servers, key=lambda x: float(x.get('disk_pct') or 0), reverse=True)[:10],
         }
@@ -356,12 +508,46 @@ class InspectionEngine:
         })
 
         log("inspection", "Collecting cluster checklist (PVC / kube-state / blackbox)...")
+        prev_keys = []
+        prev_times = {}
+        try:
+            today_id = datetime.now().strftime('%Y-%m-%d')
+            yid = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+            for rid in (today_id, yid):
+                prev = InspectionReport.objects.filter(report_id=rid).first()
+                if not prev or not prev.content:
+                    continue
+                ts = prev.content.get("timestamp") or ""
+                for x in (prev.content.get("decommissioned") or []):
+                    k = f"{x.get('job') or ''}|{x.get('instance') or ''}"
+                    prev_keys.append(k)
+                    if x.get("last_scrape") or x.get("when") or ts:
+                        prev_times[k] = x.get("last_scrape") or ts
+                for t in (prev.content.get("down_targets") or []):
+                    k = f"{t.get('job') or ''}|{t.get('instance') or ''}"
+                    prev_keys.append(k)
+                    if t.get("last_scrape") or ts:
+                        prev_times[k] = t.get("last_scrape") or ts
+                if prev_keys:
+                    break
+        except Exception:
+            prev_keys = []
+            prev_times = {}
+        ignore_keys = []
+        try:
+            ignore_keys = list(InspectionIgnore.objects.values_list("key", flat=True))
+        except Exception:
+            ignore_keys = []
         try:
             cluster = collect_cluster_checks(
                 self._query_prometheus,
                 firing_alerts=firing,
                 down_targets=down_targets,
                 servers=servers,
+                metric_names=self._list_metric_names(),
+                previous_leftover_keys=prev_keys,
+                ignore_keys=ignore_keys,
+                previous_times=prev_times,
             )
         except Exception as e:
             log("inspection", f"Cluster checklist failed: {e}")
@@ -372,10 +558,15 @@ class InspectionEngine:
                 "pvc": {"available": False, "items": [], "top": [], "source": ""},
                 "services": [],
                 "elasticsearch": {},
+                "middleware": {},
+                "workloads": {},
+                "discovery": {"scanned": False, "metric_name_count": 0, "middleware_families": 0},
                 "known_normals": [],
+                "decommissioned": [],
                 "data_insufficient": True,
-                "middleware_todo": [],
             }
+        firing = cluster.get("firing_alerts", firing)
+        down_targets = cluster.get("down_targets", down_targets)
         pvc_items = (cluster.get("pvc") or {}).get("items") or []
         metrics_summary.append({
             "category": "storage", "name": "pvc_count", "display": "PVC 用量样本",
@@ -395,9 +586,11 @@ class InspectionEngine:
                 "findings": cluster.get("findings"),
                 "checks": cluster.get("checks"),
                 "elasticsearch": cluster.get("elasticsearch"),
+                "middleware": cluster.get("middleware"),
                 "pvc": (cluster.get("pvc") or {}).get("items"),
                 "workloads": (cluster.get("workloads") or {}).get("groups"),
                 "known_normals": cluster.get("known_normals"),
+                "decommissioned": cluster.get("decommissioned"),
                 "targets": {"total": total_targets, "down": down_targets},
                 "alerts": {"firing": firing},
                 "fleet": fleet_summary,
@@ -406,9 +599,11 @@ class InspectionEngine:
                 "你是一名专业资深的系统运维工程师（偏 SRE）。"
                 "请基于我提供的巡检数据，输出一份可执行的中文巡检报告。"
                 "Elasticsearch 用 elasticsearch-exporter 的集群色/节点/堆，不要说没查到。"
+                "中间件按 Prometheus 指标名扫描：对上 redis_/mysql_/aws_rds_ 等前缀，或未被食谱覆盖的 *_up 才写入。没有扫到就是未覆盖，不要调 AWS API，不要写成健康。"
                 "PVC 必须按每一块盘写用量，不要合并成一个服务。"
                 "workloads 一眼是 Deploy/STS 的 Ready n/m；pods 里才是 Pod 名、Pod IP、节点 IP。"
                 "known_normals 里的项不要当成故障。"
+                "decommissioned / 已下线残留是还能扫到、但不在当前 kube 节点上的抓取，提醒清理 scrape，不要写成故障。"
                 "checks 里 level=skip 表示缺指标，请写明未覆盖，不要写成健康。"
                 "不要输出安全漏洞/CVE/风险扫描相关内容。"
                 "输出结构必须包含：\n"
@@ -449,6 +644,7 @@ class InspectionEngine:
             pvc_items=pvc_items,
             data_insufficient=bool(cluster.get("data_insufficient")),
             elasticsearch=cluster.get("elasticsearch"),
+            cluster=cluster,
         )
 
         try:
@@ -561,7 +757,10 @@ class InspectionEngine:
             "workload_pods": (cluster.get("workloads") or {}).get("items") or [],
             "services": cluster.get("services") or [],
             "elasticsearch": cluster.get("elasticsearch") or {},
+            "middleware": cluster.get("middleware") or {},
+            "discovery": cluster.get("discovery") or {},
             "known_normals": cluster.get("known_normals") or [],
+            "decommissioned": cluster.get("decommissioned") or [],
         }
         
         # Save to DB

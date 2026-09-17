@@ -92,6 +92,10 @@ class HasRolePermission(BasePermission):
                 return has('run_inspection')
             if '/inspection/reports' in path:
                 return has('view_inspection')
+            if '/inspection/ignores' in path:
+                if method == 'GET':
+                    return has('view_inspection')
+                return has('run_inspection')
         if '/api/db/' in path:
             if '/permission-subjects/' in path or '/access-rules/' in path or '/execution-policies/' in path:
                 if method == 'GET':

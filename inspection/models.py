@@ -18,6 +18,18 @@ class InspectionConfig(models.Model):
     def __str__(self):
         return "Inspection Configuration"
 
+class InspectionIgnore(models.Model):
+    key = models.CharField(max_length=512, unique=True)
+    check_id = models.CharField(max_length=64, blank=True, default="")
+    label = models.CharField(max_length=512, blank=True, default="")
+    note = models.CharField(max_length=255, blank=True, default="")
+    created_by = models.CharField(max_length=128, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.key
+
+
 class InspectionReport(models.Model):
     report_id = models.CharField(max_length=50, unique=True)
     content = models.JSONField()
