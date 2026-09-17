@@ -892,6 +892,21 @@ class ClusterCheckTests(unittest.TestCase):
         self.assertEqual(row["kind"], "k8s")
         self.assertEqual(row["role"], "K8s worker")
 
+    def test_hostname_from_prometheus_targets(self):
+        from inspection.simulate_inspection import Prom
+        from inspection.cluster_checks import label_servers
+
+        targets = [{
+            "labels": {"instance": "192.168.12.188:9100", "job": "node-exporter", "node": "test-k8s-control-plane-01"},
+            "discoveredLabels": {"__meta_kubernetes_pod_node_name": "test-k8s-control-plane-01"},
+        }]
+        labeled = label_servers(Prom({}), [{"instance": "192.168.12.188:9100", "cpu_pct": 10}], targets=targets)
+        row = labeled[0]
+        self.assertEqual(row["node_name"], "test-k8s-control-plane-01")
+        self.assertEqual(row["ip"], "192.168.12.188")
+        self.assertEqual(row["kind"], "k8s")
+        self.assertEqual(row["role"], "K8s 控制面")
+
     def test_eks_from_uname_without_kube_state(self):
         from inspection.simulate_inspection import Prom
         from inspection.cluster_checks import label_servers

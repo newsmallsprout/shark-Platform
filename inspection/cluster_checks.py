@@ -937,8 +937,26 @@ def _metric_label(m, *needles):
     return ""
 
 
-def enrich_servers(query_fn, servers):
-    """机器名走 node_uname_info / kube 节点名；IP 单独成列。EKS 用 provider_id 和 nodegroup，不调 AWS API。"""
+def _hostname_from_target(target):
+    labels = (target or {}).get("labels") or {}
+    discovered = (target or {}).get("discoveredLabels") or {}
+    for src in (labels, discovered):
+        name = _hostname_from_metric(src)
+        if name:
+            return name
+    for key in (
+        "__meta_kubernetes_pod_node_name",
+        "__meta_kubernetes_node_name",
+        "__meta_kubernetes_endpoint_node_name",
+    ):
+        val = str(discovered.get(key) or "").strip()
+        if val and not _is_ipv4(val):
+            return val
+    return ""
+
+
+def enrich_servers(query_fn, servers, targets=None):
+    """机器名走 kube 节点 / node_uname / Prom target 的 node 标签。EKS 用 provider_id，不调 AWS API。"""
     nodes = {}
 
     def _node(name):
@@ -993,6 +1011,12 @@ def enrich_servers(query_fn, servers):
             info["zone"] = zone
         if iid:
             info["instance_id"] = iid
+        iip = (m.get("internal_ip") or "").strip()
+        if _is_ipv4(iip):
+            if iip not in info["ips"]:
+                info["ips"].append(iip)
+            if not info["ip"]:
+                info["ip"] = iip
 
     for row in query_fn("kube_node_labels") or []:
         m = _metric(row)
@@ -1047,6 +1071,16 @@ def enrich_servers(query_fn, servers):
             uname_by_instance, uname_by_host,
             (m.get("instance") or "").strip(), _hostname_from_metric(m),
         )
+    for row in query_fn("count by (instance, nodename) (node_uname_info)") or []:
+        m = _metric(row)
+        _remember_host(
+            uname_by_instance, uname_by_host,
+            (m.get("instance") or "").strip(), _hostname_from_metric(m),
+        )
+    for t in targets or []:
+        labels = t.get("labels") or {}
+        inst = (labels.get("instance") or "").strip()
+        _remember_host(uname_by_instance, uname_by_host, inst, _hostname_from_target(t))
 
     for s in servers or []:
         inst = s.get("instance") or ""
@@ -1110,9 +1144,9 @@ def enrich_servers(query_fn, servers):
     return servers
 
 
-def label_servers(query_fn, servers):
+def label_servers(query_fn, servers, targets=None):
     """机器表：有别名用别名；否则用 kube 节点名。不要把 IP 再填进服务列。"""
-    return enrich_servers(query_fn, servers)
+    return enrich_servers(query_fn, servers, targets=targets)
 
 
 CPU_WARN_PCT = 85

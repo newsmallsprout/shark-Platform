@@ -463,7 +463,7 @@ class InspectionEngine:
             self._query_prometheus(mem_24h_query),
             self._query_prometheus(disk_24h_query),
         )
-        servers = label_servers(self._query_prometheus, servers)
+        servers = label_servers(self._query_prometheus, servers, targets=targets)
         servers = mark_server_pressure(servers)
         servers.sort(key=lambda x: (
             {"critical": 0, "warning": 1, "ok": 2}.get(x.get("level") or "ok", 9),

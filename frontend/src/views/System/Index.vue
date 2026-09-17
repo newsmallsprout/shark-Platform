@@ -514,11 +514,15 @@
         </div>
 
         <div class="analysis-section">
-          <div class="section-header">
+          <button type="button" class="section-header section-header-toggle" @click="auxOpen.summary = !auxOpen.summary">
             <el-icon><MagicStick /></el-icon>
             <span>巡检报告摘要</span>
-          </div>
-          <div class="analysis-card">
+            <el-icon class="toggle-caret">
+              <ArrowDown v-if="auxOpen.summary" />
+              <ArrowRight v-else />
+            </el-icon>
+          </button>
+          <div class="analysis-card" v-if="auxOpen.summary">
             <div class="markdown-body">
               {{ currentReport.ai_analysis || 'No detailed analysis available for this report.' }}
             </div>
@@ -850,7 +854,7 @@ const serverLabel = (row: any) => {
 const dialogVisible = ref(false)
 const configVisible = ref(false)
 const currentReport = ref<InspectionReport | null>(null)
-const auxOpen = reactive({ normals: false, uncovered: false, decommissioned: false, ignored: false, charts: false, nodes: true })
+const auxOpen = reactive({ normals: false, uncovered: false, decommissioned: false, ignored: false, charts: false, nodes: true, summary: false })
 const nodeQuery = ref('')
 const nodeKindFilter = ref('all')
 const ignoreList = ref<any[]>([])
@@ -1194,6 +1198,7 @@ const viewReport = async (row: any) => {
   auxOpen.ignored = false
   auxOpen.charts = false
   auxOpen.nodes = true
+  auxOpen.summary = false
   dialogVisible.value = true
 }
 
