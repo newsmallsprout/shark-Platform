@@ -765,26 +765,207 @@ def _cluster_hosts(query_fn):
     return {h for h in hosts if h}
 
 
-def label_servers(query_fn, servers):
-    """机器表：有别名用别名；否则用 kube 节点名。不要把 IP 再填进服务列。"""
-    node_map = {}
+def _parse_provider_id(pid):
+    text = (pid or "").strip()
+    low = text.lower()
+    cloud, zone, instance_id = "", "", ""
+    if low.startswith("aws://"):
+        cloud = "aws"
+        rest = text.split("://", 1)[-1].strip("/")
+        parts = [p for p in rest.split("/") if p]
+        if len(parts) >= 2:
+            zone, instance_id = parts[0], parts[-1]
+        elif parts:
+            instance_id = parts[-1]
+    elif low.startswith("gce://"):
+        cloud = "gcp"
+    elif low.startswith("azure://"):
+        cloud = "azure"
+    return cloud, zone, instance_id
+
+
+def _metric_label(m, *needles):
+    m = m or {}
+    for key, val in m.items():
+        if not val:
+            continue
+        lk = (key or "").lower().replace("-", "_")
+        for n in needles:
+            if n in lk:
+                return str(val)
+    return ""
+
+
+def enrich_servers(query_fn, servers):
+    """IP / kube 名 / 角色。EKS 用 kube_node_info.provider_id 和 nodegroup 标签，不调 AWS API。"""
+    nodes = {}
+
+    def _node(name):
+        name = (name or "").strip()
+        if not name:
+            return None
+        if name not in nodes:
+            nodes[name] = {
+                "node_name": name,
+                "ip": "",
+                "hostname": "",
+                "provider_id": "",
+                "cloud": "",
+                "zone": "",
+                "instance_id": "",
+                "nodegroup": "",
+                "instance_type": "",
+                "compute_type": "",
+            }
+        return nodes[name]
+
     for row in query_fn("kube_node_status_addresses") or []:
         m = _metric(row)
-        node = (m.get("node") or "").strip()
+        info = _node(m.get("node"))
+        if not info:
+            continue
+        kind = (m.get("address_type") or "").strip()
         addr = (m.get("address") or "").strip()
-        if node and addr:
-            node_map[addr] = node
-        if node:
-            node_map[node] = node
+        if not addr:
+            continue
+        if kind == "InternalIP" or (not info["ip"] and addr.count(".") == 3):
+            info["ip"] = addr
+        elif kind == "Hostname":
+            info["hostname"] = addr
+
+    for row in query_fn("kube_node_info") or []:
+        m = _metric(row)
+        info = _node(m.get("node"))
+        if not info:
+            continue
+        pid = (m.get("provider_id") or "").strip()
+        info["provider_id"] = pid
+        cloud, zone, iid = _parse_provider_id(pid)
+        if cloud:
+            info["cloud"] = cloud
+        if zone:
+            info["zone"] = zone
+        if iid:
+            info["instance_id"] = iid
+
+    for row in query_fn("kube_node_labels") or []:
+        m = _metric(row)
+        info = _node(m.get("node"))
+        if not info:
+            continue
+        ng = _metric_label(m, "nodegroup", "nodepool")
+        itype = _metric_label(m, "instance_type")
+        zone = _metric_label(m, "topology_kubernetes_io_zone", "failure_domain")
+        compute = _metric_label(m, "compute_type")
+        if ng:
+            info["nodegroup"] = ng
+        if itype:
+            info["instance_type"] = itype
+        if zone and not info["zone"]:
+            info["zone"] = zone
+        if compute:
+            info["compute_type"] = compute
+        for key in m:
+            if "eks_amazonaws" in (key or "").lower().replace("-", "_"):
+                info["cloud"] = "aws"
+                break
+
+    for info in nodes.values():
+        name = (info.get("node_name") or info.get("hostname") or "").lower()
+        if not info.get("cloud") and (
+            ".ec2.internal" in name or ".compute.internal" in name
+        ):
+            info["cloud"] = "aws"
+
+    by_ip, by_host = {}, {}
+    for info in nodes.values():
+        if info.get("ip"):
+            by_ip[info["ip"]] = info
+        if info.get("node_name"):
+            by_host[info["node_name"]] = info
+        if info.get("hostname"):
+            by_host[info["hostname"]] = info
+
     for s in servers or []:
         inst = s.get("instance") or ""
-        alias = resolve_service(instance=inst)
-        if alias:
-            s["service"] = alias["service"]
-            continue
         host = _host_from_instance(inst)
-        name = node_map.get(host) or node_map.get(inst) or ""
-        s["service"] = name if name and name != inst and name != host else ""
+        alias = resolve_service(instance=inst)
+        info = by_ip.get(host) or by_host.get(host) or by_host.get(inst) or {}
+        s["ip"] = info.get("ip") or (host if host.count(".") == 3 else "")
+        s["node_name"] = info.get("node_name") or ""
+        s["kind"] = "k8s" if info else "host"
+        s["cloud"] = info.get("cloud") or ""
+        s["zone"] = info.get("zone") or ""
+        s["instance_id"] = info.get("instance_id") or ""
+        s["nodegroup"] = info.get("nodegroup") or ""
+        s["instance_type"] = info.get("instance_type") or ""
+        s["compute_type"] = info.get("compute_type") or ""
+        if alias:
+            s["role"] = alias["service"]
+            s["service"] = alias["service"]
+        elif info.get("nodegroup"):
+            s["role"] = info["nodegroup"]
+            s["service"] = info.get("node_name") or host
+        elif (info.get("compute_type") or "").lower() == "fargate":
+            s["role"] = "EKS Fargate"
+            s["service"] = info.get("node_name") or host
+        elif info:
+            s["role"] = "EKS 节点" if info.get("cloud") == "aws" else "K8s 节点"
+            s["service"] = info.get("node_name") or host
+        else:
+            s["role"] = "独立主机"
+            s["service"] = s.get("service") or ""
+            if not s["service"] or s["service"] == inst or s["service"] == host:
+                s["service"] = ""
+    return servers
+
+
+def label_servers(query_fn, servers):
+    """机器表：有别名用别名；否则用 kube 节点名。不要把 IP 再填进服务列。"""
+    return enrich_servers(query_fn, servers)
+
+
+CPU_WARN_PCT = 85
+CPU_CRIT_PCT = 95
+MEM_WARN_PCT = 85
+MEM_CRIT_PCT = 95
+NODE_DISK_WARN_PCT = 90
+NODE_DISK_CRIT_PCT = 95
+
+
+def mark_server_pressure(servers):
+    """给每台机器打水位。检查清单只收偏高的，全量表另看。"""
+    for s in servers or []:
+        cpu = float(s.get("cpu_pct") or 0)
+        mem = float(s.get("mem_pct") or 0)
+        disk = float(s.get("disk_pct") or 0)
+        alias = resolve_service(instance=s.get("instance") or "")
+        mem_warn = float((alias or {}).get("mem_alert_threshold") or MEM_WARN_PCT)
+        mem_crit = max(mem_warn, MEM_CRIT_PCT)
+        bits = []
+        level = "ok"
+        if cpu >= CPU_CRIT_PCT:
+            bits.append(f"CPU {cpu:.0f}%")
+            level = "critical"
+        elif cpu >= CPU_WARN_PCT:
+            bits.append(f"CPU {cpu:.0f}%")
+            level = "warning"
+        if mem >= mem_crit:
+            bits.append(f"内存 {mem:.0f}%")
+            level = "critical"
+        elif mem >= mem_warn:
+            bits.append(f"内存 {mem:.0f}%")
+            if level != "critical":
+                level = "warning"
+        if disk >= NODE_DISK_CRIT_PCT:
+            bits.append(f"磁盘 {disk:.0f}%")
+            level = "critical"
+        elif disk >= NODE_DISK_WARN_PCT:
+            bits.append(f"磁盘 {disk:.0f}%")
+            if level != "critical":
+                level = "warning"
+        s["level"] = level
+        s["pressure"] = bits
     return servers
 
 
@@ -1709,31 +1890,38 @@ def collect_cluster_checks(
             source="pvc-stats-exporter",
         ))
 
-    mem_top = sorted(servers, key=lambda s: float(s.get("mem_pct") or 0), reverse=True)[:1]
-    disk_top = sorted(servers, key=lambda s: float(s.get("disk_pct") or 0), reverse=True)[:1]
-    if mem_top:
-        s = mem_top[0]
-        inst = s.get("instance") or ""
-        svc = display_name(instance=inst)
-        alias = resolve_service(instance=inst)
-        pct = float(s.get("mem_pct") or 0)
-        threshold = (alias or {}).get("mem_alert_threshold") or 85
+    if servers:
+        servers = mark_server_pressure(servers)
+        hot = [s for s in servers if s.get("level") in ("warning", "critical")]
+        crit_n = sum(1 for s in hot if s.get("level") == "critical")
+        items = []
+        for s in hot[:40]:
+            inst = s.get("instance") or ""
+            name = s.get("service") or inst
+            bits = s.get("pressure") or []
+            items.append({
+                "key": f"node:{inst}",
+                "label": f"{name}  {'  '.join(bits)}  {inst}".strip(),
+            })
         level = "ok"
-        if pct >= threshold:
+        if crit_n:
+            level = "critical"
+        elif hot:
             level = "warning"
-            findings.append(f"节点内存 {pct}%：{svc} ({inst})")
-        elif alias and alias.get("baseline"):
-            pass
-        checks.append(_check("node_mem", "节点内存最高", level, f"{pct}% {svc}", [inst], "node-exporter"))
-    if disk_top:
-        s = disk_top[0]
-        inst = s.get("instance") or ""
-        pct = float(s.get("disk_pct") or 0)
-        svc = display_name(instance=inst)
-        level = "ok" if pct < 90 else ("critical" if pct >= 95 else "warning")
-        checks.append(_check("node_disk", "节点磁盘最高", level, f"{pct}% {svc}", [inst], "node-exporter"))
-        if pct >= 90:
-            findings.append(f"节点磁盘 {pct}%：{svc} ({inst})")
+        checks.append(_check(
+            "node_resources", "节点资源偏高",
+            level,
+            f"{len(hot)} / {len(servers)}",
+            source="node-exporter", items=items,
+        ))
+        if hot:
+            findings.append(f"节点资源偏高 {len(hot)} 台")
+    else:
+        checks.append(_check(
+            "node_resources", "节点资源偏高", "skip",
+            "无 node-exporter CPU/内存/磁盘用量",
+            source="node-exporter",
+        ))
 
     checks = _strip_ignored(checks, ignore_keys)
 
@@ -1886,7 +2074,7 @@ def compute_health_score(down_targets, firing_alerts, servers, pvc_items=None, d
             score -= 5
             reasons.append(f"Elasticsearch {name} yellow: -5")
 
-    already = {"prom_alerts", "prom_targets", "pvc_usage", "elasticsearch", "node_mem", "node_disk"}
+    already = {"prom_alerts", "prom_targets", "pvc_usage", "elasticsearch", "node_resources"}
     n_crit = 0
     n_warn = 0
     for check in cluster.get("checks") or []:

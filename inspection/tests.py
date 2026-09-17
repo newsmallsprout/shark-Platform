@@ -95,6 +95,25 @@ class ClusterCheckTests(unittest.TestCase):
         self.assertEqual(score, 100.0)
         self.assertEqual(reasons, ["System Healthy"])
 
+    def test_hot_nodes_listed_in_checklist(self):
+        from inspection.simulate_inspection import Prom
+
+        cluster = collect_cluster_checks(
+            Prom({}),
+            servers=[
+                {"instance": "w1:9100", "cpu_pct": 91, "mem_pct": 40, "disk_pct": 30},
+                {"instance": "w2:9100", "cpu_pct": 10, "mem_pct": 20, "disk_pct": 15},
+                {"instance": "jumpserver-0:9100", "cpu_pct": 10, "mem_pct": 88, "disk_pct": 30},
+            ],
+        )
+        row = next(c for c in cluster["checks"] if c["id"] == "node_resources")
+        self.assertEqual(row["level"], "warning")
+        self.assertTrue(row["result"].startswith("1 / 3"))
+        blob = " ".join(row["detail"] or [])
+        self.assertIn("w1:9100", blob)
+        self.assertNotIn("jumpserver", blob.lower())
+        self.assertNotIn("w2:9100", blob)
+
     def test_all_pvcs_are_listed(self):
         data = {
             "pvc_stats_used_bytes": [
@@ -764,7 +783,54 @@ class ClusterCheckTests(unittest.TestCase):
             ],
         }), servers)
         self.assertEqual(labeled[0]["service"], "test-k8s-worker-04")
+        self.assertEqual(labeled[0]["kind"], "k8s")
+        self.assertEqual(labeled[0]["ip"], "10.0.1.1")
         self.assertEqual(labeled[1]["service"], "JumpServer")
+        self.assertEqual(labeled[1]["kind"], "host")
+        self.assertEqual(labeled[1]["role"], "JumpServer")
+
+    def test_eks_identity_from_kube_metrics(self):
+        from inspection.simulate_inspection import Prom
+        from inspection.cluster_checks import label_servers
+
+        labeled = label_servers(Prom({
+            "kube_node_status_addresses": [
+                _vec({"node": "ip-10-0-1-23.ec2.internal", "address_type": "InternalIP", "address": "10.0.1.23"}, 1),
+            ],
+            "kube_node_info": [
+                _vec({"node": "ip-10-0-1-23.ec2.internal", "provider_id": "aws:///us-east-1a/i-0abc123"}, 1),
+            ],
+            "kube_node_labels": [
+                _vec({
+                    "node": "ip-10-0-1-23.ec2.internal",
+                    "label_eks_amazonaws_com_nodegroup": "ng-workers",
+                    "label_node_kubernetes_io_instance_type": "m5.xlarge",
+                }, 1),
+            ],
+        }), [{"instance": "10.0.1.23:9100", "cpu_pct": 10}])
+        row = labeled[0]
+        self.assertEqual(row["kind"], "k8s")
+        self.assertEqual(row["cloud"], "aws")
+        self.assertEqual(row["instance_id"], "i-0abc123")
+        self.assertEqual(row["nodegroup"], "ng-workers")
+        self.assertEqual(row["role"], "ng-workers")
+        self.assertEqual(row["node_name"], "ip-10-0-1-23.ec2.internal")
+        self.assertEqual(row["ip"], "10.0.1.23")
+
+    def test_eks_from_ec2_internal_hostname(self):
+        from inspection.simulate_inspection import Prom
+        from inspection.cluster_checks import label_servers
+
+        labeled = label_servers(Prom({
+            "kube_node_status_addresses": [
+                _vec({"node": "ip-10-0-2-9.ec2.internal", "address_type": "InternalIP", "address": "10.0.2.9"}, 1),
+            ],
+        }), [{"instance": "10.0.2.9:9100", "cpu_pct": 10}])
+        row = labeled[0]
+        self.assertEqual(row["kind"], "k8s")
+        self.assertEqual(row["cloud"], "aws")
+        self.assertEqual(row["role"], "EKS 节点")
+        self.assertEqual(row["node_name"], "ip-10-0-2-9.ec2.internal")
 
     def test_jumpserver_hostdown_stays_a_real_finding(self):
         from inspection.simulate_inspection import Prom

@@ -377,8 +377,9 @@ def main():
     pvc_check = next(c for c in cluster["checks"] if c["id"] == "pvc_usage")
     if "撮合" in pvc_check["result"] and "order-mysql" not in pvc_check["result"]:
         problems.append(f"PVC 结果行展示的是撮合（最高用量）而不是告警盘 mysql: {pvc_check['result']}")
-    mem_check = next((c for c in cluster["checks"] if c["id"] == "node_mem"), None)
-    if mem_check and mem_check["level"] != "ok":
+    mem_check = next((c for c in cluster["checks"] if c["id"] == "node_resources"), None)
+    blob = " ".join((mem_check or {}).get("detail") or [])
+    if "jumpserver" in blob.lower() and "88" in blob:
         problems.append(f"JumpServer 88% 被清单判为异常（阈值应 95）: {mem_check}")
     if any("内存" in r and "88" in r for r in h[2]):
         problems.append(f"JumpServer 88% 被健康分扣分，但清单不当故障: {h}")

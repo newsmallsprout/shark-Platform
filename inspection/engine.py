@@ -5,7 +5,7 @@ import threading
 import datetime
 from datetime import datetime, timezone, timedelta
 from .models import InspectionConfig, InspectionReport, InspectionIgnore
-from .cluster_checks import collect_cluster_checks, compute_health_score, label_servers
+from .cluster_checks import collect_cluster_checks, compute_health_score, label_servers, mark_server_pressure
 from core.logging import log
 
 class InspectionEngine:
@@ -388,20 +388,77 @@ class InspectionEngine:
             except Exception:
                 pass
 
+        mem_total_results = self._query_prometheus('node_memory_MemTotal_bytes')
+        mem_avail_results = self._query_prometheus('node_memory_MemAvailable_bytes')
+        disk_size_results = self._query_prometheus(
+            'node_filesystem_size_bytes{mountpoint="/",fstype!~"tmpfs|overlay"}'
+        )
+        disk_avail_results = self._query_prometheus(
+            'node_filesystem_avail_bytes{mountpoint="/",fstype!~"tmpfs|overlay"}'
+        )
+        cpu_cores_results = self._query_prometheus('count by (instance) (node_cpu_seconds_total{mode="idle"})')
+        mem_total = {}
+        mem_avail = {}
+        for r in mem_total_results:
+            inst = (r.get('metric') or {}).get('instance') or ''
+            try:
+                mem_total[inst] = float(r['value'][1])
+            except Exception:
+                pass
+        for r in mem_avail_results:
+            inst = (r.get('metric') or {}).get('instance') or ''
+            try:
+                mem_avail[inst] = float(r['value'][1])
+            except Exception:
+                pass
+        for inst, total in mem_total.items():
+            avail = mem_avail.get(inst)
+            if avail is None:
+                continue
+            _set(inst, 'mem_total_bytes', int(total))
+            _set(inst, 'mem_used_bytes', int(max(0, total - avail)))
+        for r in disk_size_results:
+            inst = (r.get('metric') or {}).get('instance') or ''
+            try:
+                _set(inst, 'disk_total_bytes', int(float(r['value'][1])))
+            except Exception:
+                pass
+        for r in disk_avail_results:
+            inst = (r.get('metric') or {}).get('instance') or ''
+            size = (by_instance.get(inst) or {}).get('disk_total_bytes')
+            try:
+                avail = float(r['value'][1])
+            except Exception:
+                continue
+            if size:
+                _set(inst, 'disk_used_bytes', int(max(0, float(size) - avail)))
+        for r in cpu_cores_results:
+            inst = (r.get('metric') or {}).get('instance') or ''
+            try:
+                _set(inst, 'cpu_cores', int(float(r['value'][1])))
+            except Exception:
+                pass
+
         servers = list(by_instance.values())
         servers = label_servers(self._query_prometheus, servers)
-        servers.sort(key=lambda x: float(x.get('cpu_pct') or 0), reverse=True)
+        servers = mark_server_pressure(servers)
+        servers.sort(key=lambda x: (
+            {"critical": 0, "warning": 1, "ok": 2}.get(x.get("level") or "ok", 9),
+            -max(float(x.get("cpu_pct") or 0), float(x.get("mem_pct") or 0), float(x.get("disk_pct") or 0)),
+        ))
 
         def _avg(key):
             vals = [float(s.get(key) or 0) for s in servers if s.get(key) is not None]
             return round(sum(vals) / len(vals), 2) if vals else 0.0
 
+        hot = [s for s in servers if s.get("level") in ("warning", "critical")]
         fleet_summary = {
             "server_count": len(servers),
             "avg_cpu_pct": _avg('cpu_pct'),
             "avg_mem_pct": _avg('mem_pct'),
             "avg_disk_pct": _avg('disk_pct'),
-            "top_cpu": servers[:10],
+            "hot_count": len(hot),
+            "top_cpu": sorted(servers, key=lambda x: float(x.get('cpu_pct') or 0), reverse=True)[:10],
             "top_mem": sorted(servers, key=lambda x: float(x.get('mem_pct') or 0), reverse=True)[:10],
             "top_disk": sorted(servers, key=lambda x: float(x.get('disk_pct') or 0), reverse=True)[:10],
         }

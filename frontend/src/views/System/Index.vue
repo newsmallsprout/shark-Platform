@@ -69,7 +69,7 @@
     <el-dialog 
       v-model="dialogVisible" 
       title="Inspection Report Analysis" 
-      width="1040px"
+      width="1120px"
       class="report-dialog"
     >
       <div v-if="currentReport" class="report-content">
@@ -159,6 +159,88 @@
               </template>
             </el-table-column>
           </el-table>
+        </div>
+
+        <div class="analysis-section" v-if="currentReport.servers && currentReport.servers.length">
+          <button type="button" class="section-header section-header-toggle" @click="auxOpen.nodes = !auxOpen.nodes">
+            <el-icon><Monitor /></el-icon>
+            <span>资源使用（{{ filteredServers.length }} / {{ currentReport.servers.length }} 台{{ nodeHotCount ? `，偏高 ${nodeHotCount}` : '' }}）</span>
+            <el-icon class="toggle-caret">
+              <ArrowDown v-if="auxOpen.nodes" />
+              <ArrowRight v-else />
+            </el-icon>
+          </button>
+          <template v-if="auxOpen.nodes">
+            <p class="section-hint">
+              均 CPU {{ fmtPct(currentReport.fleet_summary?.avg_cpu_pct) }}%
+              · 均内存 {{ fmtPct(currentReport.fleet_summary?.avg_mem_pct) }}%
+              · 均磁盘 {{ fmtPct(currentReport.fleet_summary?.avg_disk_pct) }}%。
+              用量按「已用 / 总量（百分比）」；K8s / EKS 用 kube 节点名和 nodegroup，不调云 API。
+            </p>
+            <div class="node-filter-row">
+              <el-input
+                v-model="nodeQuery"
+                clearable
+                size="small"
+                placeholder="搜 IP / 机器名 / 角色 / nodegroup / instance-id"
+                style="max-width: 320px"
+              />
+              <el-radio-group v-model="nodeKindFilter" size="small">
+                <el-radio-button label="all">全部</el-radio-button>
+                <el-radio-button label="k8s">K8s / EKS</el-radio-button>
+                <el-radio-button label="host">独立主机</el-radio-button>
+                <el-radio-button label="hot">偏高</el-radio-button>
+              </el-radio-group>
+            </div>
+            <el-table :data="filteredServers" size="small" style="width: 100%" max-height="440">
+              <el-table-column label="角色" min-width="120">
+                <template #default="{ row }">{{ row.role || nodeKindLabel(row) }}</template>
+              </el-table-column>
+              <el-table-column label="机器名" min-width="160">
+                <template #default="{ row }">{{ machineName(row) }}</template>
+              </el-table-column>
+              <el-table-column label="IP" width="130">
+                <template #default="{ row }">{{ row.ip || '-' }}</template>
+              </el-table-column>
+              <el-table-column label="类型" width="90">
+                <template #default="{ row }">
+                  <el-tag size="small" effect="plain">{{ nodeKindLabel(row) }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="状态" width="80">
+                <template #default="{ row }">
+                  <el-tag :type="checkTagType(row.level || 'ok')" size="small" effect="plain">{{ checkLevelLabel(row.level || 'ok') }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="CPU" min-width="170">
+                <template #default="{ row }">
+                  <div class="resource-cell">
+                    <el-progress :percentage="clipPct(row.cpu_pct)" :stroke-width="8" :show-text="false" :color="pctColor(row.cpu_pct, 85, 95)" />
+                    <span>{{ cpuResourceText(row) }}</span>
+                  </div>
+                </template>
+              </el-table-column>
+              <el-table-column label="内存" min-width="190">
+                <template #default="{ row }">
+                  <div class="resource-cell">
+                    <el-progress :percentage="clipPct(row.mem_pct)" :stroke-width="8" :show-text="false" :color="pctColor(row.mem_pct, 85, 95)" />
+                    <span>{{ bytesResourceText(row.mem_used_bytes, row.mem_total_bytes, row.mem_pct) }}</span>
+                  </div>
+                </template>
+              </el-table-column>
+              <el-table-column label="磁盘 /" min-width="190">
+                <template #default="{ row }">
+                  <div class="resource-cell">
+                    <el-progress :percentage="clipPct(row.disk_pct)" :stroke-width="8" :show-text="false" :color="pctColor(row.disk_pct, 90, 95)" />
+                    <span>{{ bytesResourceText(row.disk_used_bytes, row.disk_total_bytes, row.disk_pct) }}</span>
+                  </div>
+                </template>
+              </el-table-column>
+              <el-table-column label="Load1" width="70">
+                <template #default="{ row }">{{ row.load1 == null ? '-' : row.load1 }}</template>
+              </el-table-column>
+            </el-table>
+          </template>
         </div>
 
         <div class="analysis-section" v-if="workloadNsGroups.length">
@@ -427,11 +509,16 @@
           </div>
         </div>
 
-        <div class="analysis-section" v-if="currentReport.fleet_summary">
-          <div class="section-header">
+        <div class="analysis-section" v-if="currentReport.fleet_summary?.top_cpu?.length">
+          <button type="button" class="section-header section-header-toggle" @click="auxOpen.charts = !auxOpen.charts">
             <el-icon><Histogram /></el-icon>
-            <span>服务器资源使用状况</span>
-          </div>
+            <span>资源 Top 10</span>
+            <el-icon class="toggle-caret">
+              <ArrowDown v-if="auxOpen.charts" />
+              <ArrowRight v-else />
+            </el-icon>
+          </button>
+          <template v-if="auxOpen.charts">
           <el-row :gutter="20" class="metrics-row">
             <el-col :span="12" v-if="getServerTopOption('cpu_pct', 'CPU 使用率 Top 10 (%)').series">
               <div class="chart-card">
@@ -454,17 +541,7 @@
               </div>
             </el-col>
           </el-row>
-          <el-table v-if="currentReport.servers && currentReport.servers.length" :data="currentReport.servers.slice(0, 50)" style="width: 100%; margin-top: 16px">
-            <el-table-column label="节点" min-width="160">
-              <template #default="{ row }">{{ serverLabel(row) }}</template>
-            </el-table-column>
-            <el-table-column prop="instance" label="Instance" min-width="220" />
-            <el-table-column prop="cpu_pct" label="CPU%" width="110" />
-            <el-table-column prop="mem_pct" label="Mem%" width="110" />
-            <el-table-column prop="disk_pct" label="Disk%(/)" width="110" />
-            <el-table-column prop="load1" label="Load1" width="110" />
-            <el-table-column prop="uptime_hours" label="Uptime(h)" width="120" />
-          </el-table>
+          </template>
         </div>
 
         <div class="analysis-section" v-if="currentReport.alerts_summary">
@@ -730,7 +807,9 @@ const serverLabel = (row: any) => {
 const dialogVisible = ref(false)
 const configVisible = ref(false)
 const currentReport = ref<InspectionReport | null>(null)
-const auxOpen = reactive({ normals: false, uncovered: false, decommissioned: false, ignored: false })
+const auxOpen = reactive({ normals: false, uncovered: false, decommissioned: false, ignored: false, charts: false, nodes: true })
+const nodeQuery = ref('')
+const nodeKindFilter = ref('all')
 const ignoreList = ref<any[]>([])
 const ignoreKeySet = computed(() => new Set(ignoreList.value.map((i: any) => i.key).filter(Boolean)))
 
@@ -940,6 +1019,83 @@ const formatBytes = (n?: number) => {
   return `${size.toFixed(1)}${units[i]}`
 }
 
+const fmtPct = (n?: number) => {
+  if (n == null || Number.isNaN(Number(n))) return '-'
+  return Number(n).toFixed(1)
+}
+
+const clipPct = (n?: number) => {
+  const v = Number(n || 0)
+  if (Number.isNaN(v)) return 0
+  return Math.max(0, Math.min(100, Math.round(v)))
+}
+
+const pctColor = (n: number | undefined, warn: number, crit: number) => {
+  const v = Number(n || 0)
+  if (v >= crit) return '#ef4444'
+  if (v >= warn) return '#f59e0b'
+  return '#22c55e'
+}
+
+const formatUptime = (hours?: number) => {
+  const n = Number(hours || 0)
+  if (!n) return '-'
+  if (n >= 48) return `${(n / 24).toFixed(1)}d`
+  return `${n.toFixed(1)}h`
+}
+
+const nodeKindLabel = (row: any) => {
+  if (row?.kind === 'k8s' && row?.cloud === 'aws') return 'EKS'
+  if (row?.kind === 'k8s') return 'K8s'
+  return '独立'
+}
+
+const machineName = (row: any) => {
+  if (row?.node_name) return row.node_name
+  const inst = String(row?.instance || '').trim()
+  const host = inst.replace(/:\d+$/, '')
+  if (host && host !== String(row?.ip || '')) return host
+  return row?.ip || '-'
+}
+
+const nodeHotCount = computed(() =>
+  (currentReport.value?.servers || []).filter((s: any) => s.level === 'warning' || s.level === 'critical').length
+)
+
+const filteredServers = computed(() => {
+  const rows = currentReport.value?.servers || []
+  const kind = nodeKindFilter.value
+  const q = nodeQuery.value.trim().toLowerCase()
+  return rows.filter((s: any) => {
+    if (kind === 'k8s' && s.kind !== 'k8s') return false
+    if (kind === 'host' && s.kind === 'k8s') return false
+    if (kind === 'hot' && s.level !== 'warning' && s.level !== 'critical') return false
+    if (!q) return true
+    const blob = [s.ip, s.node_name, s.service, s.role, s.instance, s.nodegroup, s.instance_id, s.zone, s.instance_type, s.compute_type]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase()
+    return blob.includes(q)
+  })
+})
+
+const bytesResourceText = (used?: number, total?: number, pct?: number) => {
+  if (total) return `${formatBytes(used)} / ${formatBytes(total)}（${fmtPct(pct)}%）`
+  if (pct != null && pct !== undefined) return `${fmtPct(pct)}%`
+  return '-'
+}
+
+const cpuResourceText = (row: any) => {
+  const cores = Number(row?.cpu_cores || 0)
+  const pct = Number(row?.cpu_pct)
+  if (cores && Number.isFinite(pct)) {
+    const used = (pct / 100) * cores
+    return `${used.toFixed(1)} / ${cores} 核（${fmtPct(pct)}%）`
+  }
+  if (Number.isFinite(pct)) return `${fmtPct(pct)}%`
+  return '-'
+}
+
 const viewReport = async (row: any) => {
   await systemStore.fetchReportDetail(row.report_id)
   const rep: any = systemStore.currentReport || {}
@@ -956,6 +1112,8 @@ const viewReport = async (row: any) => {
   auxOpen.uncovered = false
   auxOpen.decommissioned = false
   auxOpen.ignored = false
+  auxOpen.charts = false
+  auxOpen.nodes = true
   dialogVisible.value = true
 }
 
@@ -1271,6 +1429,49 @@ const fetchLogs = async (page = 1) => {
   color: #475569;
   font-size: 12px;
   line-height: 1.6;
+}
+
+.pct-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pct-cell .el-progress {
+  flex: 1;
+}
+
+.pct-cell span {
+  width: 42px;
+  text-align: right;
+  font-size: 12px;
+  color: #334155;
+}
+
+.bytes-sub {
+  margin-top: 2px;
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+.node-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin: 8px 0 10px;
+}
+
+.resource-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.resource-cell span {
+  font-size: 12px;
+  color: #334155;
+  line-height: 1.3;
 }
 
 .check-detail-row {
