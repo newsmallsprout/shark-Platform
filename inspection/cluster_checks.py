@@ -905,6 +905,26 @@ def _parse_provider_id(pid):
     return cloud, zone, instance_id
 
 
+def _hostname_from_metric(m):
+    """kube 用 node；node-exporter 常用 nodename，k8s SD 常 relabel 成 node。"""
+    m = m or {}
+    for key in ("nodename", "node", "kubernetes_io_hostname", "hostname"):
+        val = str(m.get(key) or "").strip()
+        if val and not _is_ipv4(val) and val.lower() not in ("localhost", "unknown"):
+            return val
+    return ""
+
+
+def _remember_host(uname_by_instance, uname_by_host, inst, nodename):
+    nodename = (nodename or "").strip()
+    if not nodename or _is_ipv4(nodename):
+        return
+    if inst:
+        uname_by_instance[inst] = nodename
+        uname_by_host[_host_from_instance(inst)] = nodename
+    uname_by_host[nodename] = nodename
+
+
 def _metric_label(m, *needles):
     m = m or {}
     for key, val in m.items():
@@ -929,6 +949,7 @@ def enrich_servers(query_fn, servers):
             nodes[name] = {
                 "node_name": name,
                 "ip": "",
+                "ips": [],
                 "hostname": "",
                 "provider_id": "",
                 "cloud": "",
@@ -945,14 +966,18 @@ def enrich_servers(query_fn, servers):
         info = _node(m.get("node"))
         if not info:
             continue
-        kind = (m.get("address_type") or "").strip()
+        kind = (m.get("address_type") or m.get("type") or "").strip()
         addr = (m.get("address") or "").strip()
         if not addr:
             continue
-        if kind == "InternalIP" or (not info["ip"] and _is_ipv4(addr)):
+        if _is_ipv4(addr) and addr not in info["ips"]:
+            info["ips"].append(addr)
+        if kind == "InternalIP":
             info["ip"] = addr
         elif kind == "Hostname":
             info["hostname"] = addr
+        elif not info["ip"] and _is_ipv4(addr) and kind not in ("ExternalIP", "ExternalDNS"):
+            info["ip"] = addr
 
     for row in query_fn("kube_node_info") or []:
         m = _metric(row)
@@ -1002,6 +1027,8 @@ def enrich_servers(query_fn, servers):
     for info in nodes.values():
         if info.get("ip"):
             by_ip[info["ip"]] = info
+        for addr in info.get("ips") or []:
+            by_ip[addr] = info
         if info.get("node_name"):
             by_host[info["node_name"]] = info
         if info.get("hostname"):
@@ -1010,19 +1037,25 @@ def enrich_servers(query_fn, servers):
     uname_by_instance, uname_by_host = {}, {}
     for row in query_fn("node_uname_info") or []:
         m = _metric(row)
-        inst = (m.get("instance") or "").strip()
-        nodename = (m.get("nodename") or "").strip()
-        if not nodename:
-            continue
-        if inst:
-            uname_by_instance[inst] = nodename
-            uname_by_host[_host_from_instance(inst)] = nodename
-        uname_by_host[nodename] = nodename
+        _remember_host(
+            uname_by_instance, uname_by_host,
+            (m.get("instance") or "").strip(), _hostname_from_metric(m),
+        )
+    for row in query_fn("count by (instance, nodename, node) (node_load1)") or []:
+        m = _metric(row)
+        _remember_host(
+            uname_by_instance, uname_by_host,
+            (m.get("instance") or "").strip(), _hostname_from_metric(m),
+        )
 
     for s in servers or []:
         inst = s.get("instance") or ""
         host = _host_from_instance(inst)
-        nodename = uname_by_instance.get(inst) or uname_by_host.get(host) or ""
+        nodename = (
+            uname_by_instance.get(inst)
+            or uname_by_host.get(host)
+            or (s.get("nodename") or s.get("hostname") or "").strip()
+        )
         info = (
             by_ip.get(host)
             or by_host.get(host)

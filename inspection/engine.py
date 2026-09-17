@@ -12,6 +12,7 @@ from .cluster_checks import (
     label_servers,
     mark_server_pressure,
     RESOURCE_DELTA_WARN_PT,
+    _hostname_from_metric,
 )
 from core.logging import log
 
@@ -357,41 +358,44 @@ class InspectionEngine:
         uptime_results = self._query_prometheus(uptime_h_query)
 
         by_instance = {}
-        def _set(inst, k, v):
+        def _set(inst, k, v, metric=None):
             if not inst:
                 return
             if inst not in by_instance:
                 by_instance[inst] = {"instance": inst}
             by_instance[inst][k] = v
+            name = _hostname_from_metric(metric)
+            if name and not by_instance[inst].get("nodename"):
+                by_instance[inst]["nodename"] = name
 
         for r in cpu_results:
             inst = (r.get('metric') or {}).get('instance') or ''
             try:
-                _set(inst, 'cpu_pct', round(float(r['value'][1]), 2))
+                _set(inst, 'cpu_pct', round(float(r['value'][1]), 2), r.get('metric'))
             except Exception:
                 pass
         for r in mem_results:
             inst = (r.get('metric') or {}).get('instance') or ''
             try:
-                _set(inst, 'mem_pct', round(float(r['value'][1]), 2))
+                _set(inst, 'mem_pct', round(float(r['value'][1]), 2), r.get('metric'))
             except Exception:
                 pass
         for r in disk_results:
             inst = (r.get('metric') or {}).get('instance') or ''
             try:
-                _set(inst, 'disk_pct', round(float(r['value'][1]), 2))
+                _set(inst, 'disk_pct', round(float(r['value'][1]), 2), r.get('metric'))
             except Exception:
                 pass
         for r in load1_results:
             inst = (r.get('metric') or {}).get('instance') or ''
             try:
-                _set(inst, 'load1', round(float(r['value'][1]), 2))
+                _set(inst, 'load1', round(float(r['value'][1]), 2), r.get('metric'))
             except Exception:
                 pass
         for r in uptime_results:
             inst = (r.get('metric') or {}).get('instance') or ''
             try:
-                _set(inst, 'uptime_hours', round(float(r['value'][1]), 1))
+                _set(inst, 'uptime_hours', round(float(r['value'][1]), 1), r.get('metric'))
             except Exception:
                 pass
 

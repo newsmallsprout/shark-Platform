@@ -860,6 +860,38 @@ class ClusterCheckTests(unittest.TestCase):
         self.assertEqual(jms["kind"], "host")
         self.assertEqual(jms["node_name"], "jumpserver-0")
 
+    def test_kube_uses_type_label_not_address_type(self):
+        from inspection.simulate_inspection import Prom
+        from inspection.cluster_checks import label_servers
+
+        labeled = label_servers(Prom({
+            "kube_node_status_addresses": [
+                _vec({"node": "test-k8s-control-plane-01", "type": "ExternalIP", "address": "1.2.3.4"}, 1),
+                _vec({"node": "test-k8s-control-plane-01", "type": "InternalIP", "address": "192.168.12.188"}, 1),
+                _vec({"node": "test-k8s-control-plane-01", "type": "Hostname", "address": "test-k8s-control-plane-01"}, 1),
+            ],
+        }), [{"instance": "192.168.12.188:9100", "cpu_pct": 10}])
+        row = labeled[0]
+        self.assertEqual(row["node_name"], "test-k8s-control-plane-01")
+        self.assertEqual(row["ip"], "192.168.12.188")
+        self.assertEqual(row["kind"], "k8s")
+        self.assertEqual(row["role"], "K8s 控制面")
+
+    def test_hostname_from_node_exporter_node_label(self):
+        from inspection.simulate_inspection import Prom
+        from inspection.cluster_checks import label_servers
+
+        labeled = label_servers(Prom({
+            "count by (instance, nodename, node) (node_load1)": [
+                _vec({"instance": "192.168.12.8:9100", "node": "test-k8s-worker-02"}, 1),
+            ],
+        }), [{"instance": "192.168.12.8:9100", "cpu_pct": 10}])
+        row = labeled[0]
+        self.assertEqual(row["node_name"], "test-k8s-worker-02")
+        self.assertEqual(row["ip"], "192.168.12.8")
+        self.assertEqual(row["kind"], "k8s")
+        self.assertEqual(row["role"], "K8s worker")
+
     def test_eks_from_uname_without_kube_state(self):
         from inspection.simulate_inspection import Prom
         from inspection.cluster_checks import label_servers
