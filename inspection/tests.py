@@ -907,23 +907,29 @@ class ClusterCheckTests(unittest.TestCase):
         self.assertEqual(row["kind"], "k8s")
         self.assertEqual(row["role"], "K8s 控制面")
 
-    def test_servers_sort_by_level_kind_then_ip(self):
+    def test_servers_sort_attention_then_name_hypervisors_last(self):
         from inspection.cluster_checks import sort_servers
 
         rows = [
-            {"instance": "192.168.12.188:9100", "ip": "192.168.12.188", "kind": "host", "level": "ok", "cpu_pct": 90},
-            {"instance": "192.168.12.8:9100", "ip": "192.168.12.8", "kind": "host", "level": "ok"},
-            {"instance": "192.168.12.130:9100", "ip": "192.168.12.130", "kind": "k8s", "level": "ok"},
-            {"instance": "10.0.0.9:9100", "ip": "10.0.0.9", "kind": "k8s", "cloud": "aws", "level": "ok"},
-            {"instance": "192.168.12.9:9100", "ip": "192.168.12.9", "kind": "host", "level": "warning"},
+            {"node_name": "test-es-03", "kind": "host", "level": "ok", "ip": "192.168.12.33"},
+            {"node_name": "ORACLE-SERVER-XG-2L", "kind": "host", "level": "ok", "ip": "192.168.12.188"},
+            {"node_name": "test-es-01", "kind": "host", "level": "ok", "ip": "192.168.12.80"},
+            {"node_name": "HITACHI-HA-8000V", "kind": "host", "level": "ok"},
+            {"node_name": "test-es-02", "kind": "host", "level": "ok", "ip": "192.168.12.10"},
+            {"node_name": "Gen10", "kind": "host", "level": "ok"},
+            {"node_name": "test-k8s-worker-04", "kind": "k8s", "level": "ok"},
+            {"node_name": "jumpserver-0", "kind": "host", "level": "warning"},
         ]
         sort_servers(rows)
-        self.assertEqual([r["ip"] for r in rows], [
-            "192.168.12.9",
-            "10.0.0.9",
-            "192.168.12.130",
-            "192.168.12.8",
-            "192.168.12.188",
+        self.assertEqual([r["node_name"] for r in rows], [
+            "jumpserver-0",
+            "test-es-01",
+            "test-es-02",
+            "test-es-03",
+            "test-k8s-worker-04",
+            "Gen10",
+            "HITACHI-HA-8000V",
+            "ORACLE-SERVER-XG-2L",
         ])
 
     def test_eks_from_uname_without_kube_state(self):

@@ -6,6 +6,7 @@ K8s 对象状态依赖 kube-state-metrics；没有对应指标时检查项为 sk
 中间件先扫 Prom 指标名，对上前缀才检查，不写死实例。
 """
 
+import re
 import time
 
 from .catalog import (
@@ -834,18 +835,46 @@ def _ip_sort_tuple(ip):
     return (999, 0, 0, 0)
 
 
+def _server_sort_name(s):
+    return (
+        s.get("node_name")
+        or s.get("hostname")
+        or s.get("ip")
+        or _host_from_instance(s.get("instance") or "")
+        or ""
+    )
+
+
+def _natural_parts(text):
+    text = (text or "").lower()
+    return tuple(int(p) if p.isdigit() else p for p in re.split(r"(\d+)", text) if p != "")
+
+
+_HYPER_RE = re.compile(r"hitachi|oracle-server|gen\d|proxmox|\bpve\b|esxi|vmware", re.I)
+_ENV_RE = re.compile(r"(^|[-_.])(test|dev|prd|prod|stg)([-_.]|$)", re.I)
+
+
+def _is_hypervisor_row(s):
+    """HITACHI / Gen10 / ORACLE 这类宿主机，和 test-es-01 分开垫底。"""
+    if s.get("kind") == "k8s" or s.get("cloud") == "aws":
+        return False
+    name = _server_sort_name(s)
+    low = name.lower()
+    if "k8s" in low or ".ec2.internal" in low or ".compute.internal" in low or _ENV_RE.search(name):
+        return False
+    if _HYPER_RE.search(name):
+        return True
+    letters = "".join(c for c in name if c.isalpha())
+    return bool(s.get("kind") == "host" and letters and letters.isupper() and "-" in name)
+
+
 def sort_servers(servers):
-    """先异常，再 EKS / K8s / 独立，再按 IP，同网段排在一起。"""
+    """关注在前；其余按机器名自然序（test-es-01/02/03 挨着）；宿主机最后。"""
     def key(s):
         level = {"critical": 0, "warning": 1, "ok": 2}.get(s.get("level") or "ok", 9)
-        if s.get("kind") == "k8s" and s.get("cloud") == "aws":
-            kind = 0
-        elif s.get("kind") == "k8s":
-            kind = 1
-        else:
-            kind = 2
-        ip = s.get("ip") or _host_from_instance(s.get("instance") or "")
-        return (level, kind, _ip_sort_tuple(ip), s.get("node_name") or s.get("hostname") or "")
+        hyper = 1 if _is_hypervisor_row(s) else 0
+        name = _server_sort_name(s)
+        return (level, hyper, _natural_parts(name), _ip_sort_tuple(s.get("ip") or ""))
     (servers or []).sort(key=key)
     return servers
 
